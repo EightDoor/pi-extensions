@@ -66,7 +66,7 @@ type UsageExtensionDependencies = {
 type QueryOutcome = {
   state: ProviderUsageState;
   fingerprint?: string;
-  authState?: "unavailable" | "unsupported";
+  authState?: "unavailable" | "unsupported" | "failed";
   rememberedTargetId?: string;
 };
 
@@ -244,6 +244,12 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       );
     } catch (error) {
       if (isStaleExtensionContextError(error) || isAbortError(error)) throw error;
+      const authState =
+        error instanceof UnsupportedOpenAIUsageAuthError
+          ? "unsupported"
+          : adapter.id === "openai" && !isTimeoutError(error)
+            ? "failed"
+            : undefined;
       if (displayState === "current") {
         transitionCurrentIdentity(`${adapter.id}:auth-error`, adapter.id);
       }
@@ -253,14 +259,10 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
           providerName,
           displayState,
           status:
-            error instanceof UnsupportedOpenAIUsageAuthError
-              ? "unsupported"
-              : isTimeoutError(error)
-                ? "query-failed"
-                : "auth-unavailable",
+            authState === "unsupported" ? "unsupported" : isTimeoutError(error) ? "query-failed" : "auth-unavailable",
           message: errorMessage(error),
         },
-        ...(error instanceof UnsupportedOpenAIUsageAuthError ? { authState: "unsupported" as const } : {}),
+        ...(authState ? { authState } : {}),
       };
     }
     const requiresRequestBoundaryGuard =
@@ -606,11 +608,11 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     if (generation !== statusGeneration || modelIdentity(ctx.model) !== modelIdentity(model)) {
       return false;
     }
-    const adapter = adapterForProvider(model?.provider);
+    const adapter = adapterForProvider(outcome.state.providerId);
     const selectionStillCurrent =
       !adapter?.targets || settingsRuntime.get().settings.selectedTargets[adapter.id] === outcome.rememberedTargetId;
     if (!selectionStillCurrent) return false;
-    if (outcome.authState === "unavailable" || outcome.authState === "unsupported") {
+    if (outcome.authState) {
       if (!adapter) return false;
       try {
         const auth = await awaitWithDeadline(
@@ -629,11 +631,21 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         );
       } catch (error) {
         if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
+        // Stable failures are still useful. A recovered credential or changed reason must
+        // retry, but confirming the same native failure must not create a refresh loop.
+        const unchangedFailure =
+          (outcome.authState === "unsupported" && error instanceof UnsupportedOpenAIUsageAuthError) ||
+          (outcome.authState === "failed" &&
+            outcome.state.status === "auth-unavailable" &&
+            !(error instanceof UnsupportedOpenAIUsageAuthError) &&
+            !isTimeoutError(error) &&
+            errorMessage(error) === outcome.state.message);
         return (
-          outcome.authState === "unsupported" &&
-          error instanceof UnsupportedOpenAIUsageAuthError &&
+          unchangedFailure &&
           generation === statusGeneration &&
-          modelIdentity(ctx.model) === modelIdentity(model)
+          modelIdentity(ctx.model) === modelIdentity(model) &&
+          (!adapter.targets ||
+            settingsRuntime.get().settings.selectedTargets[adapter.id] === outcome.rememberedTargetId)
         );
       }
     }
@@ -657,6 +669,27 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
       return false;
     }
+  };
+
+  const queryStableAdapterState = async (
+    ctx: ExtensionContext,
+    adapter: UsageProviderAdapter,
+    displayState: UsageDisplayState,
+    force: boolean,
+    signal: AbortSignal,
+  ): Promise<QueryOutcome> => {
+    if (adapter.id !== "openai") return queryAdapterState(ctx, adapter, displayState, force, signal);
+    // Configured/all-provider views must confirm native auth failures too, independently
+    // of the selected provider's subsequent revalidation.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const model = ctx.model;
+      const generation = statusGeneration;
+      const outcome = await queryAdapterState(ctx, adapter, displayState, force, signal);
+      if (signal.aborted) throw abortError();
+      if (!outcome.authState || (await outcomeStillCurrent(ctx, model, generation, outcome, signal))) return outcome;
+      force = false;
+    }
+    throw new Error("OpenAI runtime authentication kept changing; reopen /usage to retry.");
   };
 
   const queryStableCurrent = async (
@@ -990,7 +1023,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
                 ctx,
                 `Checking ${providerDisplayName(ctx, adapter.id)} usage…`,
                 controller.signal,
-                (signal) => queryAdapterState(ctx, adapter, "configured", true, signal),
+                (signal) => queryStableAdapterState(ctx, adapter, "configured", true, signal),
               );
               if (!outcome) return { kind: "stay" };
               const revalidated = await queryStableCurrent(ctx, false, controller, "Revalidating current usage…");
@@ -1203,7 +1236,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
               ctx,
               `Checking ${providerDisplayName(ctx, adapter.id)} usage…`,
               controller.signal,
-              (signal) => queryAdapterState(ctx, adapter, "configured", false, signal),
+              (signal) => queryStableAdapterState(ctx, adapter, "configured", false, signal),
             );
             if (!outcome) return { kind: "back" };
             if (outcome.state.status === "selection-required") {
@@ -1214,7 +1247,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
                 ctx,
                 `Checking ${providerDisplayName(ctx, adapter.id)} usage…`,
                 controller.signal,
-                (signal) => queryAdapterState(ctx, adapter, "configured", true, signal),
+                (signal) => queryStableAdapterState(ctx, adapter, "configured", true, signal),
               );
               if (!outcome) return { kind: "back" };
             }
@@ -1241,7 +1274,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
                   adapters,
                   ALL_PROVIDER_CONCURRENCY,
                   (adapter, _index, workerSignal) =>
-                    queryAdapterState(
+                    queryStableAdapterState(
                       ctx,
                       adapter,
                       adapter.id === currentProviderId ? "current" : "configured",

@@ -430,13 +430,15 @@ export async function resolveUsageAuth(
     };
   };
   if (adapter.id === "openai") {
-    if (providerResult?.source !== "OAuth") throw new UnsupportedOpenAIUsageAuthError();
+    // Pi can return empty compatibility model auth without any provider credential.
+    if (!providerResult) return undefined;
+    if (providerResult.source !== "OAuth") throw new UnsupportedOpenAIUsageAuthError();
     const offered = candidateReader
       ? await candidateReader(ctx, adapter.id)
       : fallbackOAuthCredentialCandidates(adapter.id, credentialReader);
     if (!offered.ok) throw new Error("OpenAI OAuth credential discovery failed closed.");
     return finalize(
-      resolveOpenAIChatGPTAuth(auth, providerResult?.auth, providerResult?.source, model, offered.candidates),
+      resolveOpenAIChatGPTAuth(auth, providerResult.auth, providerResult.source, model, offered.candidates),
     );
   }
   if (adapter.id === "github-copilot") {

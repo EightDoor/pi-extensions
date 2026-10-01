@@ -21,10 +21,10 @@ const credential: Credential = {
   scopes: ["chatgpt.tokens.use.direct"],
 };
 
-async function createRegistry() {
+async function createRegistry(stored: Credential | null = credential) {
   const store: CredentialStore = {
-    read: async (provider) => (provider === "openai" ? credential : undefined),
-    list: async () => [{ providerId: "openai", type: "oauth" }],
+    read: async (provider) => (provider === "openai" ? (stored ?? undefined) : undefined),
+    list: async () => (stored ? [{ providerId: "openai", type: stored.type }] : []),
     modify: async () => {
       throw new Error("A fresh synthetic credential must not be refreshed.");
     },
@@ -103,6 +103,44 @@ for (const mode of ["tui", "rpc"] as const) {
     }
   });
 }
+
+test("real Pi without OpenAI credentials reports authentication unavailable rather than API-key unsupported", async () => {
+  vi.stubEnv("OPENAI_API_KEY", "");
+  const mock = createMockPi();
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  let context: ReturnType<typeof createMockContext> | undefined;
+  try {
+    const { registry } = await createRegistry(null);
+    const model = registry.find("openai", "gpt-6.1-sol");
+    assert.ok(model);
+    assert.equal(await registry.getProviderAuth("openai"), undefined);
+    const resolved = await registry.getApiKeyAndHeaders(model);
+    assert.ok(resolved.ok);
+    assert.equal(resolved.apiKey, undefined);
+    assert.equal(resolved.headers, undefined);
+    usageExtension(mock.pi, { credentialReader: () => undefined });
+    let title = "";
+    context = createMockContext({
+      mode: "rpc",
+      model,
+      modelRegistry: registry,
+      select: async (value: string) => {
+        title = value;
+        return "Close";
+      },
+    });
+    await runCommand(mock, "usage", context.ctx);
+    assert.match(title, /Authentication unavailable: No runtime credential is configured for OpenAI/);
+    assert.doesNotMatch(title, /API-key|Unsupported/);
+    assert.equal(context.statuses.get("usage"), "auth unavailable");
+    assert.equal(fetch.mock.calls.length, 0);
+  } finally {
+    if (context) await emit(mock, "session_shutdown", context.ctx);
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  }
+});
 
 test("real Pi runtime API-key overrides never reuse stored native OAuth as plan authentication", async () => {
   const { runtime, registry } = await createRegistry();
