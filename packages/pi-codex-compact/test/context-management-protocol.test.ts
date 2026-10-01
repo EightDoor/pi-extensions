@@ -11,7 +11,13 @@ const message = {
   status: "completed",
   content: [{ type: "output_text", text: "OK", annotations: [] }],
 };
-const reasoning = { type: "reasoning", id: "rs_ok", summary: [{ type: "summary_text", text: "Maintenance" }] };
+const reasoning = {
+  type: "reasoning",
+  id: "rs_ok",
+  summary: [{ type: "summary_text", text: "Maintenance" }],
+  encrypted_content: "signed-reasoning",
+};
+const { encrypted_content: _signature, ...unsignedReasoning } = reasoning;
 const done = (item: unknown) => ({ type: "response.output_item.done", item });
 const completed = (output: unknown[] = []) => ({
   type: "response.completed",
@@ -44,11 +50,10 @@ test("terminal output reconciles object key order and encrypted reasoning withou
     id: message.id,
     type: message.type,
   };
-  assert.deepEqual(collect([done(checkpoint), done(reasoning), done(message), completed([canonical, reordered])]), [
-    checkpoint,
-    canonical,
-    message,
-  ]);
+  assert.deepEqual(
+    collect([done(checkpoint), done(unsignedReasoning), done(message), completed([canonical, reordered])]),
+    [checkpoint, canonical, message],
+  );
 });
 
 for (const [name, events] of [
@@ -108,10 +113,60 @@ test("replacement bounds fail rather than silently losing a post-checkpoint suff
   assert.equal(checkpoint.encrypted_content, "opaque");
 });
 
-test("nullable reasoning signatures reconcile with terminal output", () => {
-  const canonical = { ...reasoning, encrypted_content: null };
-  assert.deepEqual(collect([done(checkpoint), done(canonical), completed([canonical])]), [checkpoint, canonical]);
-  assert.deepEqual(collect([done(checkpoint), done(reasoning), completed([canonical])]), [checkpoint, canonical]);
+for (const type of ["response.completed", "response.done"]) {
+  test(`${type} validates the successful terminal alias`, () => {
+    const terminal = { ...completed([reasoning, message]), type };
+    assert.deepEqual(collect([done(checkpoint), done(reasoning), done(message), terminal]), [
+      checkpoint,
+      reasoning,
+      message,
+    ]);
+    assert.throws(() => collect([done(checkpoint), { ...terminal, response: {} }]));
+    assert.throws(() => collect([done(checkpoint), { ...terminal, response: { status: "completed" } }]));
+    assert.throws(() =>
+      collect([done(checkpoint), { ...terminal, response: { status: "completed", output: [message] } }]),
+    );
+    assert.throws(() =>
+      collect([
+        done(checkpoint),
+        { ...terminal, response: { status: "completed", output: [{ ...checkpoint, encrypted_content: "changed" }] } },
+      ]),
+    );
+    assert.throws(() => collect([done(checkpoint), { ...completed(), type }, completed()]));
+    assert.throws(() => collect([done(checkpoint), completed(), { ...completed(), type }]));
+    assert.throws(() => collect([done(checkpoint), { ...completed(), type }, done(message)]));
+  });
+
+  for (const status of [undefined, null, "incomplete", "failed", "cancelled", "queued", "in_progress", "unknown"]) {
+    test(`${type} rejects unsuccessful or missing status ${String(status)}`, () => {
+      assert.throws(() => collect([done(checkpoint), { type, response: { status, output: [] } }]));
+    });
+  }
+
+  for (const signature of [undefined, null, ""]) {
+    const pending = signature === undefined ? unsignedReasoning : { ...reasoning, encrypted_content: signature };
+    test(`${type} backfills ${String(signature)} reasoning encryption before publication`, () => {
+      assert.deepEqual(collect([done(checkpoint), done(pending), { ...completed([reasoning]), type }]), [
+        checkpoint,
+        reasoning,
+      ]);
+      assert.deepEqual(collect([done(pending), done(checkpoint), { ...completed([pending]), type }]), [checkpoint]);
+    });
+    test(`${type} never publishes or restores unresolved ${String(signature)} reasoning`, () => {
+      assert.throws(() => collect([done(checkpoint), done(pending), { ...completed(), type }]));
+      assert.throws(() => collect([done(checkpoint), done(pending), { ...completed([pending]), type }]));
+      assert.throws(() => validateContextManagementHistory([checkpoint, pending], { byteBudget: 4096 }));
+    });
+  }
+}
+
+test("non-empty completed reasoning cannot be replaced by conflicting terminal encryption", () => {
+  assert.throws(() =>
+    collect([done(checkpoint), done(reasoning), completed([{ ...reasoning, encrypted_content: "different" }])]),
+  );
+  assert.throws(() =>
+    collect([done(checkpoint), done(reasoning), completed([{ ...reasoning, encrypted_content: null }])]),
+  );
 });
 
 test("a checkpoint marked incomplete is never published or restored", () => {

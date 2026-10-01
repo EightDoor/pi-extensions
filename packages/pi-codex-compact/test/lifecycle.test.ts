@@ -868,7 +868,14 @@ for (const reason of ["manual", "threshold", "overflow"] as const) {
   });
 }
 
-for (const failure of ["missing", "unsafe", "suffix-budget"] as const) {
+for (const failure of [
+  "missing",
+  "unsafe",
+  "suffix-budget",
+  "reasoning-missing",
+  "reasoning-null",
+  "reasoning-empty",
+] as const) {
   test(`server ${failure} failure leaves publication to native compaction and clears status`, async () => {
     const mock = createMockPi();
     const items =
@@ -876,7 +883,17 @@ for (const failure of ["missing", "unsafe", "suffix-budget"] as const) {
         ? []
         : failure === "unsafe"
           ? [serverCheckpoint, { type: "function_call", name: "bash" }]
-          : [serverCheckpoint, { ...serverSuffix, content: [{ type: "output_text", text: "x".repeat(40_000) }] }];
+          : failure === "suffix-budget"
+            ? [serverCheckpoint, { ...serverSuffix, content: [{ type: "output_text", text: "x".repeat(40_000) }] }]
+            : [
+                serverCheckpoint,
+                {
+                  type: "reasoning",
+                  summary: [],
+                  encrypted_content:
+                    failure === "reasoning-null" ? null : failure === "reasoning-empty" ? "" : undefined,
+                },
+              ];
     createCodexCompactExtension({
       settingsRuntime: settingsRuntime({ protocol: "context-management", replacementTokenBudget: 8000 }),
       fetch: async () => serverResponse(items),

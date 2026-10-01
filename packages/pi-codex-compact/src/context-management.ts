@@ -27,8 +27,8 @@ function validateCompletedCheckpoint(value: unknown): JsonObject {
   return item;
 }
 
-/** Only inert completed output can accompany a maintenance checkpoint; never execute tools. */
-export function validateMaintenanceOutput(value: unknown): JsonObject {
+/** Completed stream items may need encrypted reasoning backfilled by the terminal event. */
+function validateObservedMaintenanceOutput(value: unknown): JsonObject {
   if (!isObject(value) || bytes(value) > MAX_COMPACTION_ITEM_BYTES) invalid("returned an invalid output item");
   if (value.status !== undefined && value.status !== "completed") invalid("returned incomplete output");
   if (value.type === "reasoning") {
@@ -59,6 +59,18 @@ export function validateMaintenanceOutput(value: unknown): JsonObject {
     }
   } else invalid("returned unsupported output (tool invocation is disabled)");
   return structuredClone(value);
+}
+
+/** Persist only inert output that can be replayed without server-side response state. */
+export function validateMaintenanceOutput(value: unknown): JsonObject {
+  const item = validateObservedMaintenanceOutput(value);
+  if (
+    item.type === "reasoning" &&
+    (typeof item.encrypted_content !== "string" || item.encrypted_content.length === 0)
+  ) {
+    invalid("returned reasoning without replayable encrypted reasoning");
+  }
+  return item;
 }
 
 export function validateContextManagementHistory(
@@ -95,7 +107,7 @@ export function createContextManagementCollector() {
           const item =
             isObject(event.item) && event.item.type === "compaction"
               ? validateCompletedCheckpoint(event.item)
-              : validateMaintenanceOutput(event.item);
+              : validateObservedMaintenanceOutput(event.item);
           if (typeof item.id === "string") {
             if (doneById.has(item.id)) invalid("repeated a completed output item");
             doneById.set(item.id, item);
@@ -107,7 +119,8 @@ export function createContextManagementCollector() {
             historyIndices.set(item, history.length);
             history.push(item);
           }
-        } else if (event.type === "response.completed") {
+        } else if (event.type === "response.completed" || event.type === "response.done") {
+          // Codex exposes raw response.done to the public hook before Pi normalizes it.
           if (
             !isObject(event.response) ||
             event.response.status !== "completed" ||
@@ -125,12 +138,13 @@ export function createContextManagementCollector() {
             // Pi's Azure adapter also backfills encrypted reasoning from terminal output.
             const canonical =
               done.type === "reasoning" &&
-              done.encrypted_content === undefined &&
-              (typeof terminalItem.encrypted_content === "string" || terminalItem.encrypted_content === null)
+              !done.encrypted_content &&
+              typeof terminalItem.encrypted_content === "string" &&
+              terminalItem.encrypted_content.length > 0
                 ? { ...done, encrypted_content: terminalItem.encrypted_content }
                 : done;
             if (!isDeepStrictEqual(canonical, terminalItem)) invalid("returned conflicting terminal output");
-            if (canonical.type !== "compaction") validateMaintenanceOutput(canonical);
+            if (canonical.type !== "compaction") validateObservedMaintenanceOutput(canonical);
             const index = historyIndices.get(done);
             if (index !== undefined) history[index] = canonical;
           }
@@ -143,9 +157,9 @@ export function createContextManagementCollector() {
     },
     finish(): JsonObject[] {
       if (failure) throw failure;
-      if (!completed) invalid("stream ended without response.completed");
+      if (!completed) invalid("stream ended without a successful terminal response");
       if (history.length === 0) invalid("returned no completed compaction item");
-      return structuredClone(history);
+      return [structuredClone(history[0]), ...history.slice(1).map(validateMaintenanceOutput)];
     },
   };
 }

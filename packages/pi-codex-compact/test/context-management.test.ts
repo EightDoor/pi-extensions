@@ -114,6 +114,28 @@ test("new checkpoint-first history survives parsing while legacy layouts remain 
   assert.equal(parseCheckpointDetails({ ...details, replacementHistory: [suffix, latest] }), undefined);
 });
 
+for (const signature of [undefined, null, ""]) {
+  test(`persisted checkpoints reject unreplayable ${String(signature)} reasoning`, () => {
+    const reasoning = { type: "reasoning", id: "rs_persisted", summary: [], encrypted_content: "signed" };
+    const details = createCheckpointDetails({
+      provider: model.provider,
+      api: model.api,
+      profile: "openai-responses-v1",
+      modelId: model.id,
+      protocol,
+      replacementHistory: [latest, reasoning, suffix],
+      keptMessages: [],
+    });
+    assert.equal(
+      parseCheckpointDetails({
+        ...details,
+        replacementHistory: [latest, { ...reasoning, encrypted_content: signature }, suffix],
+      }),
+      undefined,
+    );
+  });
+}
+
 test("maintenance control is appended exactly once and prior checkpoint expansion preserves its suffix", async () => {
   const prior = [latest, suffix];
   await request(
