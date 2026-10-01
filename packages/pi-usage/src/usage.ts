@@ -21,6 +21,7 @@ import {
 import { abortError, awaitWithDeadline, errorMessage, runWithConcurrency, UsageCache } from "./core.js";
 import { formatProviderStates, formatUsageStatusline } from "./format.js";
 import { createOAuthCredentialCandidateReader } from "./oauth-credential-source.js";
+import { UnsupportedOpenAIUsageAuthError } from "./providers/openai-chatgpt.js";
 import { adapterForProvider, isStaleExtensionContextError, queryProviderUsage, resolveUsageAuth } from "./query.js";
 import { createUsageSettingsRuntime, type UsageSettingsRuntime, type UsageSettingsState } from "./settings.js";
 import type {
@@ -65,7 +66,7 @@ type UsageExtensionDependencies = {
 type QueryOutcome = {
   state: ProviderUsageState;
   fingerprint?: string;
-  authState?: "unavailable";
+  authState?: "unavailable" | "unsupported";
   rememberedTargetId?: string;
 };
 
@@ -251,9 +252,15 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
           providerId: adapter.id,
           providerName,
           displayState,
-          status: isTimeoutError(error) ? "query-failed" : "auth-unavailable",
+          status:
+            error instanceof UnsupportedOpenAIUsageAuthError
+              ? "unsupported"
+              : isTimeoutError(error)
+                ? "query-failed"
+                : "auth-unavailable",
           message: errorMessage(error),
         },
+        ...(error instanceof UnsupportedOpenAIUsageAuthError ? { authState: "unsupported" as const } : {}),
       };
     }
     const requiresRequestBoundaryGuard =
@@ -265,6 +272,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         "minimax-cn",
         "moonshotai",
         "moonshotai-cn",
+        "openai",
         "vercel-ai-gateway",
         "xai",
         "zai",
@@ -602,7 +610,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     const selectionStillCurrent =
       !adapter?.targets || settingsRuntime.get().settings.selectedTargets[adapter.id] === outcome.rememberedTargetId;
     if (!selectionStillCurrent) return false;
-    if (outcome.authState === "unavailable") {
+    if (outcome.authState === "unavailable" || outcome.authState === "unsupported") {
       if (!adapter) return false;
       try {
         const auth = await awaitWithDeadline(
@@ -616,11 +624,17 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
           modelIdentity(ctx.model) === modelIdentity(model) &&
           (!adapter.targets ||
             settingsRuntime.get().settings.selectedTargets[adapter.id] === outcome.rememberedTargetId) &&
+          outcome.authState === "unavailable" &&
           auth === undefined
         );
       } catch (error) {
         if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
-        return false;
+        return (
+          outcome.authState === "unsupported" &&
+          error instanceof UnsupportedOpenAIUsageAuthError &&
+          generation === statusGeneration &&
+          modelIdentity(ctx.model) === modelIdentity(model)
+        );
       }
     }
     if (!outcome.fingerprint) return true;
