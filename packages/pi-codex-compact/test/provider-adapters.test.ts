@@ -284,6 +284,7 @@ for (const api of Object.keys(PROVIDER_MODULES) as SupportedApi[]) {
             );
             assert.deepEqual(payload?.context_management, [{ type: "compaction", compact_threshold: 1024 }]);
             assert.equal(payload?.tool_choice, "none");
+            assert.equal(payload?.reasoning && (payload.reasoning as Record<string, unknown>).summary, undefined);
             const events = [
               {
                 type: "response.output_item.done",
@@ -303,6 +304,10 @@ for (const api of Object.keys(PROVIDER_MODULES) as SupportedApi[]) {
         });
         assert.deepEqual(result.replacementHistory, [COMPACTION_ITEM, suffix]);
         assert.equal(result.usage.totalTokens, 12);
+        assert.equal(
+          (payload?.include as string[] | undefined)?.filter((item) => item === "reasoning.encrypted_content").length,
+          1,
+        );
       });
     }
 

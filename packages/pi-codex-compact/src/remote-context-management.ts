@@ -77,8 +77,16 @@ export async function requestContextManagement(request: RemoteCompactionRequest)
         if (sentInput.some((item) => item.type === "compaction_trigger")) {
           throw new CodexCompactionProtocolError("Context management input already contains a compaction trigger");
         }
+        const include = expanded.include ?? [];
+        if (!Array.isArray(include) || !Array.from(include).every((field) => typeof field === "string")) {
+          throw new CodexCompactionProtocolError("Context management provider payload has an invalid include list");
+        }
         const prepared = {
           ...expanded,
+          // Request stateless reasoning without changing the provider's thinking effort.
+          include: include.includes("reasoning.encrypted_content")
+            ? [...include]
+            : [...include, "reasoning.encrypted_content"],
           input: [
             ...sentInput,
             { role: "user", content: [{ type: "input_text", text: COMPACTION_MAINTENANCE_MESSAGE }] },

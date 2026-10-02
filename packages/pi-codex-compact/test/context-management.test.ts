@@ -98,6 +98,85 @@ test("stream-only checkpoints select the latest event and retain its exact suffi
   assert.deepEqual(context, original);
 });
 
+for (const include of [
+  undefined,
+  null,
+  [],
+  ["message.output_text.logprobs"],
+  ["reasoning.encrypted_content"],
+  ["message.output_text.logprobs", "reasoning.encrypted_content", "web_search_call.results"],
+  ["message.output_text.logprobs", "message.output_text.logprobs"],
+]) {
+  test(`stateless reasoning requests merge include ${JSON.stringify(include)} without changing provider fields`, async () => {
+    const original = structuredClone(include);
+    const previous = include ?? [];
+    const expected = previous.includes("reasoning.encrypted_content")
+      ? previous
+      : [...previous, "reasoning.encrypted_content"];
+    const reasoning = { type: "reasoning", id: "rs_requested", summary: [], encrypted_content: "signed-requested" };
+    let payload: Record<string, unknown> | undefined;
+    const result = await request(
+      async (_input, init) => {
+        payload = JSON.parse(String(init?.body));
+        const returned =
+          Array.isArray(payload?.include) && payload.include.includes("reasoning.encrypted_content")
+            ? reasoning
+            : { ...reasoning, encrypted_content: undefined };
+        return sse([latest, returned], { output: [returned] });
+      },
+      { model: { ...model, samplingParams: { include } } },
+    );
+    assert.deepEqual(result.replacementHistory, [latest, reasoning]);
+    assert.deepEqual(payload?.include, expected);
+    assert.equal(payload?.store, false);
+    assert.deepEqual(payload?.reasoning, { effort: "none" });
+    assert.deepEqual(include, original);
+  });
+}
+
+for (const activeModel of [
+  { ...model, reasoning: false },
+  { ...model, thinkingLevelMap: { off: null } },
+]) {
+  test(`encryption inclusion does not enable thinking for reasoning=${activeModel.reasoning}, off=${JSON.stringify(activeModel.thinkingLevelMap?.off)}`, async () => {
+    let payload: Record<string, unknown> | undefined;
+    await request(
+      async (_input, init) => {
+        payload = JSON.parse(String(init?.body));
+        return sse([latest]);
+      },
+      { model: activeModel },
+    );
+    assert.deepEqual(payload?.include, ["reasoning.encrypted_content"]);
+    assert.equal(payload?.reasoning, undefined);
+  });
+}
+
+for (const [index, include] of [
+  "reasoning.encrypted_content",
+  3,
+  {},
+  [null],
+  [undefined],
+  Array(1),
+  ["message.output_text.logprobs", 3],
+].entries()) {
+  test(`malformed include case ${index}: ${JSON.stringify(include)} is rejected before dispatch`, async () => {
+    let fetches = 0;
+    await assert.rejects(
+      request(
+        async () => {
+          fetches += 1;
+          return sse([latest]);
+        },
+        { model: { ...model, samplingParams: { include } } },
+      ),
+      /invalid include/,
+    );
+    assert.equal(fetches, 0);
+  });
+}
+
 test("new checkpoint-first history survives parsing while legacy layouts remain readable", () => {
   const details = createCheckpointDetails({
     provider: model.provider,
