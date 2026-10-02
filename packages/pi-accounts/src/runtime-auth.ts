@@ -3,6 +3,7 @@
 import type { ModelAuth, OAuthCredential, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { StoredCredential } from "./account-store.js";
+import { verifyModelApiKeyAuth } from "./model-auth-verification.js";
 import { type AccountProviderAdapter, type AccountProviderId, resolveProviderOAuth } from "./oauth.js";
 import { cloneOAuthCredential, parseCredentialRequest } from "./oauth-credential-source.js";
 
@@ -257,6 +258,10 @@ export class RuntimeAuthCoordinator {
       refreshSignal.throwIfAborted();
       await this.verifyOverlay(ctx, auth, availableModelIds);
       refreshSignal.throwIfAborted();
+      if (auth.apiKey !== undefined) {
+        await verifyModelApiKeyAuth(ctx, this.provider, auth.apiKey, refreshSignal, availableModelIds);
+        refreshSignal.throwIfAborted();
+      }
       if (!this.overlay.isCurrent(operation)) {
         return { status: "inactive", providerId: this.provider.id };
       }

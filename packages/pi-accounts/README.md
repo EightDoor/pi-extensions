@@ -127,6 +127,11 @@ Other providers remain independent and usable.
 Selecting `default` removes the package-owned runtime override and restores the exact provider registration that existed before activation.
 Pi's built-in credentials are never deleted.
 
+For named accounts that resolve to an API key, the extension also verifies authentication for every available provider model.
+A conflicting provider or model authentication header fails that provider closed, even if the conflicting model is not selected.
+The extension does not rewrite these settings: remove the conflicting configured header or choose `default` from `/accounts` to recover.
+Unrelated headers and native headers that resolve to the selected credential remain supported.
+
 Session selections are stored as versioned, non-model custom entries in Pi's session JSONL.
 The entries contain only provider IDs and account names, not OAuth credentials.
 The owning Pi session ID prevents a fork or clone from treating copied parent entries as its own selection.
