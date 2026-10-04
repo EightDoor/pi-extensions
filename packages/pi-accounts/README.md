@@ -117,12 +117,13 @@ Malformed settings block saves instead of being replaced, and failed saves do no
 
 ## 🔌 Extension account protocols
 
-Other extensions can discover and explicitly activate managed accounts through Pi's shared,
-in-process EventBus. No package imports or credential-file reads are required.
+Other extensions can discover and explicitly activate managed accounts through Pi's
+in-process `pi.events` API. No package imports or credential-file reads are required.
 These protocols expose account names (user-defined identifiers), never credential material.
 They provide no automatic rotation, failover, health, quota, routing policy, or model inventory.
 
-Emit `accounts:topology:v1` with `{ reply(topology) }`. The asynchronous reply, after
+Use `pi.events.emit("accounts:topology:v1", { reply(topology) { /* ... */ } })`.
+The asynchronous reply, after
 queued credential writes complete, is
 `{ providers: [{ providerId, displayName, accounts: [{ name, kind }], defaultAccount? }] }`.
 `kind` is `"oauth"` or `"api-key"`; inventory means configured, not remotely authenticated.
@@ -158,7 +159,7 @@ Shutdown/reload invalidates the old session owner. Pre-aborted requests
 do not change selection. Malformed requests are ignored. Channels are versioned by their suffix.
 With no compatible responder, no reply arrives: consumers must bound their wait and degrade
 gracefully. A timeout is not proof that activation did not happen; abort pending requests and
-do not launch dependent work on an unconfirmed result. The shared bus is not a trust boundary.
+do not launch dependent work on an unconfirmed result. `pi.events` is not a trust boundary.
 Only one account infrastructure responder should own these channels; consumers should reject
 duplicate responders rather than treating a first reply as exclusive ownership.
 
@@ -194,7 +195,7 @@ The protocols do not persist or log the offer, which contains neither the accoun
 Consumers must match its access token and provider metadata against freshly resolved runtime authentication.
 Without a compatible consumer, account activation works unchanged and no credential is requested.
 
-Pi extensions run with the user's process privileges, and the shared event bus does not isolate installed extensions.
+Pi extensions run with the user's process privileges; `pi.events` does not isolate installed extensions.
 Install only trusted extensions because any extension can read user files and process memory.
 The protocol reduces accidental credential coupling; it is not a sandbox.
 

@@ -62,7 +62,13 @@ async function activate(
 ) {
   let pending: Promise<Reply> | undefined;
   pending = new Promise<Reply>((resolve) => {
-    mock.eventBus.emit("accounts:activation:v1", { session, provider: "openai", account, ...extra, reply: resolve });
+    mock.rawPi.events.emit("accounts:activation:v1", {
+      session,
+      provider: "openai",
+      account,
+      ...extra,
+      reply: resolve,
+    });
   });
   return Promise.race([
     pending,
@@ -80,7 +86,7 @@ function safe(value: unknown) {
 test("topology inventories both credential kinds and default without secrets", async () => {
   const { mock } = await fixture();
   const result = await new Promise<unknown>((resolve) => {
-    mock.eventBus.emit("accounts:topology:v1", { reply: resolve });
+    mock.rawPi.events.emit("accounts:topology:v1", { reply: resolve });
   });
   assert.deepEqual(result, {
     providers: [
@@ -227,7 +233,7 @@ test("file-backed topology and activation wait for an in-process credential upda
     await started;
     try {
       const topology = new Promise<unknown>((resolve) => {
-        mock.eventBus.emit("accounts:topology:v1", { reply: resolve });
+        mock.rawPi.events.emit("accounts:topology:v1", { reply: resolve });
       });
       const activation = activate(mock, current.manager, "alpha");
       release();
@@ -390,8 +396,8 @@ test("model unavailable result uses account capability, not a second catalog", a
 test("malformed requests and absent responder produce no reply", () => {
   const mock = createMockPi();
   let replies = 0;
-  mock.eventBus.emit("accounts:topology:v1", { reply: () => replies++ });
-  mock.eventBus.emit("accounts:activation:v1", { reply: () => replies++ });
+  mock.rawPi.events.emit("accounts:topology:v1", { reply: () => replies++ });
+  mock.rawPi.events.emit("accounts:activation:v1", { reply: () => replies++ });
   assert.equal(replies, 0);
 });
 test("shutdown during conversion cannot publish late success", async () => {
@@ -482,9 +488,9 @@ test("installed protocol parsers ignore malformed envelopes and hostile getters"
       reply,
     },
   ]) {
-    mock.eventBus.emit("accounts:activation:v1", data);
+    mock.rawPi.events.emit("accounts:activation:v1", data);
   }
-  mock.eventBus.emit("accounts:topology:v1", { reply: "invalid" });
+  mock.rawPi.events.emit("accounts:topology:v1", { reply: "invalid" });
   assert.equal(replies, 0);
 });
 
