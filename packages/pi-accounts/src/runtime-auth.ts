@@ -3,7 +3,8 @@
 import type { ModelAuth, OAuthCredential, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { StoredCredential } from "./account-store.js";
-import { verifyModelApiKeyAuth } from "./model-auth-verification.js";
+import type { AccountActivationErrorCode } from "./accounts-protocol.js";
+import { EffectiveAuthConflictError, verifyModelApiKeyAuth } from "./model-auth-verification.js";
 import { type AccountProviderAdapter, type AccountProviderId, resolveProviderOAuth } from "./oauth.js";
 import { cloneOAuthCredential, parseCredentialRequest } from "./oauth-credential-source.js";
 
@@ -61,7 +62,13 @@ export type RuntimeAccountStore = {
 export type EnsureActiveProviderAuthResult =
   | { status: "inactive"; providerId: AccountProviderId }
   | { status: "active"; providerId: AccountProviderId; accountName: string }
-  | { status: "error"; providerId: AccountProviderId; accountName: string; message: string };
+  | {
+      status: "error";
+      providerId: AccountProviderId;
+      accountName: string;
+      message: string;
+      code?: AccountActivationErrorCode;
+    };
 
 export class RuntimeAuthCoordinator {
   private readonly controller: RuntimeApiKeyController;
@@ -99,7 +106,15 @@ export class RuntimeAuthCoordinator {
       state = await store.readProviderAsync(this.provider.id, refreshSignal);
       refreshSignal.throwIfAborted();
     } catch (error) {
-      return this.failClosed(ctx, operation, runtimeOverride, selectedAccount ?? "unknown", error);
+      return this.failClosed(
+        ctx,
+        operation,
+        runtimeOverride,
+        selectedAccount ?? "unknown",
+        error,
+        undefined,
+        "store_unavailable",
+      );
     }
     if (selectedAccount === null) {
       this.availableModelIds = undefined;
@@ -110,7 +125,15 @@ export class RuntimeAuthCoordinator {
         if (!this.overlay.isCurrent(operation)) {
           return { status: "inactive", providerId: this.provider.id };
         }
-        return this.failClosed(ctx, this.overlay.beginOperation(), this.controller.begin(ctx), "unknown", error);
+        return this.failClosed(
+          ctx,
+          this.overlay.beginOperation(),
+          this.controller.begin(ctx),
+          "unknown",
+          error,
+          undefined,
+          "authentication_failed",
+        );
       }
     }
 
@@ -126,6 +149,8 @@ export class RuntimeAuthCoordinator {
         runtimeOverride,
         active,
         new Error(`${this.provider.displayName} account "${active}" is no longer available.`),
+        undefined,
+        "account_not_found",
       );
     }
 
@@ -170,12 +195,22 @@ export class RuntimeAuthCoordinator {
           runtimeOverride,
           active,
           new Error(`${this.provider.displayName} account "${active}" is no longer available.`),
+          undefined,
+          "account_not_found",
         );
       }
       if (refreshError !== undefined) {
         const selection = await this.selectedCredentialMatches(store, active, credential, refreshSignal);
         if (selection.error !== undefined) {
-          return this.failClosed(ctx, operation, runtimeOverride, active, selection.error, credential);
+          return this.failClosed(
+            ctx,
+            operation,
+            runtimeOverride,
+            active,
+            selection.error,
+            credential,
+            "store_unavailable",
+          );
         }
         if (!selection.matches) {
           if (!this.overlay.isCurrent(operation)) {
@@ -183,7 +218,15 @@ export class RuntimeAuthCoordinator {
           }
           return this.ensureActive(ctx, store, active, now, ownerSignal);
         }
-        return this.failClosed(ctx, operation, runtimeOverride, active, refreshError, credential);
+        return this.failClosed(
+          ctx,
+          operation,
+          runtimeOverride,
+          active,
+          refreshError,
+          credential,
+          "authentication_failed",
+        );
       }
     }
 
@@ -201,7 +244,15 @@ export class RuntimeAuthCoordinator {
     } catch (error) {
       const selection = await this.selectedCredentialMatches(store, active, credential, refreshSignal);
       if (selection.error !== undefined) {
-        return this.failClosed(ctx, operation, runtimeOverride, active, selection.error, credential);
+        return this.failClosed(
+          ctx,
+          operation,
+          runtimeOverride,
+          active,
+          selection.error,
+          credential,
+          "store_unavailable",
+        );
       }
       if (!selection.matches) {
         if (!this.overlay.isCurrent(operation)) {
@@ -209,12 +260,12 @@ export class RuntimeAuthCoordinator {
         }
         return this.ensureActive(ctx, store, active, now, ownerSignal);
       }
-      return this.failClosed(ctx, operation, runtimeOverride, active, error, credential);
+      return this.failClosed(ctx, operation, runtimeOverride, active, error, credential, "authentication_failed");
     }
 
     const selection = await this.selectedCredentialMatches(store, active, credential, refreshSignal);
     if (selection.error !== undefined) {
-      return this.failClosed(ctx, operation, runtimeOverride, active, selection.error, credential);
+      return this.failClosed(ctx, operation, runtimeOverride, active, selection.error, credential, "store_unavailable");
     }
     if (!selection.matches) {
       if (!this.overlay.isCurrent(operation)) {
@@ -278,7 +329,15 @@ export class RuntimeAuthCoordinator {
       };
       return { status: "active", providerId: this.provider.id, accountName: active };
     } catch (error) {
-      return this.failClosed(ctx, operation, runtimeOverride, active, error, credential);
+      return this.failClosed(
+        ctx,
+        operation,
+        runtimeOverride,
+        active,
+        error,
+        credential,
+        error instanceof EffectiveAuthConflictError ? "effective_auth_conflict" : "activation_failed",
+      );
     }
   }
 
@@ -439,6 +498,7 @@ export class RuntimeAuthCoordinator {
     accountName: string,
     error: unknown,
     credential?: StoredCredential,
+    code: AccountActivationErrorCode = "activation_failed",
   ): Promise<EnsureActiveProviderAuthResult> {
     if (!this.overlay.isCurrent(operation)) {
       return { status: "inactive", providerId: this.provider.id };
@@ -464,6 +524,7 @@ export class RuntimeAuthCoordinator {
       providerId: this.provider.id,
       accountName,
       message: `${credential ? redactCredentialError(error, credential) : redactTokenText(errorMessage(error))}${suffix}`,
+      code,
     };
   }
 

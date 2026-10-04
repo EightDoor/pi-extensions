@@ -11,6 +11,11 @@ import {
   type StoredCredential,
 } from "./account-store.js";
 import {
+  type AccountActivationErrorCode,
+  type AccountActivationResult,
+  registerAccountsProtocol,
+} from "./accounts-protocol.js";
+import {
   type AccountProviderAdapter,
   type AccountProviderId,
   createBuiltinProviderAdapters,
@@ -394,6 +399,76 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       },
     },
   ]);
+
+  registerAccountsProtocol(
+    pi,
+    () => {
+      const data = store.read();
+      return {
+        providers: providers.map((adapter) => {
+          const state = data.providers[adapter.id];
+          return {
+            providerId: adapter.id,
+            displayName: adapter.displayName,
+            accounts: Object.entries(state?.accounts ?? {}).map(([name, credential]) => ({
+              name,
+              kind: credential.type === "api_key" ? ("api-key" as const) : ("oauth" as const),
+            })),
+            ...(state?.active ? { defaultAccount: state.active } : {}),
+          };
+        }),
+      };
+    },
+    async (request): Promise<AccountActivationResult> => {
+      const error = (code: AccountActivationErrorCode): AccountActivationResult => ({
+        status: "error",
+        providerId: request.provider,
+        accountName: request.account,
+        code,
+      });
+      const providerId = toProviderId(request.provider);
+      if (!providerId || !adapters.has(providerId)) return error("provider_unsupported");
+      const owner = sessionOwners.get(request.session as ExtensionContext["sessionManager"]);
+      if (!owner || !isOwnerCurrent(owner)) return error("session_unavailable");
+      await owner.ready;
+      if (!isOwnerCurrent(owner) || owner.sessionId !== owner.sessionManager.getSessionId())
+        return error("session_unavailable");
+      if (request.signal?.aborted) return error("cancelled");
+      // Keep validation and selection publication in one synchronous turn, so a delayed
+      // inventory read cannot publish an older request after a newer selection.
+      if (request.account !== null) {
+        const parsed = parseAccountName(request.account);
+        if (!parsed.ok || parsed.name !== request.account) return error("account_not_found");
+        try {
+          if (!getOwnCredential(store.read().providers[providerId]?.accounts ?? {}, request.account))
+            return error("account_not_found");
+        } catch {
+          return error("store_unavailable");
+        }
+      }
+      try {
+        if (!persistSelection(owner, providerId, request.account, () => isOwnerCurrent(owner)))
+          return error("session_unavailable");
+      } catch {
+        return error("store_unavailable");
+      }
+      const task = syncProvider(providerId, owner.context, owner, request.signal);
+      const result = await task;
+      if (!isOwnerCurrent(owner)) return error("session_unavailable");
+      if (owner.syncTasks.get(providerId) !== task) return error("activation_superseded");
+      if (request.signal?.aborted) return error("cancelled");
+      if (result.status === "error") return error(result.code ?? "activation_failed");
+      if (result.status === "inactive") {
+        return request.account === null
+          ? { status: "inactive", providerId, accountName: null }
+          : error("activation_failed");
+      }
+      if (result.accountName !== request.account) return error("activation_superseded");
+      if (request.model && !owner.coordinators.get(providerId)?.isModelAvailable(request.model))
+        return error("model_unavailable");
+      return { status: "active", providerId, accountName: result.accountName };
+    },
+  );
 
   pi.registerCommand(
     "accounts",
