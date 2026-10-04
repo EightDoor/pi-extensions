@@ -28,7 +28,7 @@ The user approved end-to-end execution, including at most two hosted requests, a
 
 ## Scope and Verification Rules
 
-No executable behavior changes are planned, so no new tests, Changeset, release, or full root verification gates are required for this probe. If evidence suggests a code change, stop and obtain approval for a revised implementation plan before editing.
+No executable behavior changes are planned, so no new regression tests, Changeset, or release are required for this documentation-only probe. Before completing any repository change under this plan, run both `npm run check` and `npm test` separately from the repository root and record passing results; a blocked live probe does not waive either gate. If evidence suggests a code change, stop and obtain approval for a revised implementation plan before editing.
 
 Apply `docs/extension-conventions.md` lifecycle and verification requirements to the probe: release owned asynchronous resources and avoid stale continuations (`Review` of cancellation/cleanup; bounded live `Smoke`). Review the existing protocol's strict checkpoint validation and stateless replay contract rather than bypassing it. No persistent settings writes or custom UI are in scope.
 
@@ -47,6 +47,14 @@ Use in-memory credentials and disposable probe files; never publish credentials 
 - Full `VITEST_MAX_WORKERS=2 npm test`: 6,039 tests in 476 files passed with the unchanged five-second test cap.
 - No executable changes, metadata changes, or release actions; no new regression test or Changeset is applicable.
 
+### Review-fix verification
+
+The verification counts above describe the initial execution, not a passing review-fix test run. R1 identified the scope rule's incorrect waiver of repository gates; it now requires both gates for every repository change, including when hosted testing is blocked.
+
+- `npm run check` passed after the rule correction; a complete-diff audit found no other gate waiver in this pull request.
+- The two-worker full `npm test` retry did not finish within the 300-second command deadline and reported failures in unchanged tests. A focused single-worker run of the seven reported files passed 53 tests and failed one `pi-sync` root-storage test at its unchanged 5,000 ms timeout.
+- A single-worker full `npm test` retry was terminated at its owned 600-second subprocess deadline, with no final suite result. It reported timeouts in `pi-sync` Git backend/routes tests and the `pi-chrome-devtools` generated-entry test. No test timeout was increased, unrelated code was changed, or hosted request was made. The cause of these failures remains unverified; the passing root-test gate required for this revision remains blocked.
+
 ## Completion Checklist
 
 - [x] Explicit approval for the hosted probe is recorded in Context and the first Plan task.
@@ -54,5 +62,6 @@ Use in-memory credentials and disposable probe files; never publish credentials 
 - [x] Each unattempted path has a named blocker and no success claim: expired official OAuth prevented compaction; absent checkpoint prevented replay.
 - [x] No more than two hosted requests were dispatched: this execution sent zero, with no retries or alternate routes.
 - [x] Temporary resources are removed, credential-file integrity is checked for the read-only check, and unrelated repository changes are preserved.
+- [ ] Both required repository gates must pass after subsequent repository changes before declaring those changes complete; retain passing evidence for `npm run check` and `npm test`. The initial execution passed both gates as recorded above; the review-fix test gate remains blocked by the timeouts recorded in Review-fix verification.
 - [ ] The handoff names applicable guidance, the live smoke blocker, risks, and unverified paths; the user accepts the expired-credential blocker. Awaiting user acknowledgement, not further request approval.
 - [ ] Delete this plan only after all tasks and preceding completion checks are satisfied or the user explicitly accepts the blocker as the final disposition, and report its former path. Retained while live verification and blocker acknowledgement are pending.
