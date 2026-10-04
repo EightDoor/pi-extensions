@@ -22,6 +22,7 @@ function runtime(kind: UsageSettingsState["kind"] = "loaded") {
     kind,
     path: "/tmp/pi-usage.json",
     settings: {
+      openaiCompanionUsage: false,
       codexFastMode: false,
       codexStatusResetCountdown: false,
       codexStatusPercentage: "remaining",

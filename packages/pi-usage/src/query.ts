@@ -340,6 +340,7 @@ export async function resolveUsageAuth(
   salt: Uint8Array = AUTH_FINGERPRINT_SALT,
   credentialReader: StoredCredentialReader = readStoredCredential,
   candidateReader?: OAuthCredentialCandidateReader,
+  openaiCompanionUsage = false,
 ): Promise<ResolvedUsageAuth | undefined> {
   if (ctx.model?.provider === adapter.id && !hasOfficialOrigin(ctx.model, adapter.id)) {
     throw new Error(
@@ -437,9 +438,12 @@ export async function resolveUsageAuth(
       ? await candidateReader(ctx, adapter.id)
       : fallbackOAuthCredentialCandidates(adapter.id, credentialReader);
     if (!offered.ok) throw new Error("OpenAI OAuth credential discovery failed closed.");
-    return finalize(
+    const native = finalize(
       resolveOpenAIChatGPTAuth(auth, providerResult.auth, providerResult.source, model, offered.candidates),
     );
+    if (!openaiCompanionUsage) return native;
+    const { resolveOpenAICompanionAuth } = await import("./openai-companion-auth.js");
+    return resolveOpenAICompanionAuth(ctx, native, salt, credentialReader, candidateReader);
   }
   if (adapter.id === "github-copilot") {
     const offered = candidateReader
