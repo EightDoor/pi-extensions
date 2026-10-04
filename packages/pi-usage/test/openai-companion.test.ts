@@ -4,6 +4,7 @@ import { createMockContext } from "../../../test/support.js";
 import { formatUsageReport, formatUsageStatusline } from "../src/format.js";
 import type { OAuthCredentialCandidateReader } from "../src/oauth-credential-source.js";
 import { OPENAI_CHATGPT_ADAPTER } from "../src/providers/openai-chatgpt.js";
+import { matchingOpenAIAppBuckets } from "../src/providers/openai-companion-usage.js";
 import { queryProviderUsage, resolveUsageAuth } from "../src/query.js";
 import { normalizeUsageSettings } from "../src/settings.js";
 
@@ -224,6 +225,36 @@ test("both credentials and registration ID participate in cache identity", async
   assert.equal(new Set([a?.fingerprint, b?.fingerprint, c?.fingerprint, d?.fingerprint, e?.fingerprint]).size, 5);
 });
 
+test("valid unrelated registrations need readable IDs, not unused quota fields", () => {
+  const result = matchingOpenAIAppBuckets({ items: [...appPayload.items, { id: "other-app" }] }, native.clientId);
+  assert.equal(result.allowance, 25);
+  assert.equal(result.buckets.length, 1);
+});
+
+for (const allowance of [0, 25.5, 100]) {
+  test(`app allowance ${allowance} retains its percentage unit in the report`, () => {
+    const text = formatUsageReport(
+      {
+        providerId: "openai",
+        providerName: "OpenAI",
+        capturedAt: 0,
+        source: "openai-chatgpt-companion",
+        semantics: { kind: "consumer-subscription", label: "ChatGPT plan and app limits" },
+        buckets: [],
+        metrics: [{ id: "app-allowance", label: "App allowance", value: allowance, unit: "percent" }],
+      },
+      "current",
+    );
+    assert.equal(
+      text
+        .split("\n")
+        .find((line) => line.startsWith("App allowance:"))
+        ?.replace(/\s+/gu, " "),
+      `App allowance: ${allowance}%`,
+    );
+  });
+}
+
 test("quota query uses only companion GET auth and keeps plan/app percentages, allowances and resets separate", async () => {
   const auth = await setup().resolve();
   assert.ok(auth);
@@ -257,7 +288,7 @@ test("quota query uses only companion GET auth and keeps plan/app percentages, a
     const text = formatUsageReport(report, "current");
     assert.match(text, /Plan limits/);
     assert.match(text, /App limits/);
-    assert.match(text, /App allowance/);
+    assert.match(text, /App allowance:\s+25%/);
     assert.match(text, /companion/i);
     assert.doesNotMatch(text, /oaiapp_fixture|account-fixture/);
     const status = formatUsageStatusline(report);
@@ -276,6 +307,17 @@ test("quota query uses only companion GET auth and keeps plan/app percentages, a
 });
 
 for (const [label, payload] of Object.entries({
+  "null registration": { items: [...appPayload.items, null] },
+  "array registration": { items: [...appPayload.items, []] },
+  "numeric registration": { items: [...appPayload.items, 7] },
+  "boolean registration": { items: [...appPayload.items, true] },
+  "string registration": { items: [...appPayload.items, "unreadable"] },
+  "missing registration ID": { items: [...appPayload.items, {}] },
+  "null registration ID": { items: [...appPayload.items, { id: null }] },
+  "numeric registration ID": { items: [...appPayload.items, { id: 7 }] },
+  "array registration ID": { items: [...appPayload.items, { id: [] }] },
+  "empty registration ID": { items: [...appPayload.items, { id: "" }] },
+  "blank registration ID": { items: [...appPayload.items, { id: " " }] },
   "unknown pagination": { ...appPayload, next: "page2" },
   "oversized list": { items: Array.from({ length: 129 }, () => appPayload.items[0]) },
   "contradictory remaining": {
@@ -297,7 +339,9 @@ for (const [label, payload] of Object.entries({
   test(`app ${label} never publishes unrelated plan quota`, async () => {
     const auth = await setup().resolve();
     assert.ok(auth);
-    const fetch = vi.fn(async () => new Response(JSON.stringify(payload)));
+    const fetch = vi.fn(
+      async (url: string) => new Response(JSON.stringify(url.endsWith("/apps") ? payload : planPayload)),
+    );
     vi.stubGlobal("fetch", fetch);
     try {
       await assert.rejects(

@@ -695,6 +695,7 @@ function formatResetCountdown(resetsAt: number | undefined, now: number): string
 
 function formatMetricValue(value: number | string, unit: UsageBucket["unit"] | undefined): string {
   if (unit === "usd" && typeof value === "number") return formatUsd(value);
+  if (unit === "percent" && typeof value === "number") return `${value}%`;
   return String(value);
 }
 

@@ -24,7 +24,13 @@ export function matchingOpenAIAppBuckets(
   ) {
     throw new Error("ChatGPT app usage requires a complete, bounded registration list; pagination is unsupported.");
   }
-  const matches = root.items.map(object).filter((app) => app?.id === clientId);
+  const apps = root.items.map(object);
+  if (apps.some((app) => !app || typeof app.id !== "string" || !app.id.trim())) {
+    throw new Error(
+      "ChatGPT app usage returned an unreadable registration identity; uniqueness cannot be established.",
+    );
+  }
+  const matches = apps.filter((app) => app?.id === clientId);
   if (!clientId || matches.length !== 1) {
     throw new Error(
       "The native registration was not uniquely found in the companion Codex account; use the same ChatGPT account/workspace for both logins.",

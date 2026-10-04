@@ -57,7 +57,7 @@ Only the companion bearer and matching `ChatGPT-Account-Id` reach these fixed, r
 - `https://chatgpt.com/backend-api/wham/usage/chatpass/apps`
 - `https://chatgpt.com/backend-api/wham/usage`
 
-The app list must be complete and bounded to 128 registrations, with exactly one `id` equal to the native grant's `clientId` and 1–32 valid windows.
+The app list must be complete and bounded to 128 registrations, with a readable nonempty string `id` on every entry, exactly one `id` equal to the native grant's `clientId`, and 1–32 valid windows on that matched entry.
 Unknown envelope fields or pagination markers fail closed rather than assuming uniqueness on one page.
 Only plan primary/secondary windows are used; Codex model-specific limits are not native app quotas.
 Each window requires a finite 0–100 used percentage and positive whole-second duration; optional remaining percentages must agree within one percentage point, and reset timestamps must be valid nonnegative epoch seconds.

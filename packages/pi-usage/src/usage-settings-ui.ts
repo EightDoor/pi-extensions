@@ -93,7 +93,7 @@ export async function showUsageSettings(
             if (id === "openaiCompanionUsage" && requested === true && previous !== true) {
               const accepted = await ctx.ui.confirm(
                 "Enable experimental ChatGPT companion usage?",
-                "Requires /login openai-codex with the same ChatGPT account/workspace as native OpenAI. Only the companion token is sent to undocumented ChatGPT usage endpoints. Registration matching is not independent proof of the same user/workspace. No reset or allowance mutations are performed.",
+                "Requires /login openai-codex with the same ChatGPT account/workspace as native OpenAI. Only the companion token and its matching account ID are sent to undocumented ChatGPT usage endpoints. Registration matching is not independent proof of the same user/workspace. No reset or allowance mutations are performed.",
                 { signal },
               );
               if (signal.aborted || !isCurrent()) return;
