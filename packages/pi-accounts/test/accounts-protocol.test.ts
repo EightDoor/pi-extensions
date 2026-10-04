@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { initTheme, ModelRegistry, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { beforeAll, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
-import accountsExtension, { AccountStore, InMemoryAccountStorageBackend } from "../src/accounts.js";
+import accountsExtension, { AccountStore } from "../src/accounts.js";
 import type { AccountProviderAdapter } from "../src/oauth.js";
+import {
+  type AccountStorageBackend,
+  FileAccountStorageBackend,
+  InMemoryAccountStorageBackend,
+} from "../src/storage.js";
 
 beforeAll(() => initTheme("dark", false));
 const access = "fixture-access-secret";
@@ -24,9 +32,9 @@ const provider: AccountProviderAdapter = {
     toAuth: async (value) => ({ apiKey: value.access }),
   },
 };
-async function fixture(adapter = provider) {
+async function fixture(adapter = provider, backend: AccountStorageBackend = new InMemoryAccountStorageBackend()) {
   const mock = createMockPi();
-  const store = new AccountStore(new InMemoryAccountStorageBackend());
+  const store = new AccountStore(backend);
   await store.updateProvider("openai", () => ({
     active: "beta",
     accounts: { alpha: credential, beta: { type: "api_key", key } },
@@ -71,11 +79,8 @@ function safe(value: unknown) {
 
 test("topology inventories both credential kinds and default without secrets", async () => {
   const { mock } = await fixture();
-  let result: unknown;
-  mock.eventBus.emit("accounts:topology:v1", {
-    reply: (value: unknown) => {
-      result = value;
-    },
+  const result = await new Promise<unknown>((resolve) => {
+    mock.eventBus.emit("accounts:topology:v1", { reply: resolve });
   });
   assert.deepEqual(result, {
     providers: [
@@ -201,6 +206,178 @@ test("stale conversion cannot overwrite a newer selection", async () => {
   assert.equal(latest.status, "active");
   assert.equal(await current.registry.getApiKeyForProvider("openai"), key);
 });
+test("file-backed topology and activation wait for an in-process credential update", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-accounts-protocol-"));
+  try {
+    const { mock, store, session } = await fixture(
+      provider,
+      new FileAccountStorageBackend(join(directory, "pi-accounts.json")),
+    );
+    const current = await session();
+    await activate(mock, current.manager, "beta");
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const update = store.updateProviderAsync("openai", async (state) => {
+      entered();
+      await gate;
+      return { ...state, accounts: { ...state.accounts, gamma: { type: "api_key", key: "synthetic-key" } } };
+    });
+    await started;
+    try {
+      const topology = new Promise<unknown>((resolve) => {
+        mock.eventBus.emit("accounts:topology:v1", { reply: resolve });
+      });
+      const activation = activate(mock, current.manager, "alpha");
+      release();
+      await update;
+      const inventory = await topology;
+      assert.deepEqual((inventory as { providers: { accounts: { name: string }[] }[] }).providers[0]?.accounts, [
+        { name: "alpha", kind: "oauth" },
+        { name: "beta", kind: "api-key" },
+        { name: "gamma", kind: "api-key" },
+      ]);
+      assert.deepEqual(await activation, { status: "active", providerId: "openai", accountName: "alpha" });
+      assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+    } finally {
+      release();
+      await update;
+      await mock.events.get("session_shutdown")?.[0]?.({}, current.ctx);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a newer request wins while the older inventory read is queued", async () => {
+  const { mock, store, session } = await fixture();
+  const current = await session();
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const update = store.updateProviderAsync("openai", async (state) => {
+    entered();
+    await gate;
+    return state;
+  });
+  await started;
+  try {
+    const old = activate(mock, current.manager, "alpha");
+    const latest = activate(mock, current.manager, "beta");
+    release();
+    assert.equal((await old).code, "activation_superseded");
+    assert.equal((await latest).status, "active");
+    assert.equal(await current.registry.getApiKeyForProvider("openai"), key);
+    const selections = current.manager
+      .getEntries()
+      .filter((entry) => entry.type === "custom" && entry.customType === "pi-accounts-selection");
+    assert.ok(
+      selections.every(
+        (entry) =>
+          entry.type !== "custom" ||
+          (entry.data as { providers: Record<string, string | null> }).providers.openai !== "alpha",
+      ),
+    );
+  } finally {
+    release();
+    await update;
+  }
+});
+
+test("cancellation during inventory read does not publish a selection", async () => {
+  const { mock, store, session } = await fixture();
+  const current = await session();
+  await activate(mock, current.manager, "beta");
+  const before = current.manager.getEntries().length;
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const update = store.updateProviderAsync("openai", async (state) => {
+    entered();
+    await gate;
+    return state;
+  });
+  await started;
+  try {
+    const controller = new AbortController();
+    const pending = activate(mock, current.manager, "alpha", { signal: controller.signal });
+    controller.abort();
+    assert.equal((await pending).code, "cancelled");
+    assert.equal(current.manager.getEntries().length, before);
+    assert.equal(await current.registry.getApiKeyForProvider("openai"), key);
+  } finally {
+    release();
+    await update;
+  }
+});
+
+test("shutdown cancels an activation waiting for the credential store", async () => {
+  const { mock, store, session } = await fixture();
+  const current = await session();
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const update = store.updateProviderAsync("openai", async (state) => {
+    entered();
+    await gate;
+    return state;
+  });
+  await started;
+  try {
+    const pending = activate(mock, current.manager, "alpha");
+    await mock.events.get("session_shutdown")?.[0]?.({}, current.ctx);
+    assert.equal((await pending).code, "session_unavailable");
+    assert.ok(
+      current.manager
+        .getEntries()
+        .every(
+          (entry) =>
+            entry.type !== "custom" ||
+            entry.customType !== "pi-accounts-selection" ||
+            (entry.data as { providers: Record<string, string | null> }).providers.openai !== "alpha",
+        ),
+    );
+  } finally {
+    release();
+    await update;
+  }
+});
+
+test("routine model sync of the same selection completes the activation barrier", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let conversions = 0;
+  const { mock, session } = await fixture({
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      toAuth: async (value) => {
+        if (++conversions === 1) {
+          entered();
+          await gate;
+        }
+        return { apiKey: value.access };
+      },
+    },
+  });
+  const current = await session();
+  const pending = activate(mock, current.manager, "alpha");
+  await started;
+  try {
+    await mock.events.get("model_select")?.[0]?.({ model: { provider: "openai", id: "gpt-4o" } }, current.ctx);
+  } finally {
+    release();
+  }
+  assert.deepEqual(await pending, { status: "active", providerId: "openai", accountName: "alpha" });
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+});
+
 test("model unavailable result uses account capability, not a second catalog", async () => {
   const { mock, store, session } = await fixture();
   await store.updateProvider("openai", (state) => ({
@@ -315,7 +492,7 @@ test("store failure is typed without exposing storage exception text", async () 
   const { mock, store, session } = await fixture();
   const current = await session();
   await activate(mock, current.manager, "beta");
-  store.read = () => {
+  store.readAsync = async () => {
     throw new Error(`unreadable ${refresh}`);
   };
   const result = await activate(mock, current.manager, "alpha");

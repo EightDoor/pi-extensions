@@ -122,7 +122,8 @@ in-process EventBus. No package imports or credential-file reads are required.
 These protocols expose account names (user-defined identifiers), never credential material.
 They provide no automatic rotation, failover, health, quota, routing policy, or model inventory.
 
-Emit `accounts:topology:v1` with `{ reply(topology) }`. The synchronous reply is
+Emit `accounts:topology:v1` with `{ reply(topology) }`. The asynchronous reply, after
+queued credential writes complete, is
 `{ providers: [{ providerId, displayName, accounts: [{ name, kind }], defaultAccount? }] }`.
 `kind` is `"oauth"` or `"api-key"`; inventory means configured, not remotely authenticated.
 `defaultAccount` is the user-wide named default adopted by sessions without a saved selection,
@@ -152,7 +153,8 @@ not remote credential validity. Failed activation may leave the requested select
 and the provider fail-closed; cancellation after selection publication does not roll it back.
 
 Activation is session-local and does not change the user-wide default. A newer explicit selection
-supersedes pending work; shutdown/reload invalidates the old session owner. Pre-aborted requests
+supersedes pending work; a routine sync for the same selection does not supersede the reply.
+Shutdown/reload invalidates the old session owner. Pre-aborted requests
 do not change selection. Malformed requests are ignored. Channels are versioned by their suffix.
 With no compatible responder, no reply arrives: consumers must bound their wait and degrade
 gracefully. A timeout is not proof that activation did not happen; abort pending requests and
