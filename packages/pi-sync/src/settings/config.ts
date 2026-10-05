@@ -99,9 +99,10 @@ export function syncSetupReviewIdentity(
   setup: SyncSetupSettings,
   connectionName: string,
   connection: StorageConnectionSettings,
+  settingsVersion: PiSyncSettingsV3["version"],
 ) {
   return syncConfigReviewIdentity(
-    resolveSyncConfig(setupName, setup, connectionName, connection, DEFAULT_ON_SWITCH, false, true),
+    resolveSyncConfig(setupName, setup, connectionName, connection, DEFAULT_ON_SWITCH, false, true, settingsVersion),
   );
 }
 

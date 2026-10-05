@@ -209,6 +209,12 @@ export async function mergeSync(
       if (!currentHead || !backend.sameRevision(currentHead.revision, head.revision))
         throw new Error("Remote changed before baseline acceptance; retry from a fresh observation.");
       await writeAcceptedState(config, head, accepted, validate);
+      await pruneMergeBaselines(
+        config,
+        acceptedState(config, head, accepted),
+        captureMutationOwner(ctx, options.signal),
+      );
+      await validate();
       if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
       return "applied" as const;
     }
@@ -411,6 +417,9 @@ async function completeJournal(
   ) {
     await validate();
     await clearMergeJournal(config);
+    await validate();
+    await pruneMergeBaselines(config, state, captureMutationOwner(ctx, signal));
+    await validate();
     return true;
   }
   if (syncStateFingerprint(state) !== journal.stateIdentity) {
