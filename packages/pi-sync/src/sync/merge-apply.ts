@@ -13,12 +13,66 @@ import { mergePathIdentity } from "./file-merge-planner.js";
 import { fileHashMap } from "./sync-state.js";
 
 /** Read-only filesystem applicability check before publishing a combined result. */
-export async function preflightMergedTargets(before: Snapshot, after: Snapshot, options: SnapshotOptions) {
+export async function preflightMergedTargets(
+  before: Snapshot,
+  after: Snapshot,
+  options: SnapshotOptions,
+  protectedTarget?: string,
+) {
   const root = agentDir();
   const beforeHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(before));
   const afterHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(after));
-  for (const relative of new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])) {
+  const paths = [...new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])].sort();
+  const changed = new Set(paths.filter((item) => beforeHashes[item] !== afterHashes[item]));
+  await assertDistinctMergedTargets(root, paths, changed, options, protectedTarget);
+  for (const relative of paths) {
     if (beforeHashes[relative] !== afterHashes[relative]) await assertFilesystemTarget(root, relative, options);
+  }
+}
+
+/** Even an unchanged virtual alias must not describe different bytes for a changed physical file. */
+async function assertDistinctMergedTargets(
+  root: string,
+  paths: string[],
+  changed: ReadonlySet<string>,
+  options: SnapshotOptions,
+  protectedTarget?: string,
+) {
+  const protectedKey = protectedTarget
+    ? mergePathIdentity(await resolvedTargetIdentity(path.resolve(protectedTarget), options))
+    : undefined;
+  options.signal?.throwIfAborted();
+  options.validateMutation?.();
+  const keys = new Set<string>();
+  for (const relative of paths) {
+    options.signal?.throwIfAborted();
+    const target = snapshotTarget(root, relative, options.sessionDir);
+    const key = mergePathIdentity(await resolvedTargetIdentity(target, options));
+    options.signal?.throwIfAborted();
+    options.validateMutation?.();
+    if (keys.has(key))
+      throw new Error("Merged paths resolve to the same file; reviewed directional recovery is required.");
+    if (key === protectedKey && changed.has(relative))
+      throw new Error("A merged transfer targets the current session; review is required.");
+    keys.add(key);
+  }
+}
+
+async function resolvedTargetIdentity(target: string, options: SnapshotOptions) {
+  // Resolve the nearest existing ancestor too: roots may alias even when a target is absent.
+  let ancestor = target;
+  while (true) {
+    options.signal?.throwIfAborted();
+    try {
+      const resolved = await fs.realpath(ancestor);
+      return path.resolve(resolved, path.relative(ancestor, target));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return target;
+      ancestor = parent;
+    }
   }
 }
 
@@ -61,33 +115,20 @@ export async function applyMergedSnapshot(
   protectedPaths: Set<string>,
   options: SnapshotOptions,
   validate: () => Promise<void>,
+  protectedTarget?: string,
 ) {
   const root = agentDir();
   const beforeHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(before));
   const afterHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(after));
-  const changed = [...new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])]
-    .filter((item) => beforeHashes[item] !== afterHashes[item])
-    .sort();
+  const paths = [...new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])].sort();
+  const changed = paths.filter((item) => beforeHashes[item] !== afterHashes[item]);
   const protectedKeys = new Set([...protectedPaths].map(mergePathIdentity));
   if (changed.some((item) => protectedKeys.has(mergePathIdentity(item)))) {
     throw new Error("A merged transfer targets the current session; review is required.");
   }
   // Exact file queues, not a directory pseudo-lock: Pi edit/write tools use these keys.
   const targets = changed.map((item) => snapshotTarget(root, item, options.sessionDir));
-  const queueKeys = new Set<string>();
-  for (const target of targets) {
-    options.signal?.throwIfAborted();
-    let key = target;
-    try {
-      key = await fs.realpath(target);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-    }
-    if (queueKeys.has(key))
-      throw new Error("Merged paths resolve to the same file; reviewed directional recovery is required.");
-    queueKeys.add(key);
-  }
+  await assertDistinctMergedTargets(root, paths, new Set(changed), options, protectedTarget);
   async function acquire(index: number): Promise<void> {
     const target = targets[index];
     if (target) return withFileMutationQueue(target, () => acquire(index + 1));
