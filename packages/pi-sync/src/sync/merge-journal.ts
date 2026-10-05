@@ -18,6 +18,8 @@ export interface MergeJournal {
   committedHead?: RemoteHead;
   backup: string;
   stateIdentity: string;
+  /** Effective collection/apply root; absent legacy evidence cannot authorize session recovery. */
+  sessionRoot?: string;
   warnings?: string[];
 }
 
@@ -46,6 +48,10 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
     typeof journal.identity !== "string" ||
     typeof journal.backup !== "string" ||
     typeof journal.stateIdentity !== "string" ||
+    (journal.sessionRoot !== undefined &&
+      (typeof journal.sessionRoot !== "string" ||
+        !path.isAbsolute(journal.sessionRoot) ||
+        path.resolve(journal.sessionRoot) !== journal.sessionRoot)) ||
     (journal.warnings !== undefined &&
       (!Array.isArray(journal.warnings) ||
         journal.warnings.length > 64 ||
