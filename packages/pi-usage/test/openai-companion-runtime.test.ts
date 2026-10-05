@@ -133,6 +133,58 @@ async function setup(mode: "tui" | "rpc" = "rpc", selected = nativeModel) {
     },
   };
 }
+test("Settings Off → On → Off updates native footer without reload", async () => {
+  const state = await setup("tui");
+  await state.runtime.update({ openaiCompanionUsage: false });
+  const calls = mockFetch();
+  let settingScreens = 0;
+  let openSettings = true;
+  Object.assign(state.context.ctx.ui, {
+    confirm: async () => true,
+    custom: async (factory: unknown) => {
+      const harness = createCustomSelectorHarness(factory, 100, undefined, 40);
+      try {
+        if (harness.isPiTuiKitScreen) {
+          if (openSettings) {
+            openSettings = false;
+            harness.handleInput("\u001b[B");
+            harness.handleInput("\r");
+          } else harness.handleInput("\u0003");
+        } else if (harness.render().join("\n").includes("pi-usage Settings")) {
+          settingScreens++;
+          if (settingScreens === 2) harness.handleInput("\u001b");
+          else {
+            for (let i = 0; i < 3; i++) harness.handleInput("\u001b[B");
+            harness.handleInput("\r");
+            if (settingScreens === 3) {
+              await vi.waitFor(() => assert.equal(state.runtime.get().settings.openaiCompanionUsage, false));
+              harness.handleInput("\u001b");
+            }
+          }
+        }
+        return await harness.resultPromise;
+      } finally {
+        harness.dispose();
+      }
+    },
+  });
+  try {
+    await state.emit("session_start");
+    await vi.waitFor(() => assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only"));
+    await state.run();
+    assert.equal(settingScreens, 2);
+    assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*90%/);
+    assert.equal(calls.length, 2);
+    openSettings = true;
+    await state.run();
+    assert.equal(settingScreens, 3);
+    assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only");
+    assert.equal(calls.length, 2);
+  } finally {
+    await state.emit("session_shutdown");
+  }
+});
+
 function mockFetch() {
   const calls: string[] = [];
   vi.stubGlobal("fetch", async (url: string) => {

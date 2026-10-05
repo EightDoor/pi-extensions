@@ -29,11 +29,12 @@ export async function showUsageSettings(
   }
   const { HorizontalRule, renderBoundedFrame } = await import("@narumitw/pi-tui-kit");
   if (parentSignal.aborted || !isCurrent()) return false;
-  return (
-    (await ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
+  let changed = false;
+  let selectedId: UsageSettingId | undefined;
+  for (;;) {
+    const result = await ctx.ui.custom<boolean | "consent">((tui, theme, _keybindings, done) => {
       const localController = new AbortController();
       const signal = AbortSignal.any([parentSignal, localController.signal]);
-      let changed = false;
       let closing = false;
       let saveQueue = Promise.resolve();
       const state = settingsRuntime.get();
@@ -71,12 +72,13 @@ export async function showUsageSettings(
       const rule = new HorizontalRule({ ruleStyle: (text) => theme.fg("border", text) });
 
       let settingsList: SettingsList;
-      const cancel = () => {
+      const close = (result: boolean | "consent") => {
         if (closing) return;
         closing = true;
         localController.abort();
-        done(changed);
+        done(result);
       };
+      const cancel = () => close(changed);
       const queueUpdate = <Id extends UsageSettingId>(id: Id, requested: UsageSettings[Id], display: string) => {
         saveQueue = saveQueue.then(async () => {
           if (signal.aborted || !isCurrent()) return;
@@ -91,17 +93,12 @@ export async function showUsageSettings(
           }
           try {
             if (id === "openaiCompanionUsage" && requested === true && previous !== true) {
-              const accepted = await ctx.ui.confirm(
-                "Enable experimental ChatGPT companion usage?",
-                "Requires /login openai-codex with the same ChatGPT account/workspace as native OpenAI. Only the companion token and its matching account ID are sent to undocumented ChatGPT usage endpoints. Registration matching is not independent proof of the same user/workspace. No reset or allowance mutations are performed.",
-                { signal },
-              );
-              if (signal.aborted || !isCurrent()) return;
-              if (!accepted) {
-                settingsList.updateValue(id, settingValueLabel(id, previous));
-                tui.requestRender();
-                return;
-              }
+              // Pi's confirm dialog replaces a non-overlay custom screen and restores
+              // the editor, not that screen. Complete/dispose Settings first; after
+              // consent, mount a fresh instance with the initiating row selected.
+              selectedId = id;
+              close("consent");
+              return;
             }
             const patch: Partial<UsageSettings> = {};
             patch[id] = requested;
@@ -130,6 +127,7 @@ export async function showUsageSettings(
         getSettingsListTheme(),
         (id, value) => {
           if (closing || signal.aborted || !isCurrent()) return;
+          selectedId = id as UsageSettingId;
           if (id === "codexStatusPercentage") {
             queueUpdate(id, value === USED ? "used" : "remaining", value);
           } else if (id === "codexFastMode" || id === "codexStatusResetCountdown" || id === "openaiCompanionUsage") {
@@ -139,6 +137,7 @@ export async function showUsageSettings(
         cancel,
       );
 
+      if (selectedId) settingsList.selectItem(selectedId);
       parentSignal.addEventListener("abort", cancel, { once: true });
       return {
         render(width: number) {
@@ -171,6 +170,25 @@ export async function showUsageSettings(
           parentSignal.removeEventListener("abort", cancel);
         },
       };
-    })) ?? false
-  );
+    });
+    if (result !== "consent" || parentSignal.aborted || !isCurrent()) return changed;
+    try {
+      const accepted = await ctx.ui.confirm(
+        "Enable experimental ChatGPT companion usage?",
+        "Requires /login openai-codex with the same ChatGPT account/workspace as native OpenAI. Only the companion token and its matching account ID are sent to undocumented ChatGPT usage endpoints. Registration matching is not independent proof of the same user/workspace. No reset or allowance mutations are performed.",
+        { signal: parentSignal },
+      );
+      if (parentSignal.aborted || !isCurrent()) return changed;
+      if (accepted && !settingsRuntime.get().settings.openaiCompanionUsage) {
+        await settingsRuntime.update({ openaiCompanionUsage: true }, parentSignal);
+        changed = true;
+        // A durable rename may win cancellation; the owner guards lifecycle cleanup.
+        onApplied("openaiCompanionUsage");
+      }
+    } catch (error) {
+      if (parentSignal.aborted || !isCurrent()) return changed;
+      ctx.ui.notify(`Could not enable ChatGPT companion usage: ${errorMessage(error)}`, "error");
+    }
+    if (parentSignal.aborted || !isCurrent()) return changed;
+  }
 }
