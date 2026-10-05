@@ -10,6 +10,10 @@ Authoritative session sources are installed Pi `core/session-manager.js`/`.d.ts`
 
 Text allowlist: `AGENTS.md`, and Markdown/text below `prompts/` or `skills/`. UTF-8 round-trip validation and NUL refusal precede bounded line-preserving LCS hunks. Equal edits deduplicate; disjoint edits apply deterministically; overlapping replacement, delete/modify, ambiguous insertion boundaries, unsupported encoding, 1 MiB inputs/outputs, or four-million-cell work bounds withhold the whole file. JSON/keybindings/executable code is not generic text. Syntax-level merging cannot establish semantic correctness.
 
+## Concurrent stack integration
+
+Phase 3 includes the latest Phase 2 portability fixes and the latest Phase 1 target-identity/session-root/recovery hardening, without rewriting either other feature branch. Physical pre-publication/recovery guards compare raw local images, while accepted cache/state remains a portable projection. Version-5 setup/connection CRUD and menus preserve the new schema; all transport validators, including Git manifests, accept the deliberate snapshot-v3 barrier. Shared backend-contract fixtures now exercise both v2 and v3 round trips on Git (both publication paths), S3 and WebDAV, and settings-manager fixtures exercise versions 3, 4 and 5.
+
 ## Versioned state and transitions
 
 | Boundary | Local content | Remote publication | Accepted state / recovery |

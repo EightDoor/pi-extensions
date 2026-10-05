@@ -56,7 +56,7 @@ export function requireGitManifest(value: unknown): GitManifest {
   }
   if (
     manifest.version !== GIT_MANIFEST_VERSION ||
-    (manifest.snapshotVersion !== 1 && manifest.snapshotVersion !== 2) ||
+    (manifest.snapshotVersion !== 1 && manifest.snapshotVersion !== 2 && manifest.snapshotVersion !== 3) ||
     typeof manifest.snapshotId !== "string" ||
     manifest.snapshotId.length > 512 ||
     !/^[A-Za-z0-9._-]+$/u.test(manifest.snapshotId) ||

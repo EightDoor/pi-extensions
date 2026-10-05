@@ -37,10 +37,16 @@ const options: CommandOptions = {
   auto: false,
 };
 
-async function fixture(agentDir: string, backend = new MemorySyncBackend()) {
+async function fixture(agentDir: string, backend = new MemorySyncBackend(), sessions = false) {
   await fs.mkdir(agentDir, { recursive: true });
   const settings = v3S3Settings({ include: ["settings.json", "AGENTS.md", "prompts"] });
   Object.assign(settings.syncSetups.home.sync, { mergeSettings: true });
+  if (sessions) {
+    settings.syncSetups.home.sync.include.push("sessions");
+    Object.assign(settings.syncSetups.home.sync, { automaticTransfer: true });
+    await fs.mkdir(path.join(agentDir, "sessions/project"), { recursive: true });
+    await fs.writeFile(path.join(agentDir, "sessions/project/unchanged.jsonl"), '{"session":"preserved"}\n');
+  }
   await fs.writeFile(localConfigPath(), JSON.stringify(settings));
   await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"original"}\n');
   await fs.writeFile(path.join(agentDir, "AGENTS.md"), "original instructions\n");
@@ -157,6 +163,208 @@ test("divergent settings field retains whole-transfer review and names no creden
     );
     assert.equal(publication.mock.calls.length, 0);
   }));
+
+for (const auto of [false, true])
+  for (const transition of ["default-to-custom", "custom-to-custom", "custom-to-default"])
+    test(`${auto ? "automatic" : "manual"} merge blocks ${transition} session-root acceptance`, async () =>
+      withTempHome(async (agentDir) => {
+        const f = await fixture(agentDir, new MemorySyncBackend(), true);
+        const oldRoot = path.join(path.dirname(agentDir), "old-sessions");
+        const newRoot = path.join(path.dirname(agentDir), "new-sessions");
+        if (transition !== "default-to-custom") {
+          await fs.rename(path.join(agentDir, "sessions"), oldRoot);
+          await fs.writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ sessionDir: oldRoot }));
+          await push(f.ctx, { ...options, force: true }, undefined, () => f.backend);
+        }
+        const settingsBefore = await fs.readFile(path.join(agentDir, "settings.json"));
+        await f.remoteEdit(
+          "settings.json",
+          JSON.stringify(transition === "custom-to-default" ? {} : { sessionDir: newRoot }),
+        );
+        // An independent local edit would require combined publication without the barrier.
+        await fs.writeFile(path.join(agentDir, "AGENTS.md"), "independent local");
+        const state = await readStateForConfig(f.config);
+        const head = await f.backend.readHead();
+        const publish = vi.spyOn(f.backend, "publishSnapshot");
+        try {
+          await assert.rejects(
+            syncBoth(f.ctx, { ...options, auto }, () => f.backend),
+            /changes the session root/,
+          );
+          assert.equal(publish.mock.calls.length, 0);
+          assert.deepEqual(await readStateForConfig(f.config), state);
+          assert.deepEqual(await f.backend.readHead(), head);
+          assert.deepEqual(await fs.readFile(path.join(agentDir, "settings.json")), settingsBefore);
+          assert.equal(await readMergeJournal(f.config), undefined);
+          await assert.rejects(fs.access(newRoot), { code: "ENOENT" });
+        } finally {
+          publish.mockRestore();
+        }
+      }));
+
+for (const unsafe of [false, true])
+  test(`stable configured session root ${unsafe ? "is preflighted before publication" : "receives merged sessions"}`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir, new MemorySyncBackend(), true);
+      const sessionRoot = path.join(path.dirname(agentDir), "custom-sessions");
+      await fs.rename(path.join(agentDir, "sessions"), sessionRoot);
+      await fs.writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ sessionDir: sessionRoot }));
+      const settings = v3S3Settings({ include: ["AGENTS.md", "sessions"] });
+      await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+      await push(f.ctx, { ...options, force: true }, undefined, () => f.backend);
+      if (unsafe) {
+        const outside = path.join(path.dirname(agentDir), "outside");
+        await fs.mkdir(outside);
+        await fs.symlink(outside, path.join(sessionRoot, "linked"), "dir");
+      }
+      const relative = unsafe ? "sessions/linked/new.jsonl" : "sessions/project/new.jsonl";
+      await f.remoteEdit(relative, '{"new":"session"}\n');
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "independent local");
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        if (unsafe) {
+          await assert.rejects(
+            syncBoth(f.ctx, options, () => f.backend),
+            /filesystem layout/,
+          );
+          assert.equal(publish.mock.calls.length, 0);
+        } else {
+          await syncBoth(f.ctx, options, () => f.backend);
+          assert.equal(await fs.readFile(path.join(sessionRoot, "project/new.jsonl"), "utf8"), '{"new":"session"}\n');
+          assert.equal(
+            await fs.readFile(path.join(sessionRoot, "project/unchanged.jsonl"), "utf8"),
+            '{"session":"preserved"}\n',
+          );
+          await assert.rejects(fs.access(path.join(agentDir, "sessions")), { code: "ENOENT" });
+        }
+      } finally {
+        publish.mockRestore();
+      }
+    }));
+
+test("an older committed session-root transition journal requires directional recovery", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir, new MemorySyncBackend(), true);
+    const before = await createSnapshot(f.config.snapshotIdentity, { include: f.config.include });
+    const state = await readStateForConfig(f.config);
+    const result = await f.remoteEdit(
+      "settings.json",
+      JSON.stringify({ sessionDir: path.join(path.dirname(agentDir), "new-sessions") }),
+    );
+    const after = await f.backend.readSnapshot(result.head.snapshotRef);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before,
+      after,
+      upload: after,
+      expectedHead: f.baseHead,
+      committedHead: result.head,
+      backup: "retained-private-backup",
+      stateIdentity: syncStateFingerprint(state),
+      sessionRoot: path.join(agentDir, "sessions"),
+    });
+    const count = (await f.backend.listHistory()).length;
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /changes the session root/,
+    );
+    assert.deepEqual(await readStateForConfig(f.config), state);
+    assert.equal((await f.backend.listHistory()).length, count);
+    assert.ok(await readMergeJournal(f.config));
+    assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"original"}\n');
+  }));
+
+for (const changedRoot of [false, true])
+  test(`merge journal ${changedRoot ? "refuses a replacement context root" : "refuses legacy missing-root evidence"}`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir, new MemorySyncBackend(), true);
+      const firstRoot = path.join(path.dirname(agentDir), "sessions-a");
+      const secondRoot = path.join(path.dirname(agentDir), "sessions-b");
+      await fs.rename(path.join(agentDir, "sessions"), firstRoot);
+      await fs.mkdir(secondRoot);
+      Object.defineProperty((f.ctx as ExtensionContext).sessionManager, "getSessionDir", { value: () => firstRoot });
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "independent local");
+      await f.remoteEdit("sessions/project/remote-added.jsonl", "remote conversation\n");
+      const state = await readStateForConfig(f.config);
+      f.backend.failNextPublicationAfterCommit = true;
+      await assert.rejects(
+        syncBoth(f.ctx, options, () => f.backend),
+        /interrupted/,
+      );
+      const pending = await readMergeJournal(f.config);
+      assert.ok(pending);
+      assert.equal(pending.sessionRoot, firstRoot);
+      if (!changedRoot) {
+        delete pending.sessionRoot;
+        await writeMergeJournal(f.config, pending);
+      }
+      const replacement = createMockContext();
+      Object.defineProperty((replacement.ctx as ExtensionContext).sessionManager, "getSessionDir", {
+        value: () => (changedRoot ? secondRoot : firstRoot),
+      });
+      const head = await f.backend.readHead();
+      await assert.rejects(
+        syncBoth(replacement.ctx, options, () => f.backend),
+        /journal session root/,
+      );
+      assert.deepEqual(await readStateForConfig(f.config), state);
+      assert.deepEqual(await f.backend.readHead(), head);
+      assert.ok(await readMergeJournal(f.config));
+      for (const root of [firstRoot, secondRoot])
+        await assert.rejects(fs.access(path.join(root, "project/remote-added.jsonl")), { code: "ENOENT" });
+      if (changedRoot) {
+        await syncBoth(f.ctx, options, () => f.backend);
+        assert.equal(
+          await fs.readFile(path.join(firstRoot, "project/remote-added.jsonl"), "utf8"),
+          "remote conversation\n",
+        );
+        assert.deepEqual(await f.backend.readHead(), head);
+      }
+    }));
+
+for (const boundary of ["backup", "journal"] as const)
+  test(`a newer local edit during ${boundary} is refused before backend publication`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      await fs.writeFile(path.join(agentDir, "settings.json"), '{"local":true}');
+      await f.remoteEdit("AGENTS.md", "reviewed remote");
+      const state = await readStateForConfig(f.config);
+      const head = await f.backend.readHead();
+      let edited = false;
+      const mutate = async () => {
+        edited = true;
+        await fs.writeFile(path.join(agentDir, "AGENTS.md"), "newer external bytes");
+      };
+      const open = fs.open.bind(fs);
+      const rename = fs.rename.bind(fs);
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (!edited && boundary === "backup" && String(args[0]).endsWith(".json.gz")) await mutate();
+        return handle;
+      });
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        await rename(from, to);
+        if (!edited && boundary === "journal" && to === mergeJournalPath(f.config)) await mutate();
+      });
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        await assert.rejects(
+          syncBoth(f.ctx, options, () => f.backend),
+          /changed before publication/,
+        );
+        assert.equal(edited, true);
+        assert.equal(publish.mock.calls.length, 0);
+        assert.deepEqual(await f.backend.readHead(), head);
+        assert.deepEqual(await readStateForConfig(f.config), state);
+        assert.equal(await readMergeJournal(f.config), undefined);
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "newer external bytes");
+      } finally {
+        openSpy.mockRestore();
+        renameSpy.mockRestore();
+        publish.mockRestore();
+      }
+    }));
 
 test("merged sync publishes both independent edits and applies remote bytes without reload", async () =>
   withTempHome(async (agentDir) => {

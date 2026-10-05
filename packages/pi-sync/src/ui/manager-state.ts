@@ -72,7 +72,11 @@ export async function describeManagerState(
     };
   }
   const configuredTargets = ownRecord(raw.syncSetups);
-  if ((raw.version === 3 || raw.version === 4) && configuredTargets && Object.keys(configuredTargets).length === 0) {
+  if (
+    (raw.version === 3 || raw.version === 4 || raw.version === 5) &&
+    configuredTargets &&
+    Object.keys(configuredTargets).length === 0
+  ) {
     return {
       title: [
         "Manage sync",

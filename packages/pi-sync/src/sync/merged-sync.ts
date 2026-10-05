@@ -9,7 +9,11 @@ import {
 import type { CommandOptions } from "../commands/command-types.js";
 import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
-import { sessionDirForApply, snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import {
+  effectiveSessionRoot,
+  requireStableMergeSessionRoot,
+  snapshotOptionsForContext,
+} from "../snapshot/session-paths.js";
 import {
   createSnapshot,
   filterSnapshotForConfigPolicy,
@@ -64,12 +68,25 @@ export async function mergeSync(
   };
   const config = await loadConfig(options.setup);
   const configToken = syncCheckConfigFingerprint(config);
+  const sessionRoot = config.include.includes("sessions") ? await effectiveSessionRoot(ctx) : undefined;
+  validateOwner();
+  const snapshotOptions = {
+    ...snapshotOptionsForContext(ctx, config),
+    sessionDir: sessionRoot,
+    signal: options.signal,
+  };
   const validate = async () => {
     validateOwner();
     const latest = await loadConfig(options.setup);
     validateOwner();
     if (configToken !== syncCheckConfigFingerprint(latest))
       throw new Error("Sync setup or settings changed during transfer; reopen sync.");
+    if (sessionRoot !== undefined) {
+      const currentRoot = await effectiveSessionRoot(ctx);
+      validateOwner();
+      if (currentRoot !== sessionRoot)
+        throw new Error("Session storage root changed during transfer; evidence retained for review.");
+    }
     if (options.auto && (!latest.automaticTransfer || !ctx.isIdle()))
       throw new Error("Automatic transfer is no longer authorized at this idle boundary.");
   };
@@ -104,10 +121,7 @@ export async function mergeSync(
       throw new Error(
         "Partial progress remains unresolved; re-enable partial sync or review an explicit force direction.",
       );
-    const localRaw = await createSnapshot(config.snapshotIdentity, {
-      ...snapshotOptionsForContext(ctx, config),
-      signal: options.signal,
-    });
+    const localRaw = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     const local = portableSnapshot(localRaw, config.localFields);
     if (!sameLocalFields(state.localFields, config.localFields))
       throw new Error("Local-field rules changed; review and confirm a directional migration first.");
@@ -166,7 +180,7 @@ export async function mergeSync(
       local: local.files,
       remote: remote.files,
       selectionCompatible: true,
-      protectedPaths: protectedSessionPaths(ctx),
+      protectedPaths: protectedSessionPaths(ctx, sessionRoot),
     });
     let resolved = { plan, fields: [] as string[] };
     if (config.mergeSettings) {
@@ -268,6 +282,7 @@ export async function mergeSync(
       ),
     });
     const after = overlayLocalFields(accepted, localRaw, config.localFields);
+    if (config.include.includes("sessions")) requireStableMergeSessionRoot(localRaw, after);
     const publication = regenerateSnapshotIdentity({
       ...accepted,
       version: config.partialSync ? 3 : accepted.version,
@@ -284,7 +299,11 @@ export async function mergeSync(
     if (!publish && !apply) {
       await validate();
       await writeAcceptedState(config, head, accepted, validate, progress);
-      await pruneMergeBaselines(config, acceptedState(config, head, accepted, progress), captureMutationOwner(ctx, options.signal));
+      await pruneMergeBaselines(
+        config,
+        acceptedState(config, head, accepted, progress),
+        captureMutationOwner(ctx, options.signal),
+      );
       await validate();
       await pruneCompletedConflicts(
         config,
@@ -304,10 +323,7 @@ export async function mergeSync(
         );
       return "applied" as const;
     }
-    await preflightMergedTargets(localRaw, after, {
-      ...snapshotOptionsForContext(ctx, config),
-      signal: options.signal,
-    });
+    await preflightMergedTargets(localRaw, after, snapshotOptions, ctx.sessionManager.getSessionFile?.());
     await validate();
     if (!config.skipSecretScan && scanSnapshot(upload).length)
       throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
@@ -335,12 +351,12 @@ export async function mergeSync(
     )
       return "cancelled" as const;
     await validate();
-    const refreshed = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    const refreshed = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     if (!sameHashes(fileHashMap(refreshed), fileHashMap(localRaw)))
       throw new Error("Local content changed during review; no merged transfer was performed.");
     if (syncStateFingerprint(await readStateForConfig(config)) !== syncStateFingerprint(state))
       throw new Error("Sync baseline changed during review; retry from a fresh observation.");
-    const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
+    const backup = await backupLocal(config.snapshotIdentity, snapshotOptions, options.signal);
     await validate();
     const journal: MergeJournal = {
       version: 1,
@@ -353,11 +369,32 @@ export async function mergeSync(
       expectedHead: head,
       backup,
       stateIdentity: syncStateFingerprint(state),
+      ...(sessionRoot !== undefined ? { sessionRoot } : {}),
       ...(!publish ? { committedHead: head } : {}),
     };
     await writeMergeJournal(config, journal);
-    try {
+    // No backend call has begun: a stale candidate can be retired without ambiguous publication.
+    const atCommitState = syncStateFingerprint(await readStateForConfig(config));
+    await validate();
+    const atCommit = await createSnapshot(config.snapshotIdentity, snapshotOptions);
+    await validate();
+    if (!sameHashes(fileHashMap(atCommit), fileHashMap(localRaw)) || atCommitState !== journal.stateIdentity) {
       await validate();
+      await clearMergeJournal(config);
+      throw new Error(
+        "Local content or baseline changed before publication; candidate retired without transfer. Review a fresh sync.",
+      );
+    }
+    // Backup/journal awaits can also change physical identity without changing any bytes.
+    try {
+      await preflightMergedTargets(atCommit, after, snapshotOptions, ctx.sessionManager.getSessionFile?.());
+      await validate();
+    } catch (error) {
+      await validate();
+      await clearMergeJournal(config);
+      throw error;
+    }
+    try {
       if (publish) {
         const result = await backend.publishSnapshot(upload, expectedRemoteHead(head), {
           signal: options.signal,
@@ -414,10 +451,18 @@ async function completeJournal(
   if (journal.identity !== mergeJournalIdentity(config, backend.identity))
     throw new Error("Merge journal belongs to a different setup or selection; preserve it for reviewed recovery.");
   await validate();
+  const sessionRoot = config.include.includes("sessions") ? await effectiveSessionRoot(ctx) : undefined;
+  await validate();
+  if (sessionRoot !== undefined && journal.sessionRoot !== sessionRoot) {
+    throw new Error(
+      "Merge journal session root is missing or differs from this context; preserve evidence and use reviewed directional recovery.",
+    );
+  }
+  const snapshotOptions = { ...snapshotOptionsForContext(ctx, config), sessionDir: sessionRoot, signal };
   const head = await backend.readHead(signal);
   if (!journal.committedHead && head && backend.sameRevision(head.revision, journal.expectedHead.revision)) {
     await validate();
-    const local = await createSnapshot(config.snapshotIdentity, { ...snapshotOptionsForContext(ctx, config), signal });
+    const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     if (
       !sameHashes(fileHashMap(local), fileHashMap(journal.before)) ||
       syncStateFingerprint(await readStateForConfig(config)) !== journal.stateIdentity
@@ -461,7 +506,7 @@ async function completeJournal(
   if (syncStateFingerprint(state) !== journal.stateIdentity) {
     throw new Error("Sync baseline changed after the interrupted merge; preserve its journal and review recovery.");
   }
-  const sessionDir = await sessionDirForApply(ctx, journal.after);
+  if (config.include.includes("sessions")) requireStableMergeSessionRoot(journal.before, journal.after);
   await validate();
   const validateOwner = captureMutationOwner(ctx, signal);
   const validateMutation = () => {
@@ -471,9 +516,10 @@ async function completeJournal(
   await applyMergedSnapshot(
     journal.before,
     journal.after,
-    protectedSessionPaths(ctx),
-    { ...snapshotOptionsForContext(ctx, config), sessionDir, signal, validateMutation },
+    protectedSessionPaths(ctx, sessionRoot),
+    { ...snapshotOptions, validateMutation },
     validate,
+    ctx.sessionManager.getSessionFile?.(),
   );
   await validate();
   await writeAcceptedState(config, head, journal.accepted ?? journal.after, validate, journal.progress);

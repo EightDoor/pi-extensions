@@ -78,7 +78,7 @@ export async function showSetupSwitcher(
 ) {
   const raw = await readLocalConfigObject();
   if (signal?.aborted) return false;
-  if (raw?.version !== 3 && raw?.version !== 4) {
+  if (raw?.version !== 3 && raw?.version !== 4 && raw?.version !== 5) {
     ctx.ui.notify("Add a second sync setup before switching setups.", "info");
     return false;
   }

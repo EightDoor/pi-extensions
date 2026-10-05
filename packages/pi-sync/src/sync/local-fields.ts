@@ -39,10 +39,11 @@ export function normalizeLocalFields(value: unknown): string[] {
 }
 /** Shared transport contract: older snapshots cannot carry portable policy metadata. */
 export function validateSnapshotFieldPolicy(snapshot: Pick<Snapshot, "version" | "localFields">) {
-  if (snapshot.version !== 1 && snapshot.version !== 2) throw new Error("Unsupported snapshot format.");
+  if (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3)
+    throw new Error("Unsupported snapshot format.");
   if (snapshot.version === 1 && snapshot.localFields !== undefined)
     throw new Error("Portable field policy requires snapshot version 2.");
-  if (snapshot.version === 2) normalizeLocalFields(snapshot.localFields);
+  if (snapshot.version === 2 || snapshot.version === 3) normalizeLocalFields(snapshot.localFields);
 }
 export function sameLocalFields(left: unknown, right: unknown) {
   return JSON.stringify(normalizeLocalFields(left)) === JSON.stringify(normalizeLocalFields(right));

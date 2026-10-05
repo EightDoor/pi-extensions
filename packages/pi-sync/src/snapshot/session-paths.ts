@@ -3,6 +3,7 @@ import path from "node:path";
 import { type ExtensionCommandContext, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import { readJsonIfExists } from "../state/json-file.js";
+import { sessionStorageRoot } from "./snapshot-paths.js";
 import type { Snapshot, SnapshotOptions } from "./snapshot-types.js";
 
 export function sessionDirFromContext(ctx: ExtensionCommandContext | ExtensionContext) {
@@ -22,6 +23,10 @@ export async function configuredSessionDir() {
   return settings?.sessionDir ? expandHome(settings.sessionDir) : undefined;
 }
 
+export async function effectiveSessionRoot(ctx: ExtensionCommandContext | ExtensionContext) {
+  return path.resolve(sessionStorageRoot(agentDir(), sessionDirFromContext(ctx) ?? (await configuredSessionDir())));
+}
+
 export async function sessionDirForApply(ctx: ExtensionCommandContext | ExtensionContext, snapshot: Snapshot) {
   const contextSessionDir = sessionDirFromContext(ctx);
   const localSessionDir = await configuredSessionDir();
@@ -29,6 +34,19 @@ export async function sessionDirForApply(ctx: ExtensionCommandContext | Extensio
     return contextSessionDir;
   }
   return sessionDirFromSnapshot(snapshot) ?? contextSessionDir;
+}
+
+/** Hash-only merge plans cannot describe installation into a different session root. */
+export function requireStableMergeSessionRoot(before: Snapshot, after: Snapshot) {
+  const root = agentDir();
+  if (
+    path.resolve(sessionStorageRoot(root, sessionDirFromSnapshot(before))) !==
+    path.resolve(sessionStorageRoot(root, sessionDirFromSnapshot(after)))
+  ) {
+    throw new Error(
+      "Merged transfer changes the session root; no local apply or baseline acceptance is allowed. Review /sync diff and choose an explicit push or pull direction.",
+    );
+  }
 }
 
 function sessionDirFromSnapshot(snapshot: Snapshot) {

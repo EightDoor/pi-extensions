@@ -314,7 +314,7 @@ test("aborting the name input ignores a late answer without advancing setup", as
   });
 });
 
-test.each([3, 4])(
+test.each([3, 4, 5])(
   "S3 storage connection edit preserves masked credentials and reviews dependents (version %i)",
   async (version) => {
     await withTempHome(async (agentDir) => {
@@ -386,7 +386,7 @@ test("replacing stored S3 credentials drops the prior session token", async () =
   });
 });
 
-test.each([3, 4])(
+test.each([3, 4, 5])(
   "S3 manager reuses a connection and defaults a new setup to the bucket root (version %i)",
   async (version) => {
     await withTempHome(async (agentDir) => {
@@ -471,7 +471,7 @@ test("referenced connections and a current setup with alternatives cannot be rem
   });
 });
 
-test.each([3, 4])("removing the sole current setup clears the active reference (version %i)", async (version) => {
+test.each([3, 4, 5])("removing the sole current setup clears the active reference (version %i)", async (version) => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
     writeSettings({ ...v3S3Settings(), version });
@@ -486,14 +486,14 @@ test.each([3, 4])("removing the sole current setup clears the active reference (
   });
 });
 
-test.each([3, 4])(
+test.each([3, 4, 5])(
   "storage connection and sync setup CRUD preserve unknown retained fields (version %i)",
   async (version) => {
     await withTempHome(async (agentDir) => {
       mkdirSync(agentDir, { recursive: true });
       const initial = v3S3Settings() as unknown as Record<string, unknown>;
       initial.version = version;
-      if (version === 4) {
+      if (version >= 4) {
         const setups = initial.syncSetups as ReturnType<typeof v3S3Settings>["syncSetups"];
         Object.assign(setups.home.sync, { localFields: ["machine"] });
       }
@@ -521,7 +521,7 @@ test.each([3, 4])(
       await updateSyncSetup("backup", (setup) => ({ ...setup, futureSetup: "still" }));
       const saved = JSON.parse(readFileSync(localConfigPath(), "utf8"));
       assert.equal(saved.version, version);
-      if (version === 4) assert.deepEqual(saved.syncSetups.home.sync.localFields, ["machine"]);
+      if (version >= 4) assert.deepEqual(saved.syncSetups.home.sync.localFields, ["machine"]);
       assert.deepEqual(saved.futureTop, { keep: true });
       assert.equal(saved.storageConnections.git.futureConnection, "keep");
       assert.equal(saved.syncSetups.backup.storage.futureStorage, "keep");
@@ -531,60 +531,63 @@ test.each([3, 4])(
   },
 );
 
-test.each([3, 4])("switching setup is atomic and follows all three onSwitch policies (version %i)", async (version) => {
-  await withTempHome(async (agentDir) => {
-    mkdirSync(agentDir, { recursive: true });
-    writeSettings({ ...v3S3Settings(), version });
-    await addSyncSetup("work", {
-      storage: { connection: "r2", bucket: "pi-sync-test", path: "pi-sync/work" },
-      sync: { include: ["settings.json"], automatic: false },
+test.each([3, 4, 5])(
+  "switching setup is atomic and follows all three onSwitch policies (version %i)",
+  async (version) => {
+    await withTempHome(async (agentDir) => {
+      mkdirSync(agentDir, { recursive: true });
+      writeSettings({ ...v3S3Settings(), version });
+      await addSyncSetup("work", {
+        storage: { connection: "r2", bucket: "pi-sync-test", path: "pi-sync/work" },
+        sync: { include: ["settings.json"], automatic: false },
+      });
+      await updateLocalConfig((settings) => ({ ...settings, onSwitch: "switch-only" }));
+      const mock = createMockContext({ hasUI: true, mode: "tui" });
+      assert.equal(await showSetupSwitcher(mock.ctx, async () => ({ kind: "completed" }), "work"), "switched");
+      await useSyncSetup(mock.ctx, "home");
+      assert.deepEqual(await useSyncSetup(mock.ctx, "work"), { pullApplied: false });
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      await updateLocalConfig((settings) => ({
+        ...settings,
+        onSwitch: "ask-before-pull",
+        activeSyncSetup: "home",
+      }));
+      let pullCalls = 0;
+      const declined = createMockContext({
+        hasUI: true,
+        mode: "tui",
+        confirm: async () => false,
+      });
+      assert.deepEqual(
+        await useSyncSetup(declined.ctx, "work", async () => {
+          pullCalls += 1;
+          return "applied";
+        }),
+        { pullApplied: false },
+      );
+      assert.equal(pullCalls, 0);
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      await updateLocalConfig((settings) => ({ ...settings, onSwitch: "pull-after-switch" }));
+      const noUi = createMockContext({ hasUI: false, mode: "print" });
+      await assert.rejects(useSyncSetup(noUi.ctx, "home"), SetupPullRequiresUiError);
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      let pulled: string | undefined;
+      await assert.rejects(
+        useSyncSetup(mock.ctx, "home", async (name) => {
+          pulled = name;
+          throw new Error("pull failed");
+        }),
+        /pull failed/u,
+      );
+      assert.equal(pulled, "home");
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "home");
+      assert.deepEqual(await useSyncSetup(mock.ctx, "home"), { pullApplied: false });
     });
-    await updateLocalConfig((settings) => ({ ...settings, onSwitch: "switch-only" }));
-    const mock = createMockContext({ hasUI: true, mode: "tui" });
-    assert.equal(await showSetupSwitcher(mock.ctx, async () => ({ kind: "completed" }), "work"), "switched");
-    await useSyncSetup(mock.ctx, "home");
-    assert.deepEqual(await useSyncSetup(mock.ctx, "work"), { pullApplied: false });
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    await updateLocalConfig((settings) => ({
-      ...settings,
-      onSwitch: "ask-before-pull",
-      activeSyncSetup: "home",
-    }));
-    let pullCalls = 0;
-    const declined = createMockContext({
-      hasUI: true,
-      mode: "tui",
-      confirm: async () => false,
-    });
-    assert.deepEqual(
-      await useSyncSetup(declined.ctx, "work", async () => {
-        pullCalls += 1;
-        return "applied";
-      }),
-      { pullApplied: false },
-    );
-    assert.equal(pullCalls, 0);
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    await updateLocalConfig((settings) => ({ ...settings, onSwitch: "pull-after-switch" }));
-    const noUi = createMockContext({ hasUI: false, mode: "print" });
-    await assert.rejects(useSyncSetup(noUi.ctx, "home"), SetupPullRequiresUiError);
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    let pulled: string | undefined;
-    await assert.rejects(
-      useSyncSetup(mock.ctx, "home", async (name) => {
-        pulled = name;
-        throw new Error("pull failed");
-      }),
-      /pull failed/u,
-    );
-    assert.equal(pulled, "home");
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "home");
-    assert.deepEqual(await useSyncSetup(mock.ctx, "home"), { pullApplied: false });
-  });
-});
+  },
+);
 
 test("cross-process settings mutations serialize under one read-modify-write lock", async () => {
   await withTempHome(async (agentDir) => {

@@ -36,7 +36,7 @@ export function normalizeOnSwitch(value: unknown): OnSwitchAction {
 export function validateSettingsDocument(value: Record<string, unknown>): PiSyncSettingsV3 {
   if (value.version !== 3 && value.version !== 4 && value.version !== 5) {
     throw new Error(
-      `Unsupported pi-sync settings: version 3 or 4 is required. Keep the existing ${path.basename(localConfigPath())} for recovery and use a compatible pi-sync client or review a separate supported setup; do not downgrade portable field policies. pi-sync will not migrate or overwrite unsupported settings.`,
+      `Unsupported pi-sync settings: version 3 or 4 or 5 is required. Keep the existing ${path.basename(localConfigPath())} for recovery and use a compatible pi-sync client or review a separate supported setup; do not downgrade portable field policies. pi-sync will not migrate or overwrite unsupported settings.`,
     );
   }
   rejectLegacyFields(

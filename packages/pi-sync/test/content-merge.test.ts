@@ -49,7 +49,7 @@ for (const [name, bytes] of [
     Buffer.concat([
       base,
       b(
-        '{"type":"message","id":"a","id":"b","parentId":"root","timestamp":"now","message":{"role":"user","content":"secret","timestamp":1}}\\n',
+        '{"type":"message","id":"a","id":"b","parentId":"root","timestamp":"now","message":{"role":"user","content":"secret","timestamp":1}}\n',
       ),
     ]),
   ],
@@ -62,7 +62,8 @@ for (const [name, bytes] of [
   ["unknown kind", log(header, { ...entry("root", null), type: "future" })],
 ] as const)
   test(`session refuses ${name}`, () => {
-    assert.throws(() => validateSession(bytes));
+    if (name === "duplicate JSON key") assert.throws(() => validateSession(bytes), /Unsupported JSON object/);
+    else assert.throws(() => validateSession(bytes));
     assert.equal(mergeSession(base, longer, bytes), undefined);
   });
 test("identity or immutable prefix change never joins sessions", () => {

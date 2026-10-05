@@ -15,6 +15,7 @@ Established-baseline **Sync now** performs an all-or-nothing, file-level three-w
 | Ancestor unavailable or selection changed | Keep initial-source/selection review. |
 | Remote would write/delete the current session | Require review; never install that version automatically. |
 | Case aliases or file/descendant paths occur across inputs | Withhold the complete group; require a reviewed direction. |
+| Accepted settings change the session storage root while sessions are selected | Withhold merged publication/apply/baseline acceptance; require explicit directional review, including interrupted journals. |
 
 Merged input is bounded to 64 MiB decoded content and 16,384 input-file entries; the private journal also has a 384 MiB serialized bound. Larger transfers require a reviewed directional operation rather than an unbounded merge. One unresolved path prevents the whole merged transfer. The planner verifies safe/denied paths, canonical base64 and hashes before authorization. It rejects invalid UTF-16 paths and compares protected context paths using Node’s UTF-8 conversion followed by NFC/case identity. Read-only filesystem preflight refuses non-regular targets, symlinked parents, and hard links before combined publication; applicability is rechecked at installation boundaries. Merged publishable content is scanned for secrets unless the existing global override is explicitly enabled. No file values appear in conflict summaries.
 
@@ -39,7 +40,7 @@ Merged transfer never reloads resources, activates recovery copies, changes tool
 
 ## Durable boundaries
 
-A setup/backend/selection-bound `*.merge-journal.json` under the denied private state root stores before/after snapshots, the complete upload, expected/committed opaque head, original state fingerprint, and backup location. File permissions are `0600`; new private state subdirectories are `0700`. Sensitive content stays out of discoverable resource directories. Backend snapshot references, content IDs, and revisions remain distinct.
+A setup/backend/selection-bound `*.merge-journal.json` under the denied private state root stores before/after snapshots, the complete upload, expected/committed opaque head, original state fingerprint, backup location, and the effective session root when sessions are selected. Session collection, backup, preflight, apply, and recovery use that pinned root; replacement contexts must match it. Older merge journals without root evidence require directional recovery for selected sessions, never an inferred root. A final local hash/baseline check after durable journal publication refuses stale candidates before any backend attempt and retires those provably unpublished candidates. File permissions are `0600`; new private state subdirectories are `0700`. Sensitive content stays out of discoverable resource directories. Backend snapshot references, content IDs, and revisions remain distinct.
 
 ```mermaid
 flowchart LR
@@ -72,9 +73,60 @@ Disabling the opt-in cancels pending work but does not undo completed transfers 
 
 ## Directional snapshot recovery
 
-`snapshot/snapshot-transaction.ts` now writes private version-2 journals with verified before/after hashes and bounded planned subtree evidence, holds exact Pi target queues, and installs files through synced temporary-file renames. A complete group is checked before recovery mutates any path. Each destructive boundary checks ownership and bytes again; current-session paths and unowned session roots are refused. Legacy version-1 journals lack proven postimages and are retired only if every target still equals its backed-up preimage. Newer bytes, missing/corrupted backups, malformed journals, and unknown intermediate directory states retain evidence rather than triggering a blind rollback. Interrupted preparation directories without a journal are preserved but never loaded as resources.
+`snapshot/snapshot-transaction.ts` now writes private version-3 journals with verified before/after hashes, bounded planned subtree evidence, and durable removal intent. It holds exact Pi target queues and installs files through synced temporary-file renames. Backup files, nested directories, and the top-level `before` directory are synced before journal publication.
+
+Before each recursive apply/recovery deletion, removal intent is published durably for the target and affected descendants; only absence gains recognition, never unknown content. Directory and symlink restoration are staged beside the target, checked against the backup, synced, revalidated, and renamed into place. Copy failure/cancellation leaves the live postimage unchanged; a rename interruption after deletion remains recoverable from the retained backup and intent.
+
+A complete group is checked before recovery mutates any path. Each destructive boundary checks ownership and bytes again; backup hashing precedes the live-target observation, and both file and non-file restoration recheck immediately before removal. Current-session paths and unowned session roots are refused.
+
+Startup recovery resolves an explicit context root first, then the configured fallback, and rejects mismatched roots and active-session targets. It does not read unrelated Pi settings when no recovery exists.
+
+Legacy version-1 journals lack proven postimages and are retired only if every target still equals its backed-up preimage. Version-2 journals retain their original guarded image rules; known postimages can be restored through staging and upgraded removal evidence, but old missing intermediate states without durable intent still require manual review.
+
+Newer bytes, missing/corrupted backups, malformed journals, and unknown intermediate directory states retain evidence rather than triggering a blind rollback. Interrupted preparation directories without a journal are preserved but never loaded as resources.
 
 Preserve a blocked transaction and backup, close Pi, and review selected paths before restoring them manually. Do not downgrade while either journal format is pending. Pi can load resources before the lifecycle recovery hook; recovery does not undo cached or already-loaded code, so explicitly reload/restart after restored resources need to be used.
+
+## PR #1455 review ledger
+
+| Feedback | Independent evidence and relationship to the goal | Severity | Outcome |
+| --- | --- | --- | --- |
+| [Session-root transition](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186081768) | The new merge apply filters by hash differences, so switching roots skips equal session files and falsely accepts their baseline. Six manual/automatic default/custom transition regressions and a committed-journal regression fail against the reviewed implementation. | P1: accepted missing sessions can become remote deletions after restart. | Implemented: require directional review before publication or recovery apply; do not advance the baseline. |
+| [Non-file recovery removal](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186081778) | The new guarded restore awaited backup hashing after reading the target and omitted the final non-file recheck. Deterministic directory, symlink, missing-preimage, and backup-hashing race regressions fail against the reviewed implementation. | P1: newer external bytes can be recursively removed. | Implemented: recheck bytes and ownership/cancellation before removal; hash backups before observing live targets; retain evidence on refusal. |
+| Submitted review and conversation summary | Both are wrappers for the two inline findings and contain no additional technical proposal or unanswered question. The submitted review names the current reviewed commit. | Informational. | No separate code action required. |
+
+Review-fix validation passed: `npm run check`; `npm test` (489 files / 6,313 tests); the two focused suites (46 tests); and an isolated built-package RPC readiness/EOF-shutdown smoke with no provider request. Eleven regressions were also run against the original reviewed code and failed as expected, then passed with the fixes.
+
+### Review of commit `922909ab`
+
+| Feedback | Evidence and scope | Severity | Outcome |
+| --- | --- | --- | --- |
+| [Persist merge session root](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536746) | `completeJournal()` recomputes the active root; snapshots cannot identify a context-selected root. A missing addition can be installed in a different directory and accepted. This is introduced by merge recovery. | P1 | Already addressed in this review follow-up; deterministic regression coverage added. |
+| [Configured startup recovery root](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536759) | Startup passes only `sessionDirFromContext()` while snapshot creation uses the configured fallback. The new ownership check rejects legitimate external-root journals. | P2: persistent recovery/startup refusal, with backup retained. | Already addressed in this review follow-up; deterministic regression coverage added. |
+| [Pre-publication local recheck](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536766) | Backup and journal persistence follow the final hash check; the next validation checks config/owner but not local bytes. The new merged publication can commit a stale candidate. | P1 | Already addressed in this review follow-up; deterministic regression coverage added. |
+| [Backup-directory fsync](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536774) | Regular backup files are synced but their containing directory is not; the new durable journal can outlive its backup directory entries after power loss. | P1 | Already addressed in this review follow-up; deterministic regression coverage added. |
+| [Directory replacement progress](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536792) | Directory-to-file deletion leaves a missing target recognized only by the current call, not rollback/restart. The new guards refuse an owned interruption. | P1 | Already addressed in this review follow-up; deterministic regression coverage added. |
+| [Staged directory restoration](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186536804) | Direct recovery `fs.cp()` exposes partial live data; the new image guards subsequently reject it. This worsens retry recovery despite intact backups. | P1 | Already addressed in this review follow-up; deterministic regression coverage added. |
+
+The additional submitted review and updated automated summary are informational wrappers for these six findings, not separate technical requests. Earlier findings remain addressed and resolved; their evidence is unchanged. Sixteen new regressions fail against `922909ab` and pass with the follow-up. `test/recovery-durability.test.ts` covers configured/context roots, backup-directory fsync ordering and failure, file/directory deletion interruptions, immediate rollback, staged-copy/rename failures, cancellation, newer bytes, and retry. `test/merged-sync.test.ts` adds cross-context/legacy-root journal refusal and stale edits during backup/journal publication. These deterministic tests verify ordering and restart states, not physical power-loss behavior. POSIX fsync is exercised; Windows directory fsync remains unsupported. Final follow-up validation passed: `npm run check`; `npm test` (490 files / 6,333 tests); five focused suites (104 tests); and an isolated built-package RPC readiness, `/sync` registration, and EOF-shutdown smoke with no provider request. No item is deferred or awaiting a decision.
+
+The original feedback inventory contained two inline threads, one submitted review, and one conversation summary. No out-of-scope item or missing decision was identified. The session-root class audit also found that filesystem preflight must use the same configured/context root as apply, including when settings are not selected; stable-custom-root apply and unsafe-parent tests cover that path. The recovery audit covers file and non-file removal branches as well as target observations inside `verifyTarget()`. These checks reduce stale-read windows but do not add atomic CAS against uncoordinated external writers.
+
+### Review of commit `63cc880a`
+
+| Feedback | Independent evidence and scope | Severity | Outcome |
+| --- | --- | --- | --- |
+| [Effective-root active-session protection](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186910298) | The merge pins an effective root but `protectedSessionPaths()` still uses only the context root; default-directory managers can select an external session file without changing their directory (`SessionManager.setSessionFile()` / `_setSessionFile()` preserves it). The new merge and journal apply can therefore overwrite active history under the configured root. | P1 | Already addressed: pass the pinned root into protection for planning and journal apply, and compare changed physical targets with the active file before publication/apply so plain virtual paths and symlink-root spellings cannot bypass protection. |
+| [Pre-publication target aliases](https://github.com/narumiruna/pi-extensions/pull/1455#discussion_r4186910308) | Preflight checks each path independently; apply checks only changed-path realpaths. Two changed aliases block after publication, while one changed alias can instead install inconsistent bytes for an unchanged virtual alias. Both violate the merged-transfer safety goal. The complete before/after path union needs an identity check, not only changed paths. | P2 | Already addressed: shared preflight/apply identity checks reject aliases, including missing targets resolved through existing ancestors; repeat preflight after journal publication and retire a provably unattempted candidate if it becomes unsafe. |
+| Class audit: directional protection under the same configured/default-manager mismatch | `7bd20c07^:packages/pi-sync/src/sync/sync-mutations.ts` already contains the context-only protection helper and both directional apply calls. These explicit pull/rollback paths have the same limitation independently of this PR; this follow-up changes only merged planning and journal recovery. | P1 | Valid but out of scope — deferred. Recommend a separate pull request for directional root/protection alignment; none was opened. |
+
+The new submitted review and updated summary are informational wrappers for these findings. Earlier items remain addressed and resolved, with unchanged evidence reused. Twenty-five regressions fail against `63cc880a` and pass with the fixes.
+
+`test/merge-target-safety.test.ts` uses a real default-directory `SessionManager` with an external active file, tests manual/automatic edit and deletion barriers plus committed-journal recovery for session, plain, and symlink-root virtual paths, and covers changed/unchanged/deleted/missing aliases, symlink-root aliases, alias introduction during journal publication, retained recovery evidence, and distinct physical targets with the same basename.
+
+The scope audit checked every `protectedSessionPaths()` caller and both alias-validation boundaries; unchanged directional semantics remain the separately recommended follow-up above.
+
+Final follow-up validation passed: `npm run check`; `npm test` (491 files / 6,359 tests); four focused suites (92 tests); and an isolated built-package RPC readiness, `/sync` registration, and EOF-shutdown smoke without a provider request. Windows, compiled runtime, live storage transfers, and physical power loss remain unverified; external-writer atomic CAS is not claimed.
 
 ## Verification and guides
 
