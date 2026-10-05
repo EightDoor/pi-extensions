@@ -131,6 +131,12 @@ export async function describeManagerState(
       `Automatic sync: ${automaticSyncSummary(config.automatic)}`,
       `Automatic transfer at startup: ${config.automaticTransfer ? "On — upload/replace/delete at idle; no reload" : "Off"}`,
       `Last applied: ${lastAppliedSnapshot}`,
+      ...(syncState?.unresolved?.length
+        ? [
+            `Unresolved: ${syncState.unresolved.length} dependency groups · review History & recovery`,
+            `Last observed: ${safeTerminalText(syncState.lastObservedSnapshot ?? "unknown")}`,
+          ]
+        : []),
       ...(currentAttention
         ? [
             currentAttention.decision.setupName === config.setupName

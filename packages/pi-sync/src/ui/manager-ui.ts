@@ -40,6 +40,7 @@ export async function showSyncManager(
     | "setups"
     | "connections"
     | "history"
+    | "conflicts"
     | "doctor"
     | "unlock"
     | "recover"
@@ -96,6 +97,7 @@ export async function showSyncManager(
         title: "History & recovery",
         items: [
           { id: "history", label: "Browse history", action: "history" },
+          { id: "conflicts", label: "Review unresolved conflicts", action: "conflicts" },
           {
             id: "doctor",
             label: "Check setup",
@@ -230,6 +232,13 @@ export async function showSyncManager(
       },
       init: async () => {
         await runRoute("init");
+        return { kind: "stay" };
+      },
+      conflicts: async () => {
+        await runCancellableOperation(ctx, "Reviewing private conflicts…", "conflicts", runRoute, {
+          commitAware: true,
+          signal: sessionSignal,
+        });
         return { kind: "stay" };
       },
       back: async () => ({ kind: "back" }),

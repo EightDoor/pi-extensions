@@ -18,11 +18,15 @@ import {
   scanSnapshot,
 } from "../snapshot/snapshot.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
-import { pruneMergeBaselines, stageMergeBaseline } from "../state/merge-baseline-store.js";
+import { pruneMergeBaselines, readMergeAncestors, stageMergeBaseline } from "../state/merge-baseline-store.js";
 import { readStateForConfig, syncStateFingerprint, writeStateForConfig } from "../state/sync-state-store.js";
 import { confirmMergeReview } from "../ui/merge-review.js";
 import { formatApplyPreview, formatPublicationPreview } from "../ui/sync-format.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
+import { conflictGroups, readConflictArtifact, saveConflictArtifact } from "./conflict-artifacts.js";
+import { type ConflictResolution, resolveReviewedGroup } from "./conflict-resolution.js";
+import { pruneCompletedConflicts } from "./conflict-retention.js";
+import { resolveContentConflicts } from "./content-conflicts.js";
 import { planFileMerge } from "./file-merge-planner.js";
 import { overlayLocalFields, portableSnapshot, sameLocalFields } from "./local-fields.js";
 import { applyMergedSnapshot, preflightMergedTargets } from "./merge-apply.js";
@@ -33,6 +37,7 @@ import {
   readMergeJournal,
   writeMergeJournal,
 } from "./merge-journal.js";
+import { type PartialProgress, progressState } from "./partial-progress.js";
 import { readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
 import { resolveSettingsConflicts } from "./settings-conflicts.js";
 import { createSyncDecision } from "./sync-decision.js";
@@ -46,6 +51,7 @@ export async function mergeSync(
   ctx: ExtensionContext | ExtensionCommandContext,
   options: CommandOptions,
   factory: SyncBackendFactory = createSyncBackend,
+  resolution?: ConflictResolution,
 ) {
   const validateOwner = captureMutationOwner(ctx, options.signal);
   const isCurrent = () => {
@@ -94,6 +100,10 @@ export async function mergeSync(
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     await validate();
     const state = await readStateForConfig(config);
+    if (state.unresolved?.length && !config.partialSync)
+      throw new Error(
+        "Partial progress remains unresolved; re-enable partial sync or review an explicit force direction.",
+      );
     const localRaw = await createSnapshot(config.snapshotIdentity, {
       ...snapshotOptionsForContext(ctx, config),
       signal: options.signal,
@@ -125,7 +135,11 @@ export async function mergeSync(
         remote: rawRemote.files,
         selectionCompatible: true,
       });
-      if (validation.kind === "planned" && validation.conflicts.some((item) => item.reason === "path-collision"))
+      if (
+        !config.partialSync &&
+        validation.kind === "planned" &&
+        validation.conflicts.some((item) => item.reason === "path-collision")
+      )
         throw new Error("Remote snapshot contains path collisions; review a directional recovery before merging.");
     }
     const review = (
@@ -154,36 +168,140 @@ export async function mergeSync(
       selectionCompatible: true,
       protectedPaths: protectedSessionPaths(ctx),
     });
-    const resolved = config.mergeSettings
-      ? await resolveSettingsConflicts(config, state, local, remote, plan)
-      : { plan, fields: [] as string[] };
+    let resolved = { plan, fields: [] as string[] };
+    if (config.mergeSettings) {
+      try {
+        resolved = await resolveSettingsConflicts(config, state, local, remote, plan);
+      } catch (error) {
+        if (!config.partialSync) throw error;
+      }
+    }
     await validate();
-    plan = resolved.plan;
-    if (plan.kind !== "planned" || plan.conflicts.length) {
+    plan = await resolveContentConflicts(config, state, local, remote, resolved.plan, protectedSessionPaths(ctx));
+    await validate();
+    if (resolution) {
+      plan = await resolveReviewedGroup(
+        config,
+        backend,
+        state,
+        local,
+        remote,
+        head,
+        plan,
+        resolution,
+        protectedSessionPaths(ctx),
+      );
+      await validate();
+    }
+    if (plan.kind !== "planned" || (plan.conflicts.length && !config.partialSync)) {
       throw review(
         `Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.${resolved.fields.length ? ` Settings fields: ${resolved.fields.map(safeTerminalText).join(", ")}` : ""}`,
       );
     }
+    if (plan.kind !== "planned") throw new Error("Cannot partition an unverified merge plan.");
+    const groups = conflictGroups(plan, config);
+    const withheld = new Set(groups.flatMap((group) => group.paths));
+    let progress: PartialProgress | undefined;
+    if (groups.length) {
+      let ancestors: import("../snapshot/snapshot-types.js").SnapshotFile[] = [];
+      try {
+        ancestors = ((await readMergeAncestors(config, state)) ?? []).filter((file) => withheld.has(file.path));
+      } catch {
+        /* Retain unknown evidence; absence remains explicit. */
+      }
+      await validate();
+      const previousArtifacts = new Map<string, Awaited<ReturnType<typeof readConflictArtifact>>>();
+      for (const token of new Set(state.unresolved?.map((group) => group.artifact) ?? [])) {
+        try {
+          previousArtifacts.set(token, await readConflictArtifact(config, backend.identity, token));
+        } catch {
+          /* Unknown evidence retained, never reused. */
+        }
+        await validate();
+      }
+      const localHashes = fileHashMap(local);
+      const remoteHashes = fileHashMap(remote);
+      const pending = groups.map((group) => {
+        const previous = state.unresolved?.find((item) => JSON.stringify(item.paths) === JSON.stringify(group.paths));
+        const original = previous ? previousArtifacts.get(previous.artifact) : undefined;
+        if (!original || !previous) return { group };
+        const originalLocal = fileHashMap(original.local);
+        const originalRemote = fileHashMap(original.remote);
+        return group.paths.every(
+          (filePath) =>
+            localHashes[filePath] === originalLocal[filePath] &&
+            remoteHashes[filePath] === originalRemote[filePath] &&
+            state.lastFileHashes[filePath] === original.state.lastFileHashes[filePath],
+        )
+          ? { group, artifact: previous.artifact }
+          : { group };
+      });
+      let artifact: string | undefined;
+      if (pending.some((item) => !item.artifact))
+        artifact = await saveConflictArtifact(
+          config,
+          backend.identity,
+          {
+            state,
+            local,
+            remote,
+            ancestors,
+            groups,
+            observed: { snapshotId: head.snapshotId, revision: head.revision },
+          },
+          captureMutationOwner(ctx, options.signal),
+        );
+      await validate();
+      progress = {
+        previous: state,
+        groups: pending.map((item) => ({ paths: item.group.paths, artifact: item.artifact ?? artifact ?? "" })),
+      };
+    }
     const accepted = regenerateSnapshotIdentity({
       ...local,
       files: plan.decisions.flatMap((decision) =>
-        decision.kind === "accepted" && decision.file ? [decision.file] : [],
+        decision.kind === "accepted" && !withheld.has(decision.path) && decision.file
+          ? [decision.file]
+          : withheld.has(decision.path)
+            ? local.files.filter((file) => file.path === decision.path)
+            : [],
       ),
     });
     const after = overlayLocalFields(accepted, localRaw, config.localFields);
-    const upload = mergeRemotePreservedFiles(accepted, rawRemote, config);
-    const publish = !sameHashes(fileHashMap(accepted), fileHashMap(remote));
+    const publication = regenerateSnapshotIdentity({
+      ...accepted,
+      version: config.partialSync ? 3 : accepted.version,
+      files: [
+        ...accepted.files.filter((file) => !withheld.has(file.path)),
+        ...remote.files.filter((file) => withheld.has(file.path)),
+      ],
+    });
+    const upload = mergeRemotePreservedFiles(publication, rawRemote, config);
+    const publish =
+      !sameHashes(fileHashMap(publication), fileHashMap(remote)) ||
+      Boolean(config.partialSync && rawRemote.version !== 3);
     const apply = !sameHashes(fileHashMap(localRaw), fileHashMap(after));
     if (!publish && !apply) {
       await validate();
-      await writeAcceptedState(config, head, accepted, validate);
-      await pruneMergeBaselines(
+      await writeAcceptedState(config, head, accepted, validate, progress);
+      await pruneMergeBaselines(config, acceptedState(config, head, accepted, progress), captureMutationOwner(ctx, options.signal));
+      await validate();
+      await pruneCompletedConflicts(
         config,
-        acceptedState(config, head, accepted),
+        backend.identity,
+        acceptedState(config, head, accepted, progress),
+        accepted,
+        remote,
         captureMutationOwner(ctx, options.signal),
       );
       await validate();
-      if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
+      if (!options.silent)
+        ctx.ui.notify(
+          progress
+            ? `No independent transfer required; ${groups.length} conflict groups remain withheld. Review /sync conflicts.`
+            : "Pi Sync is already up to date.",
+          progress ? "warning" : "info",
+        );
       return "applied" as const;
     }
     await preflightMergedTargets(localRaw, after, {
@@ -204,6 +322,8 @@ export async function mergeSync(
           `Sessions: ${config.include.includes("sessions") ? "included — may contain private conversations" : "not included"}`,
           `Local writes/deletions: ${plan.decisions.filter((item) => item.kind === "accepted" && (item.source === "remote" || item.source === "merged")).length}`,
           formatApplyPreview(localRaw, after).split("\n").map(safeTerminalText).join("\n"),
+          `Unresolved dependency groups: ${groups.length} (withheld versions stay on each side; baselines do not advance)`,
+          ...groups.flatMap((group) => group.paths.map((filePath) => `Withheld: ${safeTerminalText(filePath)}`)),
           `Remote publication: ${publish ? "yes" : "no"}`,
           formatPublicationPreview(rawRemote, upload).split("\n").map(safeTerminalText).join("\n"),
           `Backend publication: ${backend.capability}`,
@@ -228,6 +348,7 @@ export async function mergeSync(
       before: localRaw,
       after,
       accepted,
+      ...(progress ? { progress } : {}),
       upload: publish ? upload : rawRemote,
       expectedHead: head,
       backup,
@@ -268,9 +389,14 @@ export async function mergeSync(
       ctx.ui.notify(
         [
           `Synced independent changes for “${safeTerminalText(config.setupName)}”. ${apply ? "Local files changed; reload or restart Pi when ready to use changed resources." : "Remote updated."} No automatic reload.`,
+          ...(progress
+            ? [
+                `Partial progress: ${groups.length} dependency groups remain unresolved; neither side's withheld versions or baseline hashes were replaced. Review /sync conflicts.`,
+              ]
+            : []),
           ...(journal.warnings ?? []).map(safeTerminalText),
         ].join("\n"),
-        journal.warnings?.length ? "warning" : "info",
+        progress || journal.warnings?.length ? "warning" : "info",
       );
     return "applied" as const;
   }
@@ -322,7 +448,8 @@ async function completeJournal(
     throw new Error("Remote snapshot does not match the recorded merge publication.");
   const state = await readStateForConfig(config);
   if (
-    syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, journal.accepted ?? journal.after))
+    syncStateFingerprint(state) ===
+    syncStateFingerprint(acceptedState(config, head, journal.accepted ?? journal.after, journal.progress))
   ) {
     await validate();
     await clearMergeJournal(config);
@@ -349,20 +476,30 @@ async function completeJournal(
     validate,
   );
   await validate();
-  await writeAcceptedState(config, head, journal.accepted ?? journal.after, validate);
+  await writeAcceptedState(config, head, journal.accepted ?? journal.after, validate, journal.progress);
   await validate();
   await clearMergeJournal(config);
   await validate();
   await pruneMergeBaselines(
     config,
-    acceptedState(config, head, journal.accepted ?? journal.after),
+    acceptedState(config, head, journal.accepted ?? journal.after, journal.progress),
+    captureMutationOwner(ctx, signal),
+  );
+  await validate();
+  await pruneCompletedConflicts(
+    config,
+    backend.identity,
+    acceptedState(config, head, journal.accepted ?? journal.after, journal.progress),
+    journal.accepted ?? journal.after,
+    journal.upload,
     captureMutationOwner(ctx, signal),
   );
   await validate();
   return true;
 }
 
-function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot) {
+function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot, progress?: PartialProgress) {
+  if (progress) return progressState(config, head, snapshot, progress);
   return {
     version: 1,
     profile: config.snapshotIdentity,
@@ -379,9 +516,10 @@ async function writeAcceptedState(
   head: RemoteHead,
   snapshot: Snapshot,
   validate: () => Promise<void>,
+  progress?: PartialProgress,
 ) {
-  const state = acceptedState(config, head, snapshot);
-  await stageMergeBaseline(config, snapshot, state);
+  const state = acceptedState(config, head, snapshot, progress);
+  await stageMergeBaseline(config, snapshot, state, progress?.previous);
   await validate();
   await writeStateForConfig(config, state);
   await validate();

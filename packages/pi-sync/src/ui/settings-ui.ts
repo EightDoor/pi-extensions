@@ -37,6 +37,7 @@ export async function showSyncSettings(
     | "automatic-transfer"
     | "merge-settings"
     | "local-fields"
+    | "content-policy"
     | "skip-secret-scan"
     | "show-status"
     | "on-switch"
@@ -124,10 +125,67 @@ export async function showSyncSettings(
             currentValue: `${state.localFields?.length ?? 0} fields · Edit`,
             action: "local-fields",
           },
+          {
+            id: "contentPolicy",
+            label: "Content / partial sync (experimental)",
+            description:
+              "Version-5 opt-in: bounded text and prefix-only sessions; partial progress keeps full withheld versions and old baseline hashes.",
+            currentValue: state.mergeContent
+              ? state.partialSync
+                ? "Content & partial"
+                : "Content only"
+              : state.partialSync
+                ? "Partial only"
+                : "Off",
+            values: ["Off", "Content only", "Content & partial", "Partial only"],
+            action: "content-policy",
+          },
         ],
       }),
     },
     actions: {
+      "content-policy": async ({ value, signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          const previous = await loadConfig(setupName);
+          validate();
+          const mergeContent = value === "Content only" || value === "Content & partial";
+          const partialSync = value === "Partial only" || value === "Content & partial";
+          if (
+            !(await ctx.ui.confirm(
+              "Save experimental content policy?",
+              "This explicitly upgrades settings to version 5; partial snapshots use version 3 and older clients must refuse them. Text/session merge is conservative. Partial sync preserves withheld versions and old baselines. Disabling does not clear unresolved groups or recovery evidence. Review a directional migration first if portable policy changes.",
+              { signal: mutationSignal },
+            ))
+          )
+            return { kind: "rejected" };
+          validate();
+          await updateLocalConfig((current) => {
+            validate();
+            const setup = current.syncSetups[setupName];
+            if (
+              !setup ||
+              Boolean(setup.sync.mergeContent) !== Boolean(previous.mergeContent) ||
+              Boolean(setup.sync.partialSync) !== Boolean(previous.partialSync)
+            )
+              throw new Error("Content policy changed during review.");
+            return {
+              ...current,
+              version: 5,
+              syncSetups: {
+                ...current.syncSetups,
+                [setupName]: { ...setup, sync: { ...setup.sync, mergeContent, partialSync } },
+              },
+            };
+          }, mutationSignal);
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
       "merge-settings": async ({ value, signal: actionSignal }) => {
         const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
         const validate = captureMutationOwner(ctx, mutationSignal);
@@ -179,7 +237,7 @@ export async function showSyncSettings(
               throw new Error("Field policy changed while under review; reopen settings.");
             return {
               ...current,
-              version: 4,
+              version: current.version === 5 ? 5 : 4,
               syncSetups: {
                 ...current.syncSetups,
                 [setupName]: { ...setup, sync: { ...setup.sync, localFields: fields } },

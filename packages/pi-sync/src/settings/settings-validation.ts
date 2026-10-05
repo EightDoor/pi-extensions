@@ -34,7 +34,7 @@ export function normalizeOnSwitch(value: unknown): OnSwitchAction {
 }
 
 export function validateSettingsDocument(value: Record<string, unknown>): PiSyncSettingsV3 {
-  if (value.version !== 3 && value.version !== 4) {
+  if (value.version !== 3 && value.version !== 4 && value.version !== 5) {
     throw new Error(
       `Unsupported pi-sync settings: version 3 or 4 is required. Keep the existing ${path.basename(localConfigPath())} for recovery and use a compatible pi-sync client or review a separate supported setup; do not downgrade portable field policies. pi-sync will not migrate or overwrite unsupported settings.`,
     );
@@ -98,8 +98,13 @@ export function validateSettingsDocument(value: Record<string, unknown>): PiSync
   }
   for (const setup of Object.values(syncSetups)) {
     const policy = (setup as SyncSetupSettings).sync;
-    if (policy.localFields !== undefined && value.version !== 4)
+    if (policy.localFields !== undefined && value.version !== 4 && value.version !== 5)
       throw new Error("localFields requires explicit settings version 4; older binaries must refuse portable state.");
+  }
+  for (const setup of Object.values(syncSetups)) {
+    const policy = (setup as SyncSetupSettings).sync;
+    if ((policy.mergeContent || policy.partialSync) && value.version !== 5)
+      throw new Error("Content/partial sync requires explicit settings version 5.");
   }
   validateUniqueRemoteSyncSetups(syncSetups, storageConnections);
   return value as PiSyncSettingsV3;
@@ -209,6 +214,8 @@ function validateSyncSetup(name: string, value: Record<string, unknown>, connect
   }
   normalizeSyncInclude(sync.include);
   normalizeLocalFields(sync.localFields);
+  for (const key of ["mergeContent", "partialSync"])
+    if (sync[key] !== undefined && typeof sync[key] !== "boolean") throw new Error(`${key} must be boolean.`);
   if (sync.mergeSettings !== undefined && typeof sync.mergeSettings !== "boolean")
     throw new Error("mergeSettings must be boolean.");
   if (sync.automaticTransfer !== undefined && typeof sync.automaticTransfer !== "boolean") {

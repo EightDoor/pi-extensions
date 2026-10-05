@@ -5,9 +5,10 @@ import type { RemoteHead } from "../backends/sync-backend.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
-import { statePathForConfig } from "../state/sync-state-store.js";
+import { statePathForConfig, syncStateFingerprint } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
 import { portableSnapshot } from "./local-fields.js";
+import type { PartialProgress } from "./partial-progress.js";
 import { fileHashMap, sameHashes } from "./sync-state.js";
 
 export interface MergeJournal {
@@ -16,6 +17,7 @@ export interface MergeJournal {
   before: Snapshot;
   after: Snapshot;
   accepted?: Snapshot;
+  progress?: PartialProgress;
   upload: Snapshot;
   expectedHead: RemoteHead;
   committedHead?: RemoteHead;
@@ -72,7 +74,7 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       ...(journal.accepted ? [journal.accepted] : []),
     ]) {
       if (
-        (snapshot.version !== 1 && snapshot.version !== 2) ||
+        (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3) ||
         typeof snapshot.id !== "string" ||
         typeof snapshot.profile !== "string" ||
         snapshot.files.length > 16_384 ||
@@ -85,7 +87,15 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       )
         throw new Error("Invalid journal input.");
       const plan = planFileMerge({ baseline: {}, local: snapshot.files, remote: [], selectionCompatible: true });
-      if (plan.kind !== "planned" || plan.conflicts.length) throw new Error("Invalid journal collision group.");
+      if (
+        plan.kind !== "planned" ||
+        plan.conflicts.some(
+          (conflict) =>
+            conflict.reason !== "path-collision" ||
+            !journal.progress?.groups.some((group) => group.paths.includes(conflict.path)),
+        )
+      )
+        throw new Error("Invalid journal collision group.");
     }
   } catch {
     throw new Error("Invalid merge journal paths, metadata, or bytes; preserve evidence for review.");
@@ -95,6 +105,44 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
     !sameHashes(fileHashMap(portableSnapshot(journal.after, config.localFields)), fileHashMap(journal.accepted))
   )
     throw new Error("Invalid accepted merge projection; preserve journal evidence.");
+  if (journal.progress) {
+    const known = new Set(
+      [...journal.before.files, ...journal.after.files, ...journal.upload.files].map((file) => file.path),
+    );
+    const progress = journal.progress;
+    if (
+      !config.partialSync ||
+      !progress.previous ||
+      syncStateFingerprint(progress.previous) !== journal.stateIdentity ||
+      !Array.isArray(progress.groups) ||
+      progress.groups.length > 16_384 ||
+      progress.groups.some(
+        (group) =>
+          !Array.isArray(group.paths) ||
+          !group.paths.length ||
+          group.paths.length > 16_384 ||
+          group.paths.some((filePath) => !known.has(filePath)) ||
+          !/^[a-f0-9-]{36}$/u.test(group.artifact),
+      )
+    )
+      throw new Error("Invalid partial acceptance metadata; preserve journal evidence.");
+  }
+  if (journal.progress) {
+    const before = fileHashMap(journal.before);
+    const after = fileHashMap(journal.after);
+    const { readConflictArtifact } = await import("./conflict-artifacts.js");
+    const backendIdentity = (JSON.parse(journal.identity) as unknown[])[1];
+    if (typeof backendIdentity !== "string") throw new Error("Invalid partial backend identity.");
+    for (const token of new Set(journal.progress.groups.map((group) => group.artifact))) {
+      const artifact = await readConflictArtifact(config, backendIdentity, token);
+      const remote = fileHashMap(artifact.remote);
+      const upload = fileHashMap(journal.upload);
+      for (const group of journal.progress.groups.filter((group) => group.artifact === token))
+        for (const filePath of group.paths)
+          if (before[filePath] !== after[filePath] || remote[filePath] !== upload[filePath])
+            throw new Error("Withheld version changed in journal; preserve evidence.");
+    }
+  }
   return journal;
 }
 

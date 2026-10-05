@@ -7,6 +7,9 @@ export interface SyncState {
   lastFileHashes: Record<string, string>;
   include?: string[];
   localFields?: string[];
+  lastObservedSnapshot?: string;
+  lastObservedRevision?: string;
+  unresolved?: { paths: string[]; artifact: string }[];
   /** Legacy state fields are read only so v3 can detect and replace stale policy state. */
   syncFiles?: string[];
   syncSessions?: boolean;

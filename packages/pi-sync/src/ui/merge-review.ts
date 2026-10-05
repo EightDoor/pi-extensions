@@ -8,13 +8,14 @@ export async function confirmMergeReview(
   content: string,
   signal: AbortSignal | undefined,
   isCurrent: () => boolean,
+  confirmationLabel = "Apply merged transfer",
 ) {
   const result = await runDocumentReview(ctx, {
     title,
     content,
     format: { kind: "text" },
     viewportSize: "adaptive",
-    confirmation: { label: "Apply merged transfer" },
+    confirmation: { label: confirmationLabel },
     hint: "close",
     signal,
     isCurrent,
