@@ -1,0 +1,197 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { test, vi } from "vitest";
+import { applySnapshotTransaction, recoverPendingSnapshotTransactions } from "../src/snapshot/snapshot-transaction.js";
+import { withTempHome } from "./helpers.js";
+
+const fileImage = (value: string) => `file:${createHash("sha256").update(value).digest("hex")}`;
+async function journalFixture(agentDir: string, version = 2, current = "after") {
+  const directory = path.join(agentDir, "pi-sync/transactions/interrupted");
+  const target = path.join(agentDir, "AGENTS.md");
+  await fs.mkdir(path.join(directory, "before"), { recursive: true });
+  await fs.writeFile(path.join(directory, "before/0"), "before");
+  await fs.writeFile(target, current);
+  await fs.writeFile(
+    path.join(directory, "journal.json"),
+    JSON.stringify({
+      version,
+      root: agentDir,
+      entries: [
+        {
+          target,
+          backupName: "0",
+          kind: "file",
+          ...(version === 2 ? { beforeImage: fileImage("before"), afterImage: fileImage("after"), postFiles: [] } : {}),
+        },
+      ],
+    }),
+  );
+  return { directory, target };
+}
+
+for (const current of ["before", "after"])
+  test(`guarded v2 recovery accepts the ${current} image`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await journalFixture(agentDir, 2, current);
+      await recoverPendingSnapshotTransactions();
+      assert.equal(await fs.readFile(f.target, "utf8"), "before");
+      await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
+    }));
+
+for (const version of [1, 2])
+  test(`v${version} recovery never overwrites newer external bytes`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await journalFixture(agentDir, version, "external");
+      await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
+      assert.equal(await fs.readFile(f.target, "utf8"), "external");
+      assert.equal(await fs.readFile(path.join(f.directory, "before/0"), "utf8"), "before");
+      await fs.access(path.join(f.directory, "journal.json"));
+    }));
+
+test("legacy v1 recovery only retires a provably unchanged preimage", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await journalFixture(agentDir, 1, "before");
+    await recoverPendingSnapshotTransactions();
+    assert.equal(await fs.readFile(f.target, "utf8"), "before");
+    await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
+  }));
+
+test("current-session protection precedes transaction restoration", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await journalFixture(agentDir);
+    await assert.rejects(recoverPendingSnapshotTransactions({ protectedTargets: [f.target] }), /current session/);
+    assert.equal(await fs.readFile(f.target, "utf8"), "after");
+    await fs.access(f.directory);
+  }));
+
+test("unowned roots, missing backups and malformed private journals fail without content disclosure", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await journalFixture(agentDir);
+    const file = path.join(f.directory, "journal.json");
+    const original = JSON.parse(await fs.readFile(file, "utf8"));
+    await fs.writeFile(file, JSON.stringify({ ...original, sessionRoot: path.dirname(agentDir) }));
+    await assert.rejects(recoverPendingSnapshotTransactions(), /not owned/);
+    await fs.writeFile(file, JSON.stringify(original));
+    await fs.rm(path.join(f.directory, "before/0"));
+    await assert.rejects(recoverPendingSnapshotTransactions(), /backup is missing/);
+    await fs.writeFile(file, '{"private":"sensitive-sentinel",');
+    await assert.rejects(recoverPendingSnapshotTransactions(), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.doesNotMatch(error.message, /sensitive-sentinel/);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.equal(await fs.readFile(f.target, "utf8"), "after");
+  }));
+
+for (const external of [false, true])
+  test(`failed local apply ${external ? "preserves external edits" : "restores only proven postimages"}`, async () =>
+    withTempHome(async (agentDir) => {
+      await fs.mkdir(agentDir, { recursive: true });
+      const first = path.join(agentDir, "AGENTS.md");
+      const second = path.join(agentDir, "APPEND_SYSTEM.md");
+      await fs.writeFile(first, "first before");
+      await fs.writeFile(second, "second before");
+      const rename = fs.rename.bind(fs);
+      const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (String(from).endsWith(".apply") && to === second) {
+          if (external) await fs.writeFile(first, "external first");
+          throw new Error("injected apply failure");
+        }
+        return rename(from, to);
+      });
+      try {
+        await assert.rejects(
+          applySnapshotTransaction({
+            writes: [
+              { target: first, content: Buffer.from("first after") },
+              { target: second, content: Buffer.from("second after") },
+            ],
+            deletes: [],
+          }),
+          external ? /guarded recovery requires review/ : /injected/,
+        );
+        assert.equal(await fs.readFile(first, "utf8"), external ? "external first" : "first before");
+        assert.equal(await fs.readFile(second, "utf8"), "second before");
+        const entries = await fs.readdir(path.join(agentDir, "pi-sync/transactions"));
+        assert.equal(entries.length, external ? 1 : 0);
+      } finally {
+        spy.mockRestore();
+      }
+    }));
+
+test("cancelled owner retains complete atomic postimages for a later guarded recovery", async () =>
+  withTempHome(async (agentDir) => {
+    await fs.mkdir(agentDir, { recursive: true });
+    const target = path.join(agentDir, "AGENTS.md");
+    await fs.writeFile(target, "before");
+    const controller = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from).endsWith(".apply")) controller.abort();
+    });
+    try {
+      await assert.rejects(
+        applySnapshotTransaction(
+          { writes: [{ target, content: Buffer.from("after") }], deletes: [] },
+          { signal: controller.signal },
+        ),
+        /cancelled/,
+      );
+      assert.equal(await fs.readFile(target, "utf8"), "after");
+    } finally {
+      spy.mockRestore();
+    }
+    await recoverPendingSnapshotTransactions();
+    assert.equal(await fs.readFile(target, "utf8"), "before");
+  }));
+
+test("directional directory-to-file replacement does not re-delete descendants", async () =>
+  withTempHome(async (agentDir) => {
+    const root = path.join(agentDir, "custom");
+    const child = path.join(root, "old.md");
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(child, "old");
+    await applySnapshotTransaction({
+      deletes: [root, child],
+      writes: [{ target: root, content: Buffer.from("replacement") }],
+    });
+    assert.equal(await fs.readFile(root, "utf8"), "replacement");
+  }));
+
+for (const fail of [false, true])
+  test(`file-to-directory ${fail ? "rollback" : "apply"} retains safe structure`, async () =>
+    withTempHome(async (agentDir) => {
+      await fs.mkdir(agentDir, { recursive: true });
+      const root = path.join(agentDir, "custom");
+      const first = path.join(root, "first.md");
+      const second = path.join(root, "second.md");
+      await fs.writeFile(root, "original root");
+      const rename = fs.rename.bind(fs);
+      const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (fail && String(from).endsWith(".apply") && to === second) throw new Error("injected second write");
+        return rename(from, to);
+      });
+      try {
+        const operation = applySnapshotTransaction({
+          deletes: [root],
+          writes: [
+            { target: first, content: Buffer.from("first") },
+            { target: second, content: Buffer.from("second") },
+          ],
+        });
+        if (fail) {
+          await assert.rejects(operation, /injected/);
+          assert.equal(await fs.readFile(root, "utf8"), "original root");
+        } else {
+          await operation;
+          assert.equal(await fs.readFile(first, "utf8"), "first");
+          assert.equal(await fs.readFile(second, "utf8"), "second");
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    }));

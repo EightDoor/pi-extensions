@@ -244,6 +244,7 @@ async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions)
       ...storageLines,
       `storage path: ${config.storagePath}`,
       `automatic sync: ${automaticSyncSummary(config.automatic)}`,
+      `automatic transfer at startup: ${config.automaticTransfer ? "On — selected-file upload/replace/delete; no reload" : "Off"}`,
       `included content: ${config.include.join(", ") || "none"}`,
       `sessions: ${config.include.includes("sessions") ? "included" : "not included"}`,
       `settings file: ${localConfigPath()}`,

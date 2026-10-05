@@ -1,0 +1,345 @@
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createSyncBackend, type SyncBackendFactory } from "../backends/backend-factory.js";
+import {
+  expectedRemoteHead,
+  type RemoteHead,
+  type SyncBackend,
+  SyncBackendConflictError,
+} from "../backends/sync-backend.js";
+import type { CommandOptions } from "../commands/command-types.js";
+import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
+import type { AnySyncConfig } from "../settings/settings-types.js";
+import { sessionDirForApply, snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import {
+  createSnapshot,
+  filterSnapshotForConfigPolicy,
+  mergeRemotePreservedFiles,
+  regenerateSnapshotIdentity,
+  scanSnapshot,
+} from "../snapshot/snapshot.js";
+import type { Snapshot } from "../snapshot/snapshot-types.js";
+import { readStateForConfig, syncStateFingerprint, writeStateForConfig } from "../state/sync-state-store.js";
+import { confirmMergeReview } from "../ui/merge-review.js";
+import { formatApplyPreview, formatPublicationPreview } from "../ui/sync-format.js";
+import { safeTerminalText } from "../ui/terminal-text.js";
+import { planFileMerge } from "./file-merge-planner.js";
+import { applyMergedSnapshot, preflightMergedTargets } from "./merge-apply.js";
+import {
+  clearMergeJournal,
+  type MergeJournal,
+  mergeJournalIdentity,
+  readMergeJournal,
+  writeMergeJournal,
+} from "./merge-journal.js";
+import { readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
+import { createSyncDecision } from "./sync-decision.js";
+import { backupLocal, captureMutationOwner, protectedSessionPaths } from "./sync-local.js";
+import { fileHashMap, hasLocalChanges, hasRemoteChanges, sameHashes, syncPolicyChanged } from "./sync-state.js";
+
+const MAX_ATTEMPTS = 3;
+
+/** Established-baseline sync only. First-source selection remains in the existing command flow. */
+export async function mergeSync(
+  ctx: ExtensionContext | ExtensionCommandContext,
+  options: CommandOptions,
+  factory: SyncBackendFactory = createSyncBackend,
+) {
+  const validateOwner = captureMutationOwner(ctx, options.signal);
+  const isCurrent = () => {
+    try {
+      validateOwner();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const config = await loadConfig(options.setup);
+  const configToken = syncCheckConfigFingerprint(config);
+  const validate = async () => {
+    validateOwner();
+    const latest = await loadConfig(options.setup);
+    validateOwner();
+    if (configToken !== syncCheckConfigFingerprint(latest))
+      throw new Error("Sync setup or settings changed during transfer; reopen sync.");
+    if (options.auto && (!latest.automaticTransfer || !ctx.isIdle()))
+      throw new Error("Automatic transfer is no longer authorized at this idle boundary.");
+  };
+  await validate();
+  const backend = await factory(config);
+  await validate();
+  if (options.auto && backend.capability === "read-check-write-verify") {
+    throw new Error(
+      "Automatic transfer requires conditional publication or a lease; this backend supports only read/check/write/verify. Use manual sync.",
+    );
+  }
+  const pending = await readMergeJournal(config);
+  await validate();
+  if (pending) {
+    const recovered = await completeJournal(ctx, config, backend, pending, validate, options.signal, options.auto);
+    if (!recovered) {
+      if ((options.auto || !options.silent) && !options.signal?.aborted)
+        ctx.ui.notify(
+          "Interrupted candidate is not active; local content and baseline were unchanged. Evidence was reconciled without retrying publication. Run sync again for a fresh plan.",
+          "warning",
+        );
+      return "cancelled" as const;
+    }
+    if ((options.auto || !options.silent) && !options.signal?.aborted)
+      ctx.ui.notify("Recovered the committed merged transfer. Run sync again to inspect newer changes.", "info");
+    return "applied" as const;
+  }
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    await validate();
+    const state = await readStateForConfig(config);
+    const local = await createSnapshot(config.snapshotIdentity, {
+      ...snapshotOptionsForContext(ctx, config),
+      signal: options.signal,
+    });
+    const head = await backend.readHead(options.signal);
+    await validate();
+    const rawRemote = head ? await readSnapshotForHead(backend, head, options.signal) : undefined;
+    await validate();
+    if (rawRemote) {
+      const files = [...local.files, ...rawRemote.files];
+      if (
+        files.length > 16_384 ||
+        files.reduce((bytes, file) => bytes + file.contentBase64.length * 0.75, 0) > 64 * 1024 * 1024
+      ) {
+        throw new Error(
+          "Merged transfer exceeds the 64 MiB / 16,384 input-file bound; review an explicit push or pull instead.",
+        );
+      }
+    }
+    const remote = rawRemote ? filterSnapshotForConfigPolicy(rawRemote, config) : undefined;
+    if (rawRemote) {
+      requireCompatibleRemoteSelection(config, rawRemote);
+      const validation = planFileMerge({
+        baseline: state.lastFileHashes,
+        local: local.files,
+        remote: rawRemote.files,
+        selectionCompatible: true,
+      });
+      if (validation.kind === "planned" && validation.conflicts.some((item) => item.reason === "path-collision"))
+        throw new Error("Remote snapshot contains path collisions; review a directional recovery before merging.");
+    }
+    const review = (
+      message: string,
+      kind: "both-changed" | "remote-empty" | "remote-or-policy-changed" = "both-changed",
+    ) =>
+      createSyncDecision({
+        kind,
+        config,
+        state,
+        local,
+        remote,
+        localChanged: hasLocalChanges(local, state, config),
+        remoteChanged: remote ? hasRemoteChanges(remote, state, config) : Boolean(state.lastAppliedSnapshot),
+        directMessage: message,
+      });
+    if (!state.lastAppliedSnapshot) throw review("Choose the initial source before enabling automatic transfer.");
+    if (syncPolicyChanged(state, config))
+      throw review("Included content changed; review the selection before merging.", "remote-or-policy-changed");
+    if (!head || !remote || !rawRemote)
+      throw review("The established remote is missing; choose an explicit recovery direction.", "remote-empty");
+    const plan = planFileMerge({
+      baseline: state.lastFileHashes,
+      local: local.files,
+      remote: remote.files,
+      selectionCompatible: true,
+      protectedPaths: protectedSessionPaths(ctx),
+    });
+    if (plan.kind !== "planned" || plan.conflicts.length) {
+      throw review(
+        "Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.",
+      );
+    }
+    const after = regenerateSnapshotIdentity({
+      ...local,
+      files: plan.decisions.flatMap((decision) =>
+        decision.kind === "accepted" && decision.file ? [decision.file] : [],
+      ),
+    });
+    const upload = mergeRemotePreservedFiles(after, rawRemote, config);
+    const publish = !sameHashes(fileHashMap(after), fileHashMap(remote));
+    const apply = !sameHashes(fileHashMap(local), fileHashMap(after));
+    if (!publish && !apply) {
+      await validate();
+      await writeAcceptedState(config, head, after);
+      if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
+      return "applied" as const;
+    }
+    await preflightMergedTargets(local, after, { ...snapshotOptionsForContext(ctx, config), signal: options.signal });
+    await validate();
+    if (!config.skipSecretScan && scanSnapshot(upload).length)
+      throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
+    if (
+      !options.yes &&
+      !(await confirmMergeReview(
+        ctx,
+        "Merge independent Pi changes?",
+        [
+          `Sync setup: ${safeTerminalText(config.setupName)}`,
+          `Storage location: ${safeTerminalText(backend.destination)}`,
+          `Sessions: ${config.include.includes("sessions") ? "included — may contain private conversations" : "not included"}`,
+          `Local writes/deletions: ${plan.decisions.filter((item) => item.kind === "accepted" && item.source === "remote").length}`,
+          formatApplyPreview(local, after).split("\n").map(safeTerminalText).join("\n"),
+          `Remote publication: ${publish ? "yes" : "no"}`,
+          formatPublicationPreview(rawRemote, upload).split("\n").map(safeTerminalText).join("\n"),
+          `Backend publication: ${backend.capability}`,
+          "The current session is protected. A backup and recovery journal are retained. Resources are not reloaded.",
+        ].join("\n"),
+        options.signal,
+        isCurrent,
+      ))
+    )
+      return "cancelled" as const;
+    await validate();
+    const refreshed = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    if (!sameHashes(fileHashMap(refreshed), fileHashMap(local)))
+      throw new Error("Local content changed during review; no merged transfer was performed.");
+    if (syncStateFingerprint(await readStateForConfig(config)) !== syncStateFingerprint(state))
+      throw new Error("Sync baseline changed during review; retry from a fresh observation.");
+    const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
+    await validate();
+    const journal: MergeJournal = {
+      version: 1,
+      identity: mergeJournalIdentity(config, backend.identity),
+      before: local,
+      after,
+      upload: publish ? upload : rawRemote,
+      expectedHead: head,
+      backup,
+      stateIdentity: syncStateFingerprint(state),
+      ...(!publish ? { committedHead: head } : {}),
+    };
+    await writeMergeJournal(config, journal);
+    try {
+      await validate();
+      if (publish) {
+        const result = await backend.publishSnapshot(upload, expectedRemoteHead(head), {
+          signal: options.signal,
+          onCommit: options.onCommit,
+        });
+        journal.committedHead = result.head;
+        journal.warnings = result.warnings;
+        await writeMergeJournal(config, journal);
+      } else options.onCommit?.();
+    } catch (error) {
+      if (
+        error instanceof SyncBackendConflictError &&
+        error.phase === "before-commit" &&
+        !error.candidateMayHaveBeenActive
+      ) {
+        await clearMergeJournal(config);
+        if (attempt + 1 < MAX_ATTEMPTS) continue;
+        throw new Error("Remote changed before commit in all three attempts; retry later.", { cause: error });
+      }
+      // Cancellation before publication is safe only if no backend attempt began.
+      // Every uncertain/after-commit outcome retains evidence and is never blindly retried.
+      throw new Error(
+        "Merged transfer interrupted; journal and backup retained. Run /sync sync to reconcile before further mutations.",
+        { cause: error },
+      );
+    }
+    await completeJournal(ctx, config, backend, journal, validate, options.signal, options.auto);
+    if (!options.signal?.aborted && (options.auto || !options.silent))
+      ctx.ui.notify(
+        [
+          `Synced independent changes for “${safeTerminalText(config.setupName)}”. ${apply ? "Local files changed; reload or restart Pi when ready to use changed resources." : "Remote updated."} No automatic reload.`,
+          ...(journal.warnings ?? []).map(safeTerminalText),
+        ].join("\n"),
+        journal.warnings?.length ? "warning" : "info",
+      );
+    return "applied" as const;
+  }
+}
+
+async function completeJournal(
+  ctx: ExtensionContext | ExtensionCommandContext,
+  config: AnySyncConfig,
+  backend: SyncBackend,
+  journal: MergeJournal,
+  validate: () => Promise<void>,
+  signal?: AbortSignal,
+  auto = false,
+) {
+  if (journal.identity !== mergeJournalIdentity(config, backend.identity))
+    throw new Error("Merge journal belongs to a different setup or selection; preserve it for reviewed recovery.");
+  await validate();
+  const head = await backend.readHead(signal);
+  if (!journal.committedHead && head && backend.sameRevision(head.revision, journal.expectedHead.revision)) {
+    await validate();
+    const local = await createSnapshot(config.snapshotIdentity, { ...snapshotOptionsForContext(ctx, config), signal });
+    if (
+      !sameHashes(fileHashMap(local), fileHashMap(journal.before)) ||
+      syncStateFingerprint(await readStateForConfig(config)) !== journal.stateIdentity
+    ) {
+      throw new Error(
+        "Uncertain publication is not active, but local content or baseline changed; keep the journal for reviewed recovery.",
+      );
+    }
+    await clearMergeJournal(config);
+    return false;
+  }
+  await validate();
+  if (
+    !head ||
+    head.snapshotId !== journal.upload.id ||
+    (journal.committedHead && !backend.sameRevision(head.revision, journal.committedHead.revision))
+  ) {
+    throw new Error(
+      "Publication outcome cannot be reconciled with the current remote head. Journal and backup retained; do not retry publication or restore old bytes blindly.",
+    );
+  }
+  const observed = await readSnapshotForHead(backend, head, signal);
+  requireCompatibleRemoteSelection(config, observed);
+  if (
+    !sameHashes(fileHashMap(observed), fileHashMap(journal.upload)) ||
+    JSON.stringify(observed.selection) !== JSON.stringify(journal.upload.selection)
+  )
+    throw new Error("Remote snapshot does not match the recorded merge publication.");
+  const state = await readStateForConfig(config);
+  if (syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, journal.after))) {
+    await validate();
+    await clearMergeJournal(config);
+    return true;
+  }
+  if (syncStateFingerprint(state) !== journal.stateIdentity) {
+    throw new Error("Sync baseline changed after the interrupted merge; preserve its journal and review recovery.");
+  }
+  const sessionDir = await sessionDirForApply(ctx, journal.after);
+  await validate();
+  const validateOwner = captureMutationOwner(ctx, signal);
+  const validateMutation = () => {
+    validateOwner();
+    if (auto && !ctx.isIdle()) throw new Error("Automatic file apply is no longer idle; evidence retained.");
+  };
+  await applyMergedSnapshot(
+    journal.before,
+    journal.after,
+    protectedSessionPaths(ctx),
+    { ...snapshotOptionsForContext(ctx, config), sessionDir, signal, validateMutation },
+    validate,
+  );
+  await validate();
+  await writeAcceptedState(config, head, journal.after);
+  await validate();
+  await clearMergeJournal(config);
+  await validate();
+  return true;
+}
+
+function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot) {
+  return {
+    version: 1,
+    profile: config.snapshotIdentity,
+    lastAppliedSnapshot: head.snapshotId,
+    lastRemoteRevision: head.revision,
+    lastFileHashes: fileHashMap(snapshot),
+    include: [...config.include],
+  };
+}
+
+async function writeAcceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot) {
+  await writeStateForConfig(config, acceptedState(config, head, snapshot));
+}

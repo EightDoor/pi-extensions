@@ -3,6 +3,7 @@ import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { assertWithinRoot, isDeniedPath, isPathInside, parentPaths, safeJoin, toPosix } from "../paths.js";
+import { syncDirectory } from "../state/json-file.js";
 import { agentDir } from "./session-paths.js";
 import {
   createSnapshot,
@@ -26,11 +27,21 @@ function fileHashMap(snapshot: Snapshot) {
 export async function applySnapshot(
   snapshot: Snapshot,
   protectedRelativePaths = new Set<string>(),
-  options: Pick<SnapshotOptions, "include" | "sessionDir" | "syncFiles" | "syncSessions" | "extraFiles"> = {},
+  options: Pick<
+    SnapshotOptions,
+    "include" | "sessionDir" | "syncFiles" | "syncSessions" | "extraFiles" | "signal" | "validateMutation"
+  > = {},
 ) {
   const root = agentDir();
   const { sessionDir } = options;
-  await recoverPendingSnapshotTransactions();
+  const transactionOptions = {
+    sessionDir,
+    signal: options.signal,
+    validateMutation: options.validateMutation,
+    protectedTargets: [...protectedRelativePaths].map((relative) => snapshotTarget(root, relative, sessionDir)),
+  };
+  options.validateMutation?.();
+  await recoverPendingSnapshotTransactions(transactionOptions);
   const current = await createSnapshot(snapshot.profile, {
     ...options,
     ...(options.include === undefined ? { syncSessions: snapshotIncludesSessions(snapshot) } : {}),
@@ -47,7 +58,7 @@ export async function applySnapshot(
     snapshot,
   );
   await preflightSnapshotMutations(root, plan, sessionDir);
-  await applySnapshotTransaction(plan, { sessionDir });
+  await applySnapshotTransaction(plan, transactionOptions);
   return appliedFileHashMap(snapshot, current, protectedRelativePaths);
 }
 
@@ -181,7 +192,7 @@ function decodeBase64Strict(value: string, filePath: string) {
   return Buffer.from(value, "base64");
 }
 
-async function preflightSnapshotMutations(
+export async function preflightSnapshotMutations(
   root: string,
   plan: { deletes: string[]; writes: Array<{ target: string; content: Buffer }> },
   sessionDir?: string,
@@ -232,6 +243,7 @@ async function ensureSafeDirectory(root: string, directory: string, deletePaths:
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await fs.mkdir(current);
+      await syncDirectory(path.dirname(current));
     }
   }
   return false;

@@ -13,10 +13,10 @@ export function formatDiff(local: Snapshot, remote: Snapshot) {
   const lines = [`local: ${local.files.length} files`, `remote: ${remote.id} (${remote.files.length} files)`, ""];
   let changed = 0;
   for (const filePath of allPaths) {
-    if (!localMap[filePath]) {
+    if (!Object.hasOwn(localMap, filePath)) {
       lines.push(`Remote only: ${filePath}`);
       changed += 1;
-    } else if (!remoteMap[filePath]) {
+    } else if (!Object.hasOwn(remoteMap, filePath)) {
       lines.push(`Local only: ${filePath}`);
       changed += 1;
     } else if (localMap[filePath] !== remoteMap[filePath]) {
@@ -102,7 +102,7 @@ export function formatRollbackSummary(
   ].join("\n");
 }
 
-function formatPublicationPreview(remote: Snapshot | undefined, upload: Snapshot) {
+export function formatPublicationPreview(remote: Snapshot | undefined, upload: Snapshot) {
   if (!remote) {
     return ["Remote is empty.", ...upload.files.map((file) => `Add remotely: ${file.path}`)].join("\n");
   }
@@ -123,8 +123,8 @@ function formatDirectionalChanges(
   const paths = [...new Set([...Object.keys(beforeMap), ...Object.keys(afterMap)])].sort();
   const lines: string[] = [];
   for (const filePath of paths) {
-    if (!beforeMap[filePath]) lines.push(`${labels.add}: ${filePath}`);
-    else if (!afterMap[filePath]) lines.push(`${labels.remove}: ${filePath}`);
+    if (!Object.hasOwn(beforeMap, filePath)) lines.push(`${labels.add}: ${filePath}`);
+    else if (!Object.hasOwn(afterMap, filePath)) lines.push(`${labels.remove}: ${filePath}`);
     else if (beforeMap[filePath] !== afterMap[filePath]) lines.push(`${labels.update}: ${filePath}`);
   }
   if (lines.length === 0) lines.push("No file changes.");

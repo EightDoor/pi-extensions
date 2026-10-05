@@ -24,6 +24,8 @@ export interface Snapshot {
 
 export interface SnapshotOptions {
   signal?: AbortSignal;
+  /** Caller-owned session/generation guard, rechecked at file-mutation boundaries. */
+  validateMutation?: () => void;
   include?: string[];
   sessionDir?: string;
   /** Temporary internal projections while snapshot storage remains wire-compatible. */
