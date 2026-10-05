@@ -160,7 +160,7 @@ export async function mergeSync(
       local: local.files,
       remote: remote.files,
       selectionCompatible: true,
-      protectedPaths: protectedSessionPaths(ctx),
+      protectedPaths: protectedSessionPaths(ctx, sessionRoot),
     });
     if (plan.kind !== "planned" || plan.conflicts.length) {
       throw review(
@@ -183,7 +183,7 @@ export async function mergeSync(
       if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
       return "applied" as const;
     }
-    await preflightMergedTargets(local, after, snapshotOptions);
+    await preflightMergedTargets(local, after, snapshotOptions, ctx.sessionManager.getSessionFile?.());
     await validate();
     if (!config.skipSecretScan && scanSnapshot(upload).length)
       throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
@@ -240,6 +240,15 @@ export async function mergeSync(
       throw new Error(
         "Local content or baseline changed before publication; candidate retired without transfer. Review a fresh sync.",
       );
+    }
+    // Backup/journal awaits can also change physical identity without changing any bytes.
+    try {
+      await preflightMergedTargets(atCommit, after, snapshotOptions, ctx.sessionManager.getSessionFile?.());
+      await validate();
+    } catch (error) {
+      await validate();
+      await clearMergeJournal(config);
+      throw error;
     }
     try {
       if (publish) {
@@ -352,9 +361,10 @@ async function completeJournal(
   await applyMergedSnapshot(
     journal.before,
     journal.after,
-    protectedSessionPaths(ctx),
+    protectedSessionPaths(ctx, sessionRoot),
     { ...snapshotOptions, validateMutation },
     validate,
+    ctx.sessionManager.getSessionFile?.(),
   );
   await validate();
   await writeAcceptedState(config, head, journal.after);

@@ -9,13 +9,14 @@ import { syncDirectory } from "../state/json-file.js";
 import { stateDir } from "../state/state-directory.js";
 import { throwIfAborted } from "./signals.js";
 
-export function protectedSessionPaths(ctx: ExtensionCommandContext | ExtensionContext) {
+export function protectedSessionPaths(
+  ctx: ExtensionCommandContext | ExtensionContext,
+  sessionRoot = sessionDirFromContext(ctx),
+) {
   const getSessionFile = ctx.sessionManager.getSessionFile;
   if (typeof getSessionFile !== "function") return new Set<string>();
   const sessionFile = getSessionFile.call(ctx.sessionManager) as string | undefined;
-  const snapshotPath = sessionFile
-    ? sessionSnapshotPathFromAbsolute(sessionFile, sessionDirFromContext(ctx))
-    : undefined;
+  const snapshotPath = sessionFile ? sessionSnapshotPathFromAbsolute(sessionFile, sessionRoot) : undefined;
   return snapshotPath ? new Set([snapshotPath]) : new Set<string>();
 }
 
