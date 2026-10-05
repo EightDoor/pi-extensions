@@ -23,6 +23,10 @@ export async function configuredSessionDir() {
   return settings?.sessionDir ? expandHome(settings.sessionDir) : undefined;
 }
 
+export async function effectiveSessionRoot(ctx: ExtensionCommandContext | ExtensionContext) {
+  return path.resolve(sessionStorageRoot(agentDir(), sessionDirFromContext(ctx) ?? (await configuredSessionDir())));
+}
+
 export async function sessionDirForApply(ctx: ExtensionCommandContext | ExtensionContext, snapshot: Snapshot) {
   const contextSessionDir = sessionDirFromContext(ctx);
   const localSessionDir = await configuredSessionDir();
