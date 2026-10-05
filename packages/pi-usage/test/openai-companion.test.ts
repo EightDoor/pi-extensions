@@ -6,7 +6,6 @@ import type { OAuthCredentialCandidateReader } from "../src/oauth-credential-sou
 import { OPENAI_CHATGPT_ADAPTER } from "../src/providers/openai-chatgpt.js";
 import { matchingOpenAIAppBuckets } from "../src/providers/openai-companion-usage.js";
 import { queryProviderUsage, resolveUsageAuth } from "../src/query.js";
-import { normalizeUsageSettings } from "../src/settings.js";
 
 const nativeModel = { provider: "openai", id: "gpt-6.1-sol", name: "GPT", baseUrl: "https://api.openai.com/v1" };
 const codexModel = { ...nativeModel, provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api/codex" };
@@ -54,7 +53,7 @@ const planPayload = {
 
 function setup(
   options: {
-    enabled?: boolean;
+    obsoleteArgument?: boolean;
     nativeAccess?: string;
     companion?: unknown;
     source?: string;
@@ -106,7 +105,7 @@ function setup(
         new Uint8Array(32),
         () => undefined,
         reader,
-        options.enabled ?? true,
+        options.obsoleteArgument,
       ),
   };
 }
@@ -146,12 +145,13 @@ test("equivalent complete companion grants are accepted", async () => {
   assert.ok((await state.resolve())?.openaiCompanion);
 });
 
-test("companion setting defaults off and rejects non-boolean values", () => {
-  assert.equal(normalizeUsageSettings({})?.openaiCompanionUsage, false);
-  assert.equal(normalizeUsageSettings({ openaiCompanionUsage: true })?.openaiCompanionUsage, true);
-  for (const value of [null, "true", 1, []])
-    assert.equal(normalizeUsageSettings({ openaiCompanionUsage: value }), undefined);
-});
+for (const obsoleteArgument of [undefined, false, true]) {
+  test(`exported resolver ignores obsolete companion argument ${obsoleteArgument}`, async () => {
+    const state = setup({ obsoleteArgument });
+    assert.ok((await state.resolve())?.openaiCompanion);
+    assert.deepEqual(state.calls, ["openai", "openai-codex"]);
+  });
+}
 
 test("opaque native auth selects exact companion credentials and keeps registration metadata local", async () => {
   const auth = await setup().resolve();
@@ -167,12 +167,7 @@ test("opaque native auth selects exact companion credentials and keeps registrat
   assert.doesNotMatch(auth.fingerprint, /fixture|refresh|access/);
 });
 
-test("disabled mode never resolves a companion and absent companion keeps web-only auth", async () => {
-  const disabled = setup({ enabled: false });
-  const auth = await disabled.resolve();
-  assert.ok(auth);
-  assert.equal(auth.openaiCompanion, undefined);
-  assert.deepEqual(disabled.calls, ["openai"]);
+test("absent companion keeps web-only auth without network requests", async () => {
   const missing = await setup({ companion: undefined }).resolve();
   assert.ok(missing);
   assert.equal(missing.openaiCompanion, undefined);
@@ -220,9 +215,64 @@ test("both credentials and registration ID participate in cache identity", async
   const a = await setup().resolve();
   const b = await setup({ clientId: "oaiapp_other" }).resolve();
   const c = await setup({ companion: { ...codex, access: codexAccess("other"), accountId: "other" } }).resolve();
-  const d = await setup({ enabled: false }).resolve();
+  const d = await setup({ companion: undefined }).resolve();
   const e = await setup({ nativeAccess: "rotated-native-access" }).resolve();
   assert.equal(new Set([a?.fingerprint, b?.fingerprint, c?.fingerprint, d?.fingerprint, e?.fingerprint]).size, 5);
+});
+
+test("app usage changes never affect visible percentages, including multiple windows and missing resets", () => {
+  const now = 2_000_000_000_000;
+  const makeReport = (remaining: number) => ({
+    providerId: "openai",
+    providerName: "OpenAI",
+    capturedAt: now,
+    source: "openai-chatgpt-companion",
+    semantics: { kind: "consumer-subscription" as const, label: "ChatGPT plan and app limits" },
+    buckets: [
+      {
+        id: "plan",
+        groupId: "chatgpt-plan",
+        label: "Plan",
+        remaining: 96,
+        unit: "percent" as const,
+        resetsAt: now / 1000 + 570000,
+        windowMinutes: 10080,
+      },
+      {
+        id: "app:weekly",
+        groupId: "chatgpt-app",
+        label: "App",
+        used: 100 - remaining,
+        remaining,
+        unit: "percent" as const,
+        resetsAt: now / 1000 + 576000,
+        windowMinutes: 10080,
+      },
+      {
+        id: "app:short",
+        groupId: "chatgpt-app",
+        label: "App",
+        used: 100 - remaining,
+        remaining,
+        unit: "percent" as const,
+        windowMinutes: 300,
+      },
+    ],
+    metrics: [{ id: "app-allowance", label: "App allowance", value: 25, unit: "percent" as const }],
+  });
+  const first = makeReport(99);
+  const second = makeReport(91);
+  assert.equal(formatUsageStatusline(first, undefined, now), "chatgpt plan 96% ↻ 6d14h · app ↻ 6d16h 5h");
+  assert.equal(formatUsageStatusline(first, undefined, now), formatUsageStatusline(second, undefined, now));
+  for (const display of ["current", "configured"] as const) {
+    const text = formatUsageReport(first, display);
+    assert.equal(text, formatUsageReport(second, display));
+    assert.match(text, /96% left/);
+    assert.match(text, /Weekly\s+resets/);
+    assert.match(text, /5h\s+Reset time unavailable/);
+    assert.doesNotMatch(text.split("App limits:")[1]?.split("App allowance:")[0] ?? "", /%|█|░/);
+    assert.match(text, /App allowance:\s+25%/);
+  }
 });
 
 test("valid unrelated registrations need readable IDs, not unused quota fields", () => {
@@ -255,7 +305,7 @@ for (const allowance of [0, 25.5, 100]) {
   });
 }
 
-test("quota query uses only companion GET auth and keeps plan/app percentages, allowances and resets separate", async () => {
+test("quota query uses only companion GET auth and keeps raw plan/app values, allowances and resets separate", async () => {
   const auth = await setup().resolve();
   assert.ok(auth);
   const urls: string[] = [];
@@ -288,17 +338,18 @@ test("quota query uses only companion GET auth and keeps plan/app percentages, a
     const text = formatUsageReport(report, "current");
     assert.match(text, /Plan limits/);
     assert.match(text, /App limits/);
+    assert.doesNotMatch(text.split("App limits:")[1]?.split("App allowance:")[0] ?? "", /%|█|░/);
     assert.match(text, /App allowance:\s+25%/);
     assert.match(text, /companion/i);
     assert.doesNotMatch(text, /oaiapp_fixture|account-fixture/);
     const status = formatUsageStatusline(report);
-    assert.match(status ?? "", /plan.*70%.*app.*80%/);
+    assert.match(status ?? "", /plan.*70%.*app.*↻/);
     assert.match(
       formatUsageStatusline({
         ...report,
         buckets: report.buckets.map((bucket) => ({ ...bucket, remaining: undefined })),
       }) ?? "",
-      /plan unavailable.*app unavailable/,
+      /plan unavailable.*app.*↻/,
     );
     assert.ok(guard.mock.calls.length >= 3);
   } finally {

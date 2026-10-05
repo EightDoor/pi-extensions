@@ -30,7 +30,6 @@ function memoryRuntime(
     kind: options.kind ?? "loaded",
     path: "/tmp/pi-usage.json",
     settings: {
-      openaiCompanionUsage: false,
       codexFastMode: options.enabled ?? false,
       codexStatusResetCountdown: false,
       codexStatusPercentage: "remaining",
@@ -342,7 +341,6 @@ test("session replacement aborts stale loads and accepted writes before UI publi
     kind: "loaded",
     path: "/tmp/pi-usage.json",
     settings: {
-      openaiCompanionUsage: false,
       codexFastMode: true,
       codexStatusResetCountdown: false,
       codexStatusPercentage: "remaining",
