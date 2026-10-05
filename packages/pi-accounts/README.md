@@ -115,7 +115,8 @@ Login and **Switch … account** still change only the current session, not the 
 It is read when a session starts and remains fixed for that session; changing the process environment afterward affects only subsequently started sessions.
 The value must be a saved account name: 1–64 letters, numbers, dots, underscores, or hyphens (surrounding whitespace is trimmed); `default` is reserved and invalid.
 A missing name for **any supported provider when used**, or an invalid value, fails that provider closed rather than using a default or an existing session choice. Providers not managed by this package remain unchanged.
-Unset `PI_ACCOUNT` and restart Pi to restore the session's saved selection. The override never changes `pi-accounts.json` or session entries; the session snapshot underneath it remains available when it is removed.
+Unset `PI_ACCOUNT` and restart Pi to restore the session's saved selection. The override does not change saved default-selection fields or record its value in session entries; routine session initialization can still snapshot defaults, and OAuth refresh can update credentials in `pi-accounts.json`.
+If a saved session selection is invalid or cannot be written, a valid `PI_ACCOUNT` can still authenticate without repairing that underlying error; unset it and restart Pi to recover through `/accounts`.
 `/accounts` and the account status indicate the environment as the effective source without echoing raw environment input. While it is set, interactive switching is unavailable; login can save an account but does not replace the override, and removing its selected credential fails that provider closed immediately.
 
 Sessions predating session-local selection support snapshot the current default once because their historical choice cannot be inferred.

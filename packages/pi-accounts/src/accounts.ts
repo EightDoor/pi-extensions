@@ -134,7 +134,12 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     const restored = restoreAccountSelections(ctx.sessionManager.getEntries(), owner.sessionId);
     if (restored.status === "invalid") {
       owner.error = restored.message;
-      ctx.ui.notify(restored.message, "error");
+      ctx.ui.notify(
+        owner.environmentAccount === undefined
+          ? restored.message
+          : "The saved session selection is invalid, but PI_ACCOUNT remains active. Unset it and restart Pi to recover via /accounts.",
+        owner.environmentAccount === undefined ? "error" : "warning",
+      );
       return;
     }
     let selections =
@@ -162,7 +167,12 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (!isOwnerCurrent(owner)) return;
       owner.error =
         "Could not persist this Pi session's account selection. Choose an account or default from /accounts to retry.";
-      ctx.ui.notify(owner.error, "error");
+      ctx.ui.notify(
+        owner.environmentAccount === undefined
+          ? owner.error
+          : "Could not persist the saved session selection, but PI_ACCOUNT remains active. Unset it and restart Pi to retry via /accounts.",
+        owner.environmentAccount === undefined ? "error" : "warning",
+      );
     }
   };
 
@@ -252,7 +262,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (!coordinator) throw new Error(`Missing runtime coordinator for ${providerId}.`);
       if (!isOwnerCurrent(owner)) return staleResult(providerId);
       const signal = ownerSignal ? AbortSignal.any([owner.signal, ownerSignal]) : owner.signal;
-      const selectionError = owner.error ?? owner.environmentError;
+      const selectionError =
+        owner.environmentError ?? (owner.environmentAccount === undefined ? owner.error : undefined);
       let result = selectionError
         ? await coordinator.forceFailClosed(ctx, "unknown", new Error(selectionError))
         : await coordinator.ensureActive(
@@ -460,7 +471,9 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (result.status === "active" && ctx.model && coordinator && !coordinator.isModelAvailable(ctx.model.id)) {
         owner.abortProviders.add(providerId);
         ctx.ui.notify(
-          `${requireAdapter(adapters, providerId).displayName} model ${ctx.model.id} is not available to account "${result.accountName}".`,
+          hasEnvironmentSelection(owner)
+            ? `${requireAdapter(adapters, providerId).displayName} model ${ctx.model.id} is not available to the account selected by PI_ACCOUNT.`
+            : `${requireAdapter(adapters, providerId).displayName} model ${ctx.model.id} is not available to account "${result.accountName}".`,
           "error",
         );
       }

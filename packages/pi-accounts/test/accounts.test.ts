@@ -34,7 +34,9 @@ import { OAUTH_CREDENTIAL_READINESS_CHANNEL, OAUTH_CREDENTIAL_SOURCE_CHANNEL } f
 import { RuntimeAuthCoordinator } from "../src/runtime-auth.js";
 import { ACCOUNT_SELECTION_ENTRY_TYPE } from "../src/session-selection.js";
 import { InMemoryAccountStorageBackend } from "../src/storage.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
 
+isolateAccountEnvironment();
 beforeAll(() => initTheme("dark", false));
 
 const credential = (suffix: string, extra: Record<string, unknown> = {}): StoredOAuthCredential => ({
@@ -921,6 +923,122 @@ test("PI_ACCOUNT overrides restored choices and stays process-local across reloa
     await startSessionAndWaitForCurrentProvider(next, nextContext, { reason: "resume" });
     assert.equal(nextRuntime.keys.get("anthropic"), "access-personal");
     await next.events.get("session_shutdown")?.[0]?.({}, nextContext);
+  } finally {
+    if (previous === undefined) delete process.env.PI_ACCOUNT;
+    else process.env.PI_ACCOUNT = previous;
+  }
+});
+
+test("PI_ACCOUNT keeps a restricted-model error from revealing the environment-selected name", async () => {
+  const previous = process.env.PI_ACCOUNT;
+  try {
+    process.env.PI_ACCOUNT = "work";
+    const store = new AccountStore(new InMemoryAccountStorageBackend());
+    await store.updateProvider("github-copilot", () => ({
+      accounts: { work: credential("copilot", { availableModelIds: ["allowed"] }) },
+    }));
+    const mock = createMockPi();
+    accountsExtension(mock.pi, { store, providers: [fakeProvider("github-copilot")] });
+    const { keys, registry } = runtimeHarness(mock);
+    let aborts = 0;
+    const { ctx, notifications } = createMockContext({
+      sessionManager: createTestSessionManager(),
+      model: { provider: "github-copilot", id: "blocked" },
+      modelRegistry: registry,
+      abort: () => {
+        aborts += 1;
+      },
+    });
+    await startSessionAndWaitForCurrentProvider(mock, ctx);
+    await mock.events.get("turn_start")?.[0]?.({}, ctx);
+    assert.equal(keys.get("github-copilot"), "access-copilot");
+    assert.equal(aborts, 1);
+    assert.ok(notifications.some(({ message }) => message.includes("blocked") && message.includes("PI_ACCOUNT")));
+    assert.equal(
+      notifications.some(({ message }) => message.includes('account "work"')),
+      false,
+    );
+    await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+  } finally {
+    if (previous === undefined) delete process.env.PI_ACCOUNT;
+    else process.env.PI_ACCOUNT = previous;
+  }
+});
+
+test("PI_ACCOUNT bypasses invalid saved session selections without repairing them", async () => {
+  const previous = process.env.PI_ACCOUNT;
+  try {
+    process.env.PI_ACCOUNT = "work";
+    const store = new AccountStore(new InMemoryAccountStorageBackend());
+    await store.updateProvider("anthropic", () => ({
+      active: "personal",
+      accounts: { personal: credential("personal"), work: credential("work") },
+    }));
+    const mock = createMockPi();
+    accountsExtension(mock.pi, { store, providers: [fakeProvider("anthropic")] });
+    const { keys, registry } = runtimeHarness(mock);
+    const sessionManager = createTestSessionManager();
+    sessionManager.appendCustomEntry(ACCOUNT_SELECTION_ENTRY_TYPE, {
+      version: 2,
+      sessionId: sessionManager.getSessionId(),
+      providers: { anthropic: "personal" },
+    });
+    const count = sessionManager.getEntries().length;
+    const { ctx, notifications } = createMockContext({
+      sessionManager,
+      modelRegistry: registry,
+      model: { provider: "anthropic", id: "claude" },
+    });
+    await startSessionAndWaitForCurrentProvider(mock, ctx, { reason: "resume" });
+    assert.equal(keys.get("anthropic"), "access-work");
+    assert.equal(sessionManager.getEntries().length, count);
+    assert.ok(notifications.some(({ message }) => message.includes("invalid")));
+    const menu = createInteractiveAccountContext({
+      sessionManager,
+      modelRegistry: registry,
+      model: { provider: "anthropic", id: "claude" },
+    });
+    await mock.commands.get("accounts")?.handler("", menu.ctx);
+    assert.match(menu.selectCalls[0]?.title ?? "", /PI_ACCOUNT remains effective/);
+    assert.match(menu.selectCalls[0]?.title ?? "", /Anthropic: PI_ACCOUNT/);
+    await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+
+    delete process.env.PI_ACCOUNT;
+    await startSessionAndWaitForCurrentProvider(mock, ctx, { reason: "resume" });
+    assert.equal(keys.get("anthropic"), FAIL_CLOSED_API_KEY);
+    await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+  } finally {
+    if (previous === undefined) delete process.env.PI_ACCOUNT;
+    else process.env.PI_ACCOUNT = previous;
+  }
+});
+
+test("PI_ACCOUNT works if the underlying session snapshot cannot be written", async () => {
+  const previous = process.env.PI_ACCOUNT;
+  try {
+    process.env.PI_ACCOUNT = "work";
+    const store = new AccountStore(new InMemoryAccountStorageBackend());
+    await store.updateProvider("anthropic", () => ({
+      active: "personal",
+      accounts: { personal: credential("personal"), work: credential("work") },
+    }));
+    const mock = createMockPi();
+    accountsExtension(mock.pi, { store, providers: [fakeProvider("anthropic")] });
+    const { keys, registry } = runtimeHarness(mock);
+    const sessionManager = createTestSessionManager();
+    sessionManager.appendCustomEntry = () => {
+      throw new Error("session disk unavailable");
+    };
+    const { ctx, notifications } = createMockContext({
+      sessionManager,
+      modelRegistry: registry,
+      model: { provider: "anthropic", id: "claude" },
+    });
+    await startSessionAndWaitForCurrentProvider(mock, ctx);
+    assert.equal(keys.get("anthropic"), "access-work");
+    assert.equal(sessionManager.getEntries().length, 0);
+    assert.ok(notifications.some(({ message }) => message.includes("PI_ACCOUNT")));
+    await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
   } finally {
     if (previous === undefined) delete process.env.PI_ACCOUNT;
     else process.env.PI_ACCOUNT = previous;

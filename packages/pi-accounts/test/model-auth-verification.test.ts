@@ -10,6 +10,9 @@ import { AccountStore, InMemoryAccountStorageBackend } from "../src/account-stor
 import accountsExtension from "../src/accounts.js";
 import { type AccountProviderId, createBuiltinProviderAdapters } from "../src/oauth.js";
 import { RUNTIME_FAIL_CLOSED_API_KEY, RuntimeAuthCoordinator } from "../src/runtime-auth.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
+
+isolateAccountEnvironment();
 
 const key = "sk-named-fixture";
 const otherKey = "sk-other-fixture";

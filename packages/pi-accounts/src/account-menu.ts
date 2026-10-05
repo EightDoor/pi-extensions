@@ -341,7 +341,9 @@ export async function showAccountsMenu(
         currentProviderId: toProviderId(ctx.model?.provider),
         hasAnyStoredAccount: [...states.values()].some((state) => accountNames(state).length > 0),
         selectionError:
-          session.error ??
+          (session.environmentAccount !== undefined && session.error
+            ? "The saved session selection is unavailable, but PI_ACCOUNT remains effective. Unset it and restart Pi to repair via /accounts."
+            : session.error) ??
           session.environmentError ??
           (missingSelection
             ? session.environmentAccount !== undefined
@@ -371,7 +373,7 @@ async function readProviderMenuStates(
       active,
       defaultAccount: state.active,
       selectionInvalid:
-        session.error !== undefined ||
+        (session.environmentAccount === undefined && session.error !== undefined) ||
         session.environmentError !== undefined ||
         (active !== undefined && !getOwnCredential(state.accounts, active)),
       accounts: state.accounts,
