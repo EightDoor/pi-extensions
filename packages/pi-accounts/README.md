@@ -126,6 +126,24 @@ Saves preserve unknown settings fields and use the credential store's cross-proc
 Within one store, asynchronous reads follow queued writes; failed writes leave the queue usable.
 Malformed settings block saves instead of being replaced, and failed saves do not change the session's authentication.
 
+## 🔌 Extension account protocols
+
+Trusted extensions can use Pi's in-process `pi.events` API to discover named accounts,
+activate one for the current session, and request a verified active OAuth credential.
+Topology and activation replies contain account identifiers, never credential material;
+the separate OAuth credential offer **does** contain secrets. No package import or
+credential-file read is needed. See the repository's [Named Account Protocols v1](https://github.com/narumiruna/pi-extensions/blob/main/docs/api/accounts-v1.md)
+for topology and activation; it links to the separate OAuth readiness and credential-source
+specifications. These references describe payloads, reply timing, cancellation, and consumer safety.
+
+Activation does not change the user-wide default. When `PI_ACCOUNT` is set, protocol activation
+(including restoration of Pi auth) returns `activation_failed` without changing the selection.
+Otherwise, activation may persist a session selection even if authentication later fails or the
+requester cancels, leaving that provider fail-closed.
+Consumers must bound their wait: a missing reply or timeout is not proof that activation
+did not happen, and dependent work must not proceed without confirmation. `pi.events`
+is not a trust boundary; load only trusted extensions.
+
 ## 🔒 Security and privacy
 
 The extension refreshes each selected OAuth account through the provider's `refresh()` implementation and converts it through `toAuth()`.
@@ -157,7 +175,7 @@ The protocols do not persist or log the offer, which contains neither the accoun
 Consumers must match its access token and provider metadata against freshly resolved runtime authentication.
 Without a compatible consumer, account activation works unchanged and no credential is requested.
 
-Pi extensions run with the user's process privileges, and the shared event bus does not isolate installed extensions.
+Pi extensions run with the user's process privileges; `pi.events` does not isolate installed extensions.
 Install only trusted extensions because any extension can read user files and process memory.
 The protocol reduces accidental credential coupling; it is not a sandbox.
 

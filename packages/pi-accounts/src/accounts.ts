@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAccountActivation } from "./account-activation.js";
 import {
   AccountStore,
   consumeMigrationNotice,
@@ -10,6 +11,7 @@ import {
   parseAccountName,
   type StoredCredential,
 } from "./account-store.js";
+import { registerAccountsProtocol } from "./accounts-protocol.js";
 import {
   type AccountProviderAdapter,
   type AccountProviderId,
@@ -67,11 +69,13 @@ type SessionEntryWriter = {
   appendCustomEntry(customType: string, data?: unknown): string;
 };
 
-type SessionSelectionOwner = {
+export type SessionSelectionOwner = {
   context: ExtensionContext;
   sessionManager: ExtensionContext["sessionManager"] & SessionEntryWriter;
   sessionId: string;
   selections: ProviderAccountSelections;
+  selectionRevisions: Map<AccountProviderId, number>;
+  activationRequests: Map<AccountProviderId, number>;
   error?: string;
   environmentAccount?: string;
   environmentError?: string;
@@ -89,7 +93,7 @@ type SessionSelectionOwner = {
   startupCompletedProviders: Set<AccountProviderId>;
 };
 
-type SyncProvider = (
+export type SyncProvider = (
   providerId: AccountProviderId,
   ctx: ExtensionContext,
   owner: SessionSelectionOwner,
@@ -97,7 +101,7 @@ type SyncProvider = (
   model?: ExtensionContext["model"],
 ) => Promise<EnsureActiveProviderAuthResult>;
 
-type PersistSelection = (
+export type PersistSelection = (
   owner: SessionSelectionOwner,
   providerId: AccountProviderId,
   accountName: string | null,
@@ -181,6 +185,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     if (previous) {
       previous.controller.abort(new DOMException("Accounts session replaced", "AbortError"));
       previous.results.clear();
+      previous.selectionRevisions.clear();
+      previous.activationRequests.clear();
       previous.appliedIdentities.clear();
       previous.abortProviders.clear();
       previous.syncTasks.clear();
@@ -200,6 +206,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       selections: cloneAccountSelections(Object.create(null) as ProviderAccountSelections),
       environmentAccount: environment.account,
       environmentError: environment.error,
+      selectionRevisions: new Map(),
+      activationRequests: new Map(),
       controller,
       signal: controller.signal,
       ready: Promise.resolve(),
@@ -245,6 +253,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     );
     if (!isOwnerCurrent(owner) || !isCurrent()) return false;
     owner.selections = selections;
+    owner.selectionRevisions.set(providerId, (owner.selectionRevisions.get(providerId) ?? 0) + 1);
     owner.error = undefined;
     return true;
   };
@@ -423,6 +432,35 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     },
   ]);
 
+  registerAccountsProtocol(
+    pi,
+    async () => {
+      const data = await store.readAsync();
+      return {
+        providers: providers.map((adapter) => {
+          const state = data.providers[adapter.id];
+          return {
+            providerId: adapter.id,
+            displayName: adapter.displayName,
+            accounts: Object.entries(state?.accounts ?? {}).map(([name, credential]) => ({
+              name,
+              kind: credential.type === "api_key" ? ("api-key" as const) : ("oauth" as const),
+            })),
+            ...(state?.active ? { defaultAccount: state.active } : {}),
+          };
+        }),
+      };
+    },
+    createAccountActivation(
+      store,
+      adapters,
+      (session) => sessionOwners.get(session as ExtensionContext["sessionManager"]),
+      isOwnerCurrent,
+      persistSelection,
+      syncProvider,
+    ),
+  );
+
   pi.registerCommand(
     "accounts",
     createAccountCommand(store, adapters, syncProvider, persistSelection, ensureSessionOwner, (owner) => ({
@@ -501,6 +539,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     sessionOwners.delete(ctx.sessionManager);
     owner.controller.abort(new DOMException("Accounts session shut down", "AbortError"));
     owner.results.clear();
+    owner.selectionRevisions.clear();
+    owner.activationRequests.clear();
     owner.appliedIdentities.clear();
     owner.abortProviders.clear();
     owner.syncTasks.clear();
