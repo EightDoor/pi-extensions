@@ -6,7 +6,7 @@ import type { SnapshotFile } from "../snapshot/snapshot-types.js";
 /** Absence and an empty file are different states. A missing ancestor is not absence. */
 export type FileVersion = SnapshotFile | undefined;
 export type FileMergeDecision =
-  | { kind: "accepted"; path: string; source: "equal" | "local" | "remote"; file: FileVersion }
+  | { kind: "accepted"; path: string; source: "equal" | "local" | "remote" | "merged"; file: FileVersion }
   | { kind: "conflict"; path: string; reason: "both-changed" | "protected-session" | "path-collision" };
 
 export type FileMergePlan =

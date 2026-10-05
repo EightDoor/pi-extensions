@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { backendIdentityCoordinates } from "../backends/backend-identity.js";
 import { normalizeGitBranch, normalizeGitDirectory, normalizeGitRemote } from "../backends/git/git-config.js";
 import { normalizeWebDavPath, normalizeWebDavUrl } from "../backends/webdav/webdav-config.js";
+import { normalizeLocalFields } from "../sync/local-fields.js";
 import { normalizeSyncInclude } from "../sync/sync-policy.js";
 import { localConfigPath, readActiveLocalConfigDocumentForRepair } from "./config-file.js";
 import { requireSettings } from "./settings-store.js";
@@ -59,6 +60,7 @@ function configFromSettings(settings: PiSyncSettingsV3, setupName?: string): Any
     settings.onSwitch,
     settings.skipSecretScan ?? false,
     settings.showStatus ?? true,
+    settings.version,
   );
 }
 
@@ -111,6 +113,8 @@ export function syncConfigReviewIdentity(config: AnySyncConfig) {
     config.include,
     config.automatic,
     config.automaticTransfer ?? false,
+    config.localFields,
+    config.mergeSettings ?? false,
   ]);
 }
 
@@ -146,6 +150,7 @@ function resolveSyncConfig(
   onSwitch: OnSwitchAction,
   skipSecretScan: boolean,
   showStatus: boolean,
+  settingsVersion = 3,
 ): AnySyncConfig {
   const storagePath = normalizeStoragePath(setup.storage.path);
   const namespace = storagePath === "./" ? "root" : storagePath.slice(storagePath.lastIndexOf("/") + 1);
@@ -158,6 +163,11 @@ function resolveSyncConfig(
     include,
     automatic: setup.sync.automatic,
     automaticTransfer: setup.sync.automaticTransfer ?? false,
+    localFields:
+      setup.sync.localFields === undefined && settingsVersion === 3
+        ? undefined
+        : normalizeLocalFields(setup.sync.localFields),
+    mergeSettings: setup.sync.mergeSettings ?? false,
     onSwitch,
     skipSecretScan,
     showStatus,

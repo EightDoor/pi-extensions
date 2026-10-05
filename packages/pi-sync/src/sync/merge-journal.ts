@@ -7,12 +7,15 @@ import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
 import { statePathForConfig } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
+import { portableSnapshot } from "./local-fields.js";
+import { fileHashMap, sameHashes } from "./sync-state.js";
 
 export interface MergeJournal {
   version: 1;
   identity: string;
   before: Snapshot;
   after: Snapshot;
+  accepted?: Snapshot;
   upload: Snapshot;
   expectedHead: RemoteHead;
   committedHead?: RemoteHead;
@@ -26,7 +29,7 @@ export interface MergeJournal {
 }
 
 export function mergeJournalIdentity(config: AnySyncConfig, backendIdentity: string) {
-  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort()]);
+  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort(), config.localFields ?? []]);
 }
 
 export function mergeJournalPath(config: AnySyncConfig) {
@@ -76,9 +79,14 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
     throw new Error("Unsupported or damaged merge journal; preserve it and review recovery before syncing.");
   // Verify every path and byte, including the unmanaged remote files retained for publication.
   try {
-    for (const snapshot of [journal.before, journal.after, journal.upload]) {
+    for (const snapshot of [
+      journal.before,
+      journal.after,
+      journal.upload,
+      ...(journal.accepted ? [journal.accepted] : []),
+    ]) {
       if (
-        snapshot.version !== 1 ||
+        (snapshot.version !== 1 && snapshot.version !== 2) ||
         typeof snapshot.id !== "string" ||
         typeof snapshot.profile !== "string" ||
         snapshot.files.length > 16_384 ||
@@ -96,6 +104,11 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
   } catch {
     throw new Error("Invalid merge journal paths, metadata, or bytes; preserve evidence for review.");
   }
+  if (
+    journal.accepted &&
+    !sameHashes(fileHashMap(portableSnapshot(journal.after, config.localFields)), fileHashMap(journal.accepted))
+  )
+    throw new Error("Invalid accepted merge projection; preserve journal evidence.");
   return journal;
 }
 
