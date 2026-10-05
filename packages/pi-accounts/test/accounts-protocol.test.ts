@@ -1,0 +1,324 @@
+import assert from "node:assert/strict";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { initTheme, ModelRegistry, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { beforeAll, test } from "vitest";
+import { createMockContext, createMockPi } from "../../../test/support.js";
+import accountsExtension, { AccountStore, InMemoryAccountStorageBackend } from "../src/accounts.js";
+import type { AccountProviderAdapter } from "../src/oauth.js";
+
+beforeAll(() => initTheme("dark", false));
+const access = "fixture-access-secret";
+const refresh = "fixture-refresh-secret";
+const key = "fixture-api-secret";
+const credential = { type: "oauth" as const, access, refresh, expires: Date.now() + 3_600_000 };
+type Reply = { status: string; providerId: string; accountName?: string | null; code?: string; message?: string };
+const provider: AccountProviderAdapter = {
+  id: "openai",
+  displayName: "OpenAI",
+  requiresApiKeyBridge: false,
+  supportsApiKey: true,
+  runtimeAuthMode: "api-key",
+  oauth: {
+    login: async () => credential,
+    refresh: async () => credential,
+    toAuth: async (value) => ({ apiKey: value.access }),
+  },
+};
+async function fixture(adapter = provider) {
+  const mock = createMockPi();
+  const store = new AccountStore(new InMemoryAccountStorageBackend());
+  await store.updateProvider("openai", () => ({
+    active: "beta",
+    accounts: { alpha: credential, beta: { type: "api_key", key } },
+  }));
+  accountsExtension(mock.pi, { store, providers: [adapter] });
+  async function session() {
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const registry = new ModelRegistry(runtime);
+    const manager = SessionManager.inMemory(process.cwd());
+    const { ctx } = createMockContext({ sessionManager: manager, modelRegistry: registry });
+    await mock.events.get("session_start")?.[0]?.({}, ctx);
+    return { registry, manager, ctx };
+  }
+  return { mock, store, session };
+}
+async function activate(
+  mock: ReturnType<typeof createMockPi>,
+  session: object,
+  account: string | null,
+  extra: object = {},
+) {
+  let pending: Promise<Reply> | undefined;
+  pending = new Promise<Reply>((resolve) => {
+    mock.eventBus.emit("accounts:activation:v1", { session, provider: "openai", account, ...extra, reply: resolve });
+  });
+  return Promise.race([
+    pending,
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("No activation reply")), 1000);
+      void pending?.finally(() => clearTimeout(timer));
+    }),
+  ]);
+}
+function safe(value: unknown) {
+  const text = JSON.stringify(value);
+  for (const secret of [access, refresh, key]) assert.ok(!text.includes(secret));
+}
+
+test("topology inventories both credential kinds and default without secrets", async () => {
+  const { mock } = await fixture();
+  let result: unknown;
+  mock.eventBus.emit("accounts:topology:v1", {
+    reply: (value: unknown) => {
+      result = value;
+    },
+  });
+  assert.deepEqual(result, {
+    providers: [
+      {
+        providerId: "openai",
+        displayName: "OpenAI",
+        accounts: [
+          { name: "alpha", kind: "oauth" },
+          { name: "beta", kind: "api-key" },
+        ],
+        defaultAccount: "beta",
+      },
+    ],
+  });
+  safe(result);
+});
+for (const account of ["alpha", "beta"] as const) {
+  test(`${account} activation overrides NEW-session default before first auth resolution`, async () => {
+    const { mock, session } = await fixture();
+    const current = await session();
+    const result = await activate(mock, current.manager, account);
+    assert.deepEqual(result, { status: "active", providerId: "openai", accountName: account });
+    const selection = current.manager
+      .getEntries()
+      .filter((entry) => entry.type === "custom" && entry.customType === "pi-accounts-selection")
+      .at(-1);
+    assert.ok(selection?.type === "custom");
+    assert.equal((selection.data as { providers: Record<string, string | null> }).providers.openai, account);
+    assert.equal(await current.registry.getApiKeyForProvider("openai"), account === "alpha" ? access : key);
+    safe(result);
+    const restored = await activate(mock, current.manager, null);
+    assert.deepEqual(restored, { status: "inactive", providerId: "openai", accountName: null });
+    assert.notEqual(await current.registry.getApiKeyForProvider("openai"), account === "alpha" ? access : key);
+  });
+}
+test("two sessions use independent real ModelRuntime credentials", async () => {
+  const { mock, session } = await fixture();
+  const a = await session();
+  const b = await session();
+  const replies = await Promise.all([activate(mock, a.manager, "alpha"), activate(mock, b.manager, "beta")]);
+  assert.ok(replies.every((reply) => reply.status === "active"));
+  assert.equal(await a.registry.getApiKeyForProvider("openai"), access);
+  assert.equal(await b.registry.getApiKeyForProvider("openai"), key);
+});
+test("typed errors do not publish raw provider exceptions", async () => {
+  const { mock, store, session } = await fixture({
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      refresh: async () => {
+        throw new Error(`raw ${refresh} and unrelated-secret`);
+      },
+    },
+  });
+  const current = await session();
+  assert.equal((await activate(mock, current.manager, "ghost")).code, "account_not_found");
+  assert.equal((await activate(mock, {}, "alpha")).code, "session_unavailable");
+  assert.equal(
+    (await activate(mock, current.manager, "alpha", { provider: "unsupported" })).code,
+    "provider_unsupported",
+  );
+  await store.updateProvider("openai", (state) => ({
+    ...state,
+    accounts: { ...state.accounts, alpha: { ...credential, expires: 0 } },
+  }));
+  const failed = await activate(mock, current.manager, "alpha");
+  assert.equal(failed.code, "authentication_failed");
+  safe(failed);
+  assert.ok(!JSON.stringify(failed).includes("unrelated-secret"));
+});
+test("pre-aborted request cannot change selection or runtime auth", async () => {
+  const { mock, session } = await fixture();
+  const current = await session();
+  await activate(mock, current.manager, "beta");
+  const before = current.manager.getEntries().length;
+  const controller = new AbortController();
+  controller.abort(new Error(key));
+  const result = await activate(mock, current.manager, "alpha", { signal: controller.signal });
+  assert.equal(result.code, "cancelled");
+  assert.equal(current.manager.getEntries().length, before);
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), key);
+  safe(result);
+});
+test("effective configured auth conflict is typed and fail-closed", async () => {
+  const { mock, session } = await fixture();
+  const current = await session();
+  const original = current.registry.getApiKeyAndHeaders.bind(current.registry);
+  current.registry.getApiKeyAndHeaders = async (model) => ({
+    ...(await original(model)),
+    headers: { Authorization: `Bearer ${refresh}` },
+  });
+  const result = await activate(mock, current.manager, "beta");
+  assert.equal(result.code, "effective_auth_conflict");
+  safe(result);
+});
+test("stale conversion cannot overwrite a newer selection", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { mock, session } = await fixture({
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      toAuth: async (value) => {
+        entered();
+        await gate;
+        return { apiKey: value.access };
+      },
+    },
+  });
+  const current = await session();
+  const stale = activate(mock, current.manager, "alpha");
+  await started;
+  const latest = await activate(mock, current.manager, "beta");
+  release();
+  const old = await stale;
+  assert.equal(old.code, "activation_superseded");
+  assert.equal(latest.status, "active");
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), key);
+});
+test("model unavailable result uses account capability, not a second catalog", async () => {
+  const { mock, store, session } = await fixture();
+  await store.updateProvider("openai", (state) => ({
+    ...state,
+    accounts: { ...state.accounts, alpha: { ...credential, availableModelIds: ["allowed"] } },
+  }));
+  const current = await session();
+  assert.equal((await activate(mock, current.manager, "alpha", { model: "blocked" })).code, "model_unavailable");
+});
+test("malformed requests and absent responder produce no reply", () => {
+  const mock = createMockPi();
+  let replies = 0;
+  mock.eventBus.emit("accounts:topology:v1", { reply: () => replies++ });
+  mock.eventBus.emit("accounts:activation:v1", { reply: () => replies++ });
+  assert.equal(replies, 0);
+});
+test("shutdown during conversion cannot publish late success", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { mock, session } = await fixture({
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      toAuth: async () => {
+        entered();
+        await gate;
+        return { apiKey: access };
+      },
+    },
+  });
+  const current = await session();
+  const pending = activate(mock, current.manager, "alpha");
+  await started;
+  await mock.events.get("session_shutdown")?.[0]?.({}, current.ctx);
+  release();
+  assert.notEqual((await pending).status, "active");
+});
+
+test("cancellation during conversion stays fail-closed and returns no secret reason", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { mock, session } = await fixture({
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      toAuth: async () => {
+        entered();
+        await gate;
+        return { apiKey: access };
+      },
+    },
+  });
+  const current = await session();
+  const controller = new AbortController();
+  const pending = activate(mock, current.manager, "alpha", { signal: controller.signal });
+  await started;
+  controller.abort(new Error(refresh));
+  release();
+  const result = await pending;
+  assert.equal(result.code, "cancelled");
+  safe(result);
+  assert.notEqual(await current.registry.getApiKeyForProvider("openai"), access);
+});
+
+test("unexpected sync exception returns only activation_failed", async () => {
+  const { mock, session } = await fixture();
+  const current = await session();
+  current.registry.getAll = () => {
+    throw new Error(`unexpected ${key}`);
+  };
+  const result = await activate(mock, current.manager, "alpha");
+  assert.equal(result.code, "activation_failed");
+  safe(result);
+});
+
+test("installed protocol parsers ignore malformed envelopes and hostile getters", async () => {
+  const { mock } = await fixture();
+  let replies = 0;
+  const reply = () => replies++;
+  for (const data of [
+    null,
+    [],
+    { reply },
+    { session: {}, provider: "openai", account: 42, reply },
+    { session: {}, provider: "openai", account: "alpha", signal: {}, reply },
+    {
+      get session() {
+        throw new Error(key);
+      },
+      reply,
+    },
+  ]) {
+    mock.eventBus.emit("accounts:activation:v1", data);
+  }
+  mock.eventBus.emit("accounts:topology:v1", { reply: "invalid" });
+  assert.equal(replies, 0);
+});
+
+test("store failure is typed without exposing storage exception text", async () => {
+  const { mock, store, session } = await fixture();
+  const current = await session();
+  await activate(mock, current.manager, "beta");
+  store.read = () => {
+    throw new Error(`unreadable ${refresh}`);
+  };
+  const result = await activate(mock, current.manager, "alpha");
+  assert.equal(result.code, "store_unavailable");
+  safe(result);
+});
