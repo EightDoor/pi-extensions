@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getLangfuseTracerProvider, setLangfuseTracerProvider } from "@langfuse/tracing";
 import { test } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 
@@ -229,7 +230,14 @@ test("generated package copies share runtime session capabilities", async () => 
   const root = await mkdtemp(join(packageRoot, ".pi-langfuse-build-test-"));
   let runtime: { shutdown(): Promise<void> } | undefined;
   let tracing: { dispose(): Promise<void> } | undefined;
+  const runtimeSlots = ["v1", "v2"].map((version) => {
+    const key = Symbol.for(`@narumitw/pi-langfuse/runtime/${version}`);
+    return { key, descriptor: Object.getOwnPropertyDescriptor(globalThis, key) };
+  });
+  const previousProvider = getLangfuseTracerProvider();
   try {
+    // Own a fresh runtime without closing any runtime inherited from another test.
+    for (const { key } of runtimeSlots) Reflect.deleteProperty(globalThis, key);
     const firstOutput = join(root, "first");
     const secondOutput = join(root, "second");
     await builder.buildRuntime({ outputDirectory: firstOutput });
@@ -269,6 +277,11 @@ test("generated package copies share runtime session capabilities", async () => 
       try {
         await runtime?.shutdown();
       } finally {
+        for (const { key, descriptor } of runtimeSlots) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+          else Reflect.deleteProperty(globalThis, key);
+        }
+        setLangfuseTracerProvider(previousProvider);
         await rm(root, { force: true, recursive: true });
       }
     }

@@ -12,7 +12,7 @@ const root = path.resolve(import.meta.dirname, "..");
 test("Vitest keeps every test within the repository timeout cap", (context) => {
   const config = readFileSync(path.join(root, "vitest.config.ts"), "utf8");
   assert.match(config, /testTimeout:\s*5_000/u);
-  assert.equal(context.task.timeout, maximumTestTimeoutMs);
+  assertTestTimeoutWithinCap(context.task.timeout, context.task.name);
 });
 
 test("default integration concurrency uses at most two fork workers", () => {
@@ -20,7 +20,9 @@ test("default integration concurrency uses at most two fork workers", () => {
 });
 
 test("the runtime timeout guard rejects disabled and upward overrides", () => {
-  assert.doesNotThrow(() => assertTestTimeoutWithinCap(5_000, "bounded"));
+  for (const timeout of [1, 4_000, maximumTestTimeoutMs]) {
+    assert.doesNotThrow(() => assertTestTimeoutWithinCap(timeout, "bounded"));
+  }
   assert.throws(
     () => assertTestTimeoutWithinCap(5_001, "too slow"),
     /"too slow" has a 5001 ms timeout; the maximum is 5000 ms/u,
