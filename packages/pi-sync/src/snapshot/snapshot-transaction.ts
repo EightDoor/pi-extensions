@@ -9,11 +9,11 @@ import { withLock } from "../state/lock.js";
 import { syncMutationParents } from "../state/mutation-directory-sync.js";
 import { stateDir } from "../state/state-directory.js";
 import { mergePathIdentity } from "../sync/file-merge-planner.js";
-import { agentDir } from "./session-paths.js";
+import { agentDir, configuredSessionDir } from "./session-paths.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
 
-const JOURNAL_VERSION = 2;
+const JOURNAL_VERSION = 3;
 interface TransactionEntry {
   target: string;
   backupName: string;
@@ -22,6 +22,8 @@ interface TransactionEntry {
   beforeImage?: string;
   afterImage?: string;
   postFiles?: { relative: string; image: string }[];
+  /** Durable intent permits only a missing intermediate image, never unknown bytes. */
+  removalPending?: boolean;
 }
 interface TransactionJournal {
   version: number;
@@ -60,10 +62,7 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         options.signal?.throwIfAborted();
         const entry = transaction.journal.entries.find((item) => item.target === target);
         if (!entry) throw new Error("Unowned transaction target.");
-        await verifyTarget(transaction.directory, entry, transaction.journal);
-        options.signal?.throwIfAborted();
-        options.validateMutation?.();
-        await fs.rm(target, { force: true, recursive: true });
+        await removeOwnedTarget(transaction.directory, entry, transaction.journal, options);
         deleted.add(target);
         await syncDirectory(path.dirname(target));
       }
@@ -130,7 +129,13 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
 
 export async function recoverSnapshotTransactionsOnStartup(options: TransactionOptions = {}) {
   if (!(await pendingTransactionEntries()).some((entry) => entry.isDirectory())) return;
-  await withLock("recovery", () => recoverPendingSnapshotTransactions(options), { reclaimStale: true });
+  // Resolve settings only when recovery exists, preserving side-effect-free/no-work startup.
+  const sessionDir = options.sessionDir ?? (await configuredSessionDir());
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+  await withLock("recovery", () => recoverPendingSnapshotTransactions({ ...options, sessionDir }), {
+    reclaimStale: true,
+  });
 }
 
 export async function recoverPendingSnapshotTransactions(options: TransactionOptions = {}) {
@@ -192,6 +197,7 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
         await fs.cp(target, backup, {
           recursive: true,
           dereference: false,
+          verbatimSymlinks: true,
           preserveTimestamps: true,
           filter: () => {
             options.signal?.throwIfAborted();
@@ -221,6 +227,8 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
       .map((item) => ({ relative: path.relative(target, item.target), image: fileImage(item.content) }));
     entries.push(entry);
   }
+  // File fsync does not persist the name linking each backup into this directory.
+  await syncDirectory(backupDirectory);
   const journal: TransactionJournal = { version: JOURNAL_VERSION, root, sessionRoot, entries };
   options.signal?.throwIfAborted();
   options.validateMutation?.();
@@ -270,7 +278,12 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
         options.validateMutation?.();
         options.signal?.throwIfAborted();
         if (verified === before) continue;
-        if (verified.startsWith("directory:")) await fs.rm(entry.target, { recursive: true, force: true });
+        if (verified.startsWith("directory:") && !(await removeOwnedTarget(directory, entry, journal, options, before)))
+          continue;
+        const atRename = await verifyTarget(directory, entry, journal);
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
+        if (atRename === before) continue;
         await fs.rename(temporary, entry.target);
         await syncDirectory(path.dirname(entry.target));
       } finally {
@@ -278,23 +291,41 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
       }
       continue;
     }
-    const verified = await verifyTarget(directory, entry, journal);
-    options.validateMutation?.();
-    options.signal?.throwIfAborted();
-    if (verified === before) continue;
-    await fs.rm(entry.target, { recursive: true, force: true });
-    if (entry.kind !== "missing") {
+    if (entry.kind === "missing") {
+      await removeOwnedTarget(directory, entry, journal, options, before);
+      continue;
+    }
+    const temporary = path.join(path.dirname(entry.target), `.pi-sync.json.${randomUUID()}.restore-tree`);
+    try {
       await fs.mkdir(path.dirname(entry.target), { recursive: true });
       await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
-      options.signal?.throwIfAborted();
-      const backup = path.join(directory, "before", entry.backupName);
+      if (entry.kind === "directory") {
+        await fs.cp(path.join(directory, "before", entry.backupName), temporary, {
+          recursive: true,
+          dereference: false,
+          verbatimSymlinks: true,
+          preserveTimestamps: true,
+          filter: () => {
+            options.validateMutation?.();
+            options.signal?.throwIfAborted();
+            return true;
+          },
+        });
+      } else if (entry.linkTarget !== undefined) await fs.symlink(entry.linkTarget, temporary);
+      if ((await image(temporary, true)) !== before)
+        throw new Error("Staged recovery image differs from the backup; evidence retained.");
       options.validateMutation?.();
-      if (entry.kind === "directory")
-        await fs.cp(backup, entry.target, { recursive: true, dereference: false, preserveTimestamps: true });
-      else if (entry.linkTarget !== undefined) await fs.symlink(entry.linkTarget, entry.target);
+      options.signal?.throwIfAborted();
+      if (!(await removeOwnedTarget(directory, entry, journal, options, before))) continue;
+      const atRename = await verifyTarget(directory, entry, journal);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      if (atRename === before) continue;
+      await fs.rename(temporary, entry.target);
+      await syncDirectory(path.dirname(entry.target));
+    } finally {
+      await fs.rm(temporary, { recursive: true, force: true });
     }
-    await image(entry.target, true);
-    await syncDirectory(path.dirname(entry.target));
   }
   await syncMutationParents(
     journal.entries.map((entry) => entry.target),
@@ -315,18 +346,50 @@ async function verifyTarget(
   await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
   // Hash the potentially large backup before observing the live target, not after it.
   const before = await beforeImage(directory, entry);
-  if (journal.version === 2 && before !== entry.beforeImage)
+  if (journal.version >= 2 && before !== entry.beforeImage)
     throw new Error("Transaction backup changed; preserve evidence for review.");
   const current = await image(entry.target);
-  if (current === before || (deletedByThisCall && current === "missing")) return current;
   if (
-    journal.version === 2 &&
+    current === before ||
+    (current === "missing" && (deletedByThisCall || (journal.version === 3 && entry.removalPending)))
+  )
+    return current;
+  if (
+    journal.version >= 2 &&
     (current === entry.afterImage || (await ownedPostTree(entry.target, entry.postFiles ?? [])))
   )
     return current;
   throw new Error(
     "Transaction target has unrecognized or newer bytes; automatic rollback refused. Preserve the transaction and review its backup with Pi closed.",
   );
+}
+
+async function removeOwnedTarget(
+  directory: string,
+  entry: TransactionEntry,
+  journal: TransactionJournal,
+  options: TransactionOptions,
+  restoringBefore?: string,
+) {
+  const current = await verifyTarget(directory, entry, journal);
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+  if (restoringBefore !== undefined && current === restoringBefore) return false;
+  // Persist intent before removal, including descendants affected by a recursive delete.
+  // A crash at any later boundary can recognize absence without accepting other intermediate bytes.
+  journal.version = JOURNAL_VERSION;
+  for (const affected of journal.entries) {
+    if (affected.target === entry.target || isStrictlyInside(entry.target, affected.target))
+      affected.removalPending = true;
+  }
+  await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
+  const verified = await verifyTarget(directory, entry, journal);
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+  if (restoringBefore !== undefined && verified === restoringBefore) return false;
+  await fs.rm(entry.target, { recursive: true, force: true });
+  await syncDirectory(path.dirname(entry.target));
+  return true;
 }
 
 async function beforeImage(directory: string, entry: TransactionEntry) {
@@ -394,7 +457,7 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
 }
 
 function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
-  if (![1, 2].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
+  if (![1, 2, 3].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
@@ -421,10 +484,12 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     assertWithinRoot(directory, path.join(directory, "before", entry.backupName));
     assertAllowedTarget(root, journal.sessionRoot, entry.target);
     if (
-      journal.version === 2 &&
+      journal.version >= 2 &&
       (typeof entry.beforeImage !== "string" || typeof entry.afterImage !== "string" || !Array.isArray(entry.postFiles))
     )
       throw new Error("Invalid transaction postimage evidence.");
+    if (entry.removalPending !== undefined && (journal.version !== 3 || typeof entry.removalPending !== "boolean"))
+      throw new Error("Invalid transaction removal evidence.");
     for (const file of entry.postFiles ?? []) {
       if (
         typeof file.relative !== "string" ||
