@@ -8,6 +8,7 @@ import { beforeAll, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import accountsExtension, { AccountStore } from "../src/accounts.js";
 import type { AccountProviderAdapter } from "../src/oauth.js";
+import { RUNTIME_FAIL_CLOSED_API_KEY } from "../src/runtime-auth.js";
 import {
   type AccountStorageBackend,
   FileAccountStorageBackend,
@@ -182,6 +183,51 @@ test("effective configured auth conflict is typed and fail-closed", async () => 
   assert.equal(result.code, "effective_auth_conflict");
   safe(result);
 });
+for (const scope of ["first", "later", "header-alias"] as const) {
+  test(`Kimi ${scope} model header conflict returns effective_auth_conflict`, async () => {
+    const store = new AccountStore(new InMemoryAccountStorageBackend());
+    await store.updateProvider("kimi-coding", () => ({ accounts: { subscription: credential } }));
+    const kimi: AccountProviderAdapter = {
+      ...provider,
+      id: "kimi-coding",
+      displayName: "Kimi",
+      supportsApiKey: false,
+      runtimeAuthMode: "authorization-header",
+      oauth: { ...provider.oauth, toAuth: async (value) => ({ headers: { Authorization: `Bearer ${value.access}` } }) },
+    };
+    const mock = createMockPi();
+    accountsExtension(mock.pi, { store, providers: [kimi] });
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const registry = new ModelRegistry(runtime);
+    const models = registry.getAll().filter((model) => model.provider === "kimi-coding");
+    assert.ok(models.length > 1);
+    const target = scope === "later" ? models.at(-1) : models[0];
+    assert.ok(target);
+    const headers: Record<string, string> =
+      scope === "header-alias"
+        ? { Authorization: `Bearer ${access}`, authorization: `Bearer ${key}` }
+        : { Authorization: `Bearer ${key}` };
+    registry.registerProvider("kimi-coding", {
+      models: models.map((model) => (model.id === target.id ? { ...model, headers } : model)),
+    });
+    const manager = SessionManager.inMemory(process.cwd());
+    const { ctx } = createMockContext({ modelRegistry: registry, sessionManager: manager });
+    await mock.events.get("session_start")?.[0]?.({}, ctx);
+    try {
+      const result = await activate(mock, manager, "subscription", { provider: "kimi-coding", model: target.id });
+      assert.equal(result.code, "effective_auth_conflict");
+      safe(result);
+      assert.equal(await registry.getApiKeyForProvider("kimi-coding"), RUNTIME_FAIL_CLOSED_API_KEY);
+    } finally {
+      await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+    }
+  });
+}
+
 test("stale conversion cannot overwrite a newer selection", async () => {
   let entered!: () => void;
   let release!: () => void;
