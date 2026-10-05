@@ -14,7 +14,9 @@ import {
   FileAccountStorageBackend,
   InMemoryAccountStorageBackend,
 } from "../src/storage.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
 
+isolateAccountEnvironment();
 beforeAll(() => initTheme("dark", false));
 const access = "fixture-access-secret";
 const refresh = "fixture-refresh-secret";
@@ -123,6 +125,36 @@ for (const account of ["alpha", "beta"] as const) {
     assert.notEqual(await current.registry.getApiKeyForProvider("openai"), account === "alpha" ? access : key);
   });
 }
+test("PI_ACCOUNT rejects protocol activation and default restoration without changing session selection", async () => {
+  process.env.PI_ACCOUNT = "alpha";
+  const { mock, session } = await fixture();
+  const current = await session({ provider: "openai", id: "gpt-4o" });
+  await mock.events.get("before_agent_start")?.[0]?.({}, current.ctx);
+  const entries = current.manager.getEntries().length;
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+  for (const account of ["beta", "alpha", null]) {
+    const result = await activate(mock, current.manager, account);
+    assert.deepEqual(result, {
+      status: "error",
+      providerId: "openai",
+      accountName: account,
+      code: "activation_failed",
+    });
+    assert.equal(current.manager.getEntries().length, entries);
+    assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+  }
+});
+test("invalid PI_ACCOUNT also rejects protocol activation without restoring default auth", async () => {
+  process.env.PI_ACCOUNT = "default";
+  const { mock, session } = await fixture();
+  const current = await session({ provider: "openai", id: "gpt-4o" });
+  await mock.events.get("before_agent_start")?.[0]?.({}, current.ctx);
+  const entries = current.manager.getEntries().length;
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), RUNTIME_FAIL_CLOSED_API_KEY);
+  assert.equal((await activate(mock, current.manager, "beta")).code, "activation_failed");
+  assert.equal(current.manager.getEntries().length, entries);
+  assert.equal(await current.registry.getApiKeyForProvider("openai"), RUNTIME_FAIL_CLOSED_API_KEY);
+});
 test("two sessions use independent real ModelRuntime credentials", async () => {
   const { mock, session } = await fixture();
   const a = await session();

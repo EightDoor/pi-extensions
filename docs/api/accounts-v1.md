@@ -89,9 +89,9 @@ type AccountActivationErrorCode =
 | `session_unavailable` | The supplied session has no current owner or was replaced or shut down. |
 | `provider_unsupported` | This responder does not manage that provider. |
 | `cancelled` | The request's signal was aborted. |
-| `activation_failed` | Another activation failure not classified above. |
+| `activation_failed` | Another activation failure not classified above, including a request rejected while `PI_ACCOUNT` owns the session selection. |
 
-A pre-aborted request changes no selection. A valid request can persist the session selection **before** runtime activation succeeds; failure or cancellation afterward does not roll it back. Failed authentication may leave that provider fail-closed instead of falling back to another account. A newer explicit selection supersedes pending work, but a routine model/turn sync of the same selection does not. Cancelling a consumer's wait for a replacement sync does not cancel that session-owned sync. Revalidate session, account, and request ownership after every await before starting dependent work.
+When `PI_ACCOUNT` is set (even to an invalid value), activation requests cannot change or restore the session selection and return `activation_failed`; topology still lists configured accounts. Unset the variable and restart Pi before requesting explicit activation. A pre-aborted request changes no selection. A valid request can persist the session selection **before** runtime activation succeeds; failure or cancellation afterward does not roll it back. Failed authentication may leave that provider fail-closed instead of falling back to another account. A newer explicit selection supersedes pending work, but a routine model/turn sync of the same selection does not. Cancelling a consumer's wait for a replacement sync does not cancel that session-owned sync. Revalidate session, account, and request ownership after every await before starting dependent work.
 
 ## Consumer safety and compatibility
 
