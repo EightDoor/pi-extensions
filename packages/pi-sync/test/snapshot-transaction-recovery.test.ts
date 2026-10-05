@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test, vi } from "vitest";
@@ -147,6 +148,99 @@ test("cancelled owner retains complete atomic postimages for a later guarded rec
     }
     await recoverPendingSnapshotTransactions();
     assert.equal(await fs.readFile(target, "utf8"), "before");
+  }));
+
+for (const kind of ["missing", "directory", "symlink"] as const)
+  test(`${kind} recovery rechecks newer bytes at its removal boundary`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await journalFixture(agentDir);
+      let beforeImage = "missing";
+      if (kind === "directory") {
+        await fs.rm(path.join(f.directory, "before/0"));
+        await fs.mkdir(path.join(f.directory, "before/0"));
+        await fs.writeFile(path.join(f.directory, "before/0/old.md"), "before");
+        beforeImage = `directory:${createHash("sha256")
+          .update(JSON.stringify([["old.md", fileImage("before")]]))
+          .digest("hex")}`;
+      } else if (kind === "symlink") beforeImage = "symlink:old-target";
+      await fs.writeFile(
+        path.join(f.directory, "journal.json"),
+        JSON.stringify({
+          version: 2,
+          root: agentDir,
+          entries: [
+            {
+              target: f.target,
+              backupName: "0",
+              kind,
+              linkTarget: "old-target",
+              beforeImage,
+              afterImage: fileImage("after"),
+              postFiles: [],
+            },
+          ],
+        }),
+      );
+      let guards = 0;
+      await assert.rejects(
+        recoverPendingSnapshotTransactions({
+          validateMutation: () => {
+            if (++guards !== 2) return;
+            // External writer arrives after the iteration's image checks, before removal.
+            rmSync(f.target);
+            mkdirSync(f.target);
+            writeFileSync(path.join(f.target, "newer.md"), "newer external bytes");
+          },
+        }),
+        /newer bytes/,
+      );
+      assert.equal(await fs.readFile(path.join(f.target, "newer.md"), "utf8"), "newer external bytes");
+      await fs.access(path.join(f.directory, "journal.json"));
+      await fs.access(path.join(f.directory, "before/0"));
+    }));
+
+test("recovery observes the live target after hashing a large directory backup", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await journalFixture(agentDir);
+    await fs.rm(path.join(f.directory, "before/0"));
+    await fs.mkdir(path.join(f.directory, "before/0"));
+    const backup = path.join(f.directory, "before/0/old.md");
+    await fs.writeFile(backup, "before");
+    const beforeImage = `directory:${createHash("sha256")
+      .update(JSON.stringify([["old.md", fileImage("before")]]))
+      .digest("hex")}`;
+    await fs.writeFile(
+      path.join(f.directory, "journal.json"),
+      JSON.stringify({
+        version: 2,
+        root: agentDir,
+        entries: [
+          {
+            target: f.target,
+            backupName: "0",
+            kind: "directory",
+            beforeImage,
+            afterImage: fileImage("after"),
+            postFiles: [],
+          },
+        ],
+      }),
+    );
+    const readFile = fs.readFile.bind(fs);
+    let reads = 0;
+    const spy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const result = await readFile(...args);
+      if (args[0] === backup && ++reads === 3) await fs.writeFile(f.target, "newer during backup hashing");
+      return result;
+    });
+    try {
+      await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
+      assert.equal(await fs.readFile(f.target, "utf8"), "newer during backup hashing");
+      await fs.access(path.join(f.directory, "journal.json"));
+      assert.equal(await fs.readFile(backup, "utf8"), "before");
+    } finally {
+      spy.mockRestore();
+    }
   }));
 
 test("directional directory-to-file replacement does not re-delete descendants", async () =>
