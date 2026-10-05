@@ -298,7 +298,15 @@ export class RuntimeAuthCoordinator {
       }
       const refreshedSelection = await this.selectedCredentialMatches(store, active, credential, refreshSignal);
       if (refreshedSelection.error !== undefined) {
-        throw refreshedSelection.error;
+        return this.failClosed(
+          ctx,
+          operation,
+          runtimeOverride,
+          active,
+          refreshedSelection.error,
+          credential,
+          "store_unavailable",
+        );
       }
       if (!refreshedSelection.matches) {
         if (!this.overlay.isCurrent(operation)) {
@@ -307,7 +315,7 @@ export class RuntimeAuthCoordinator {
         return this.ensureActive(ctx, store, active, now, ownerSignal);
       }
       refreshSignal.throwIfAborted();
-      await this.verifyOverlay(ctx, auth, availableModelIds);
+      await this.verifyOverlay(ctx, auth, refreshSignal, availableModelIds);
       refreshSignal.throwIfAborted();
       if (auth.apiKey !== undefined) {
         await verifyModelApiKeyAuth(ctx, this.provider, auth.apiKey, refreshSignal, availableModelIds);
@@ -548,6 +556,7 @@ export class RuntimeAuthCoordinator {
   private async verifyOverlay(
     ctx: ExtensionContext,
     auth: ModelAuth,
+    signal: AbortSignal,
     availableModelIds?: readonly string[],
   ): Promise<void> {
     const registered = getRegisteredProviderConfig(ctx, this.provider.id);
@@ -564,22 +573,30 @@ export class RuntimeAuthCoordinator {
         }
       }
     }
-    const modelId = availableModelIds?.[0] ?? firstProviderModelId(ctx, this.provider.id);
-    const model = modelId ? findProviderModel(ctx, this.provider.id, modelId) : undefined;
-    if (model && auth.baseUrl && model.baseUrl !== auth.baseUrl) {
-      throw new Error(`Pi did not apply the runtime ${this.provider.displayName} endpoint.`);
-    }
-    if (model && auth.headers) {
+    const allowed = availableModelIds ? new Set(availableModelIds) : undefined;
+    for (const candidate of readProviderModels(ctx, this.provider.id)) {
+      if (allowed && !allowed.has(candidate.id)) continue;
+      signal.throwIfAborted();
+      const model = findProviderModel(ctx, this.provider.id, candidate.id);
+      if (!model) continue;
+      if (auth.baseUrl && model.baseUrl !== auth.baseUrl) {
+        throw new EffectiveAuthConflictError(`Pi did not apply the runtime ${this.provider.displayName} endpoint.`);
+      }
+      if (!auth.headers) continue;
       const resolved = await getApiKeyAndHeaders(ctx, model);
+      signal.throwIfAborted();
       if (resolved?.ok === false) {
         throw new Error(`Pi could not resolve the runtime ${this.provider.displayName} headers.`);
       }
       for (const [name, value] of Object.entries(auth.headers)) {
-        if (value !== null && readHeader(resolved?.headers, name) !== value) {
-          throw new Error(`Pi did not apply the runtime ${this.provider.displayName} headers.`);
+        const matches = Object.entries(resolved?.headers ?? {}).filter(
+          ([header]) => header.toLowerCase() === name.toLowerCase(),
+        );
+        if (value !== null && (matches.length !== 1 || matches[0]?.[1] !== value)) {
+          throw new EffectiveAuthConflictError(`Pi did not apply the runtime ${this.provider.displayName} headers.`);
         }
-        if (value === null && hasHeader(resolved?.headers, name)) {
-          throw new Error(`Pi did not remove the runtime ${this.provider.displayName} header.`);
+        if (value === null && matches.length > 0) {
+          throw new EffectiveAuthConflictError(`Pi did not remove the runtime ${this.provider.displayName} header.`);
         }
       }
     }
@@ -918,10 +935,6 @@ function safelyReadAvailableModelIds(credential: StoredCredential): string[] | u
   } catch {
     return undefined;
   }
-}
-
-function firstProviderModelId(ctx: ExtensionContext, providerId: string): string | undefined {
-  return readProviderModels(ctx, providerId)[0]?.id;
 }
 
 function findProviderModel(

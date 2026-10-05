@@ -77,6 +77,8 @@ type SessionSelectionOwner = {
   sessionManager: ExtensionContext["sessionManager"] & SessionEntryWriter;
   sessionId: string;
   selections: ProviderAccountSelections;
+  selectionRevisions: Map<AccountProviderId, number>;
+  activationRequests: Map<AccountProviderId, number>;
   error?: string;
   controller: AbortController;
   signal: AbortSignal;
@@ -106,6 +108,23 @@ type PersistSelection = (
   accountName: string | null,
   isCurrent: () => boolean,
 ) => boolean;
+
+// A replacement sync belongs to the session, not the requesting consumer. Stop waiting on
+// cancellation without aborting that shared work, and release the listener on settlement.
+async function waitForActivation<T>(task: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return undefined;
+  let onAbort!: () => void;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([task, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 export default function accountsExtension(pi: ExtensionAPI, dependencies: AccountsDependencies = {}): void {
   const store = dependencies.store ?? new AccountStore();
@@ -174,6 +193,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     if (previous) {
       previous.controller.abort(new DOMException("Accounts session replaced", "AbortError"));
       previous.results.clear();
+      previous.selectionRevisions.clear();
+      previous.activationRequests.clear();
       previous.appliedIdentities.clear();
       previous.abortProviders.clear();
       previous.syncTasks.clear();
@@ -190,6 +211,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       sessionManager: ctx.sessionManager as ExtensionContext["sessionManager"] & SessionEntryWriter,
       sessionId: ctx.sessionManager.getSessionId(),
       selections: cloneAccountSelections(Object.create(null) as ProviderAccountSelections),
+      selectionRevisions: new Map(),
+      activationRequests: new Map(),
       controller,
       signal: controller.signal,
       ready: Promise.resolve(),
@@ -232,6 +255,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     );
     if (!isOwnerCurrent(owner) || !isCurrent()) return false;
     owner.selections = selections;
+    owner.selectionRevisions.set(providerId, (owner.selectionRevisions.get(providerId) ?? 0) + 1);
     owner.error = undefined;
     return true;
   };
@@ -402,8 +426,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
 
   registerAccountsProtocol(
     pi,
-    () => {
-      const data = store.read();
+    async () => {
+      const data = await store.readAsync();
       return {
         providers: providers.map((adapter) => {
           const state = data.providers[adapter.id];
@@ -430,33 +454,66 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (!providerId || !adapters.has(providerId)) return error("provider_unsupported");
       const owner = sessionOwners.get(request.session as ExtensionContext["sessionManager"]);
       if (!owner || !isOwnerCurrent(owner)) return error("session_unavailable");
-      await owner.ready;
-      if (!isOwnerCurrent(owner) || owner.sessionId !== owner.sessionManager.getSessionId())
-        return error("session_unavailable");
       if (request.signal?.aborted) return error("cancelled");
-      // Keep validation and selection publication in one synchronous turn, so a delayed
-      // inventory read cannot publish an older request after a newer selection.
       if (request.account !== null) {
         const parsed = parseAccountName(request.account);
         if (!parsed.ok || parsed.name !== request.account) return error("account_not_found");
+      }
+      // Reads can wait behind refreshes; only the newest explicit request may publish its selection.
+      const generation = (owner.activationRequests.get(providerId) ?? 0) + 1;
+      owner.activationRequests.set(providerId, generation);
+      let selectionRevision = owner.selectionRevisions.get(providerId) ?? 0;
+      const isRequestCurrent = () =>
+        owner.activationRequests.get(providerId) === generation &&
+        (owner.selectionRevisions.get(providerId) ?? 0) === selectionRevision;
+      const unavailable = (): AccountActivationResult | undefined => {
+        if (!isOwnerCurrent(owner) || owner.sessionId !== owner.sessionManager.getSessionId())
+          return error("session_unavailable");
+        if (request.signal?.aborted) return error("cancelled");
+        if (!isRequestCurrent()) return error("activation_superseded");
+      };
+      const activationSignal = AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])]);
+      await waitForActivation(owner.ready, activationSignal);
+      const staleAfterStartup = unavailable();
+      if (staleAfterStartup) return staleAfterStartup;
+      if (request.account !== null) {
         try {
-          if (!getOwnCredential(store.read().providers[providerId]?.accounts ?? {}, request.account))
+          const data = await store.readAsync(
+            AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])]),
+          );
+          const staleAfterRead = unavailable();
+          if (staleAfterRead) return staleAfterRead;
+          if (!getOwnCredential(data.providers[providerId]?.accounts ?? {}, request.account))
             return error("account_not_found");
         } catch {
-          return error("store_unavailable");
+          return unavailable() ?? error("store_unavailable");
         }
       }
       try {
-        if (!persistSelection(owner, providerId, request.account, () => isOwnerCurrent(owner)))
-          return error("session_unavailable");
+        if (!persistSelection(owner, providerId, request.account, isRequestCurrent))
+          return unavailable() ?? error("session_unavailable");
       } catch {
-        return error("store_unavailable");
+        return unavailable() ?? error("store_unavailable");
       }
-      const task = syncProvider(providerId, owner.context, owner, request.signal);
-      const result = await task;
-      if (!isOwnerCurrent(owner)) return error("session_unavailable");
-      if (owner.syncTasks.get(providerId) !== task) return error("activation_superseded");
-      if (request.signal?.aborted) return error("cancelled");
+      selectionRevision = owner.selectionRevisions.get(providerId) ?? 0;
+      let task = syncProvider(providerId, owner.context, owner, request.signal);
+      let result: EnsureActiveProviderAuthResult;
+      try {
+        // Routine model/turn syncs may replace this task without changing the selection.
+        while (true) {
+          const settled = await waitForActivation(task, activationSignal);
+          const staleAfterSync = unavailable();
+          if (staleAfterSync) return staleAfterSync;
+          if (!settled) return error("activation_failed");
+          result = settled;
+          const latest = owner.syncTasks.get(providerId);
+          if (!latest || latest === task) break;
+          task = latest;
+        }
+      } catch {
+        return unavailable() ?? error("activation_failed");
+      }
+
       if (result.status === "error") return error(result.code ?? "activation_failed");
       if (result.status === "inactive") {
         return request.account === null
@@ -539,6 +596,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     sessionOwners.delete(ctx.sessionManager);
     owner.controller.abort(new DOMException("Accounts session shut down", "AbortError"));
     owner.results.clear();
+    owner.selectionRevisions.clear();
+    owner.activationRequests.clear();
     owner.appliedIdentities.clear();
     owner.abortProviders.clear();
     owner.syncTasks.clear();

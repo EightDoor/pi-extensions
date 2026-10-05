@@ -63,12 +63,15 @@ export function parseAccountsActivationRequest(data: unknown): AccountsActivatio
 }
 export function registerAccountsProtocol(
   pi: ExtensionAPI,
-  topology: () => AccountTopology,
+  topology: () => Promise<AccountTopology>,
   activate: (request: AccountsActivationRequest) => Promise<AccountActivationResult>,
 ): void {
   pi.events.on(ACCOUNTS_TOPOLOGY_CHANNEL, (data) => {
     const request = parseAccountsTopologyRequest(data);
-    if (request) request.reply(topology());
+    if (request)
+      void topology()
+        .then((result) => request.reply(result))
+        .catch(() => undefined);
   });
   pi.events.on(ACCOUNTS_ACTIVATION_CHANNEL, (data) => {
     const request = parseAccountsActivationRequest(data);

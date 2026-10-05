@@ -117,49 +117,19 @@ Malformed settings block saves instead of being replaced, and failed saves do no
 
 ## 🔌 Extension account protocols
 
-Other extensions can discover and explicitly activate managed accounts through Pi's shared,
-in-process EventBus. No package imports or credential-file reads are required.
-These protocols expose account names (user-defined identifiers), never credential material.
-They provide no automatic rotation, failover, health, quota, routing policy, or model inventory.
+Trusted extensions can use Pi's in-process `pi.events` API to discover named accounts,
+activate one for the current session, and request a verified active OAuth credential.
+Topology and activation replies contain account identifiers, never credential material;
+the separate OAuth credential offer **does** contain secrets. No package import or
+credential-file read is needed. See the repository's [Named Account Protocols v1](https://github.com/narumiruna/pi-extensions/blob/main/docs/api/accounts-v1.md)
+for topology and activation; it links to the separate OAuth readiness and credential-source
+specifications. These references describe payloads, reply timing, cancellation, and consumer safety.
 
-Emit `accounts:topology:v1` with `{ reply(topology) }`. The synchronous reply is
-`{ providers: [{ providerId, displayName, accounts: [{ name, kind }], defaultAccount? }] }`.
-`kind` is `"oauth"` or `"api-key"`; inventory means configured, not remotely authenticated.
-`defaultAccount` is the user-wide named default adopted by sessions without a saved selection,
-not the current session account. A storage read failure produces no topology reply.
-
-Emit `accounts:activation:v1` after `session_start` with:
-
-```ts
-pi.events.emit("accounts:activation:v1", {
-  session: ctx.sessionManager, // exact object identity, not a session ID string
-  provider: "openai",
-  account: "work", // null restores Pi's built-in auth, NOT the named default
-  signal: controller.signal, // optional AbortSignal
-  reply(result) { /* handle typed outcome; do not parse diagnostic strings */ },
-});
-```
-
-An optional `model` ID requests an account-specific availability check after activation;
-Pi's ModelRegistry remains authoritative for models. Await the reply before dependent requests.
-Success is `{ status: "active", providerId, accountName }`; restoring Pi authentication returns
-`{ status: "inactive", providerId, accountName: null }` (not a remote validity guarantee).
-Errors are `{ status: "error", providerId, accountName, code }`, with no provider error text:
-`account_not_found`, `authentication_failed`, `store_unavailable`, `effective_auth_conflict`,
-`model_unavailable`, `activation_superseded`, `session_unavailable`, `provider_unsupported`,
-`cancelled`, or `activation_failed`. Effective-auth verification checks request composition,
-not remote credential validity. Failed activation may leave the requested selection persisted
-and the provider fail-closed; cancellation after selection publication does not roll it back.
-
-Activation is session-local and does not change the user-wide default. A newer explicit selection
-supersedes pending work; shutdown/reload invalidates the old session owner. Pre-aborted requests
-do not change selection. Malformed requests are ignored. Channels are versioned by their suffix.
-With no compatible responder, no reply arrives: consumers must bound their wait and degrade
-gracefully. A timeout is not proof that activation did not happen; abort pending requests and
-do not launch dependent work on an unconfirmed result. The shared bus is not a trust boundary.
-Only one account infrastructure responder should own these channels; consumers should reject
-duplicate responders rather than treating a first reply as exclusive ownership.
-
+Activation does not change the user-wide default. It may persist a session selection even
+if authentication later fails or the requester cancels, leaving that provider fail-closed.
+Consumers must bound their wait: a missing reply or timeout is not proof that activation
+did not happen, and dependent work must not proceed without confirmation. `pi.events`
+is not a trust boundary; load only trusted extensions.
 
 ## 🔒 Security and privacy
 
@@ -192,7 +162,7 @@ The protocols do not persist or log the offer, which contains neither the accoun
 Consumers must match its access token and provider metadata against freshly resolved runtime authentication.
 Without a compatible consumer, account activation works unchanged and no credential is requested.
 
-Pi extensions run with the user's process privileges, and the shared event bus does not isolate installed extensions.
+Pi extensions run with the user's process privileges; `pi.events` does not isolate installed extensions.
 Install only trusted extensions because any extension can read user files and process memory.
 The protocol reduces accidental credential coupling; it is not a sandbox.
 
