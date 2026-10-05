@@ -165,10 +165,11 @@ export async function recoverCheckpoint(request: RemoteCompactionRequest, event:
           )
         )
           throw new Error("Unsafe checkpoint recovery terminal output");
+        // Pi emits one text block per message, concatenating its output-text parts.
         terminalText = response.output
           .flatMap((item) =>
             isJsonObject(item) && item.type === "message" && Array.isArray(item.content)
-              ? item.content.map((part: { text: string }) => part.text)
+              ? [item.content.map((part: { text: string }) => part.text).join("")]
               : [],
           )
           .join("\n");

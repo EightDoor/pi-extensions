@@ -49,6 +49,7 @@ function sse(
   status = "completed",
   terminal = "response.completed",
   includeTerminal = true,
+  terminalOutput: unknown[] = output,
 ) {
   const response = {
     id: "resp_summary",
@@ -56,7 +57,7 @@ function sse(
     created_at: 1,
     model: "gpt-5.5",
     status,
-    output,
+    output: terminalOutput,
     usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
   };
   const events = [
@@ -155,8 +156,62 @@ for (const api of ["openai-responses", "azure-openai-responses", "openai-codex-r
   });
 }
 
+function textItem(id: string, parts: string[]) {
+  return {
+    ...messageItem,
+    id,
+    content: parts.map((text) => ({ type: "output_text", text, annotations: [] })),
+  };
+}
+
+for (const api of ["openai-responses", "azure-openai-responses", "openai-codex-responses"] as const) {
+  for (const [name, output, expected] of [
+    ["multipart message", [textItem("one", ["sap", "phire"])], "sapphire"],
+    ["whitespace and empty parts", [textItem("one", ["", " task", "\n", "", "next "])], " task\nnext "],
+    [
+      "distinct multipart messages",
+      [textItem("one", ["first", " detail"]), textItem("two", ["second", " detail"])],
+      "first detail\nsecond detail",
+    ],
+    [
+      "interspersed reasoning",
+      [
+        textItem("one", ["first", " detail"]),
+        { type: "reasoning", id: "reasoning", summary: [{ type: "summary_text", text: "not summary text" }] },
+        textItem("two", ["second", " detail"]),
+      ],
+      "first detail\nsecond detail",
+    ],
+    ["empty message boundary", [textItem("empty", []), textItem("two", ["sap", "phire"])], "\nsapphire"],
+  ] as const) {
+    test(`${api}: recovery preserves ${name} using actual adapter text grouping`, async () => {
+      const input = await request(api);
+      input.fetch = async () =>
+        sse([...output], "completed", api === "openai-codex-responses" ? "response.done" : "response.completed");
+      const result = await recoverCheckpoint(input, event);
+      assert.equal(result.summary.split("\n\n<read-files>")[0], expected);
+      assert.equal(result.firstKeptEntryId, "tail");
+      assert.deepEqual(result.details, { readFiles: ["read.ts"], modifiedFiles: ["changed.ts", "edited.ts"] });
+    });
+  }
+
+  test(`${api}: multipart normalization still rejects terminal text conflicting with completed message`, async () => {
+    const input = await request(api);
+    input.fetch = async () =>
+      sse(
+        [textItem("one", ["sap", "fire"])],
+        "completed",
+        api === "openai-codex-responses" ? "response.done" : "response.completed",
+        true,
+        [textItem("one", ["sap", "phire"])],
+      );
+    await assert.rejects(recoverCheckpoint(input, event), /terminal text conflicts with provider completion/);
+  });
+}
+
 for (const [name, output, status, terminal] of [
   ["empty", [], "completed", true],
+  ["message without text parts", [textItem("empty", [])], "completed", true],
   ["blank", [{ ...messageItem, content: [{ type: "output_text", text: "  ", annotations: [] }] }], "completed", true],
   ["tool", [{ type: "function_call", id: "fc", call_id: "c", name: "do_work", arguments: "{}" }], "completed", true],
   ["refusal", [{ ...messageItem, content: [{ type: "refusal", refusal: "no" }] }], "completed", true],
