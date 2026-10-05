@@ -22,7 +22,12 @@ import { abortError, awaitWithDeadline, errorMessage, runWithConcurrency, UsageC
 import { formatProviderStates, formatUsageStatusline } from "./format.js";
 import { createOAuthCredentialCandidateReader } from "./oauth-credential-source.js";
 import { UnsupportedOpenAIUsageAuthError } from "./providers/openai-chatgpt.js";
-import { adapterForProvider, isStaleExtensionContextError, queryProviderUsage, resolveUsageAuth } from "./query.js";
+import {
+  adapterForProvider,
+  isStaleExtensionContextError,
+  queryProviderUsage,
+  resolveUsageAuth as resolveRuntimeUsageAuth,
+} from "./query.js";
 import { createUsageSettingsRuntime, type UsageSettingsRuntime, type UsageSettingsState } from "./settings.js";
 import type {
   PiModel,
@@ -84,10 +89,20 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
   const credentialCandidates = createOAuthCredentialCandidateReader(pi, credentialReader);
   const createRedemptionId = dependencies.createRedemptionId ?? randomUUID;
   const settingsRuntime = dependencies.settingsRuntime ?? createUsageSettingsRuntime();
+  const resolveUsageAuth: typeof resolveRuntimeUsageAuth = (ctx, adapter, salt, reader, candidates) =>
+    resolveRuntimeUsageAuth(
+      ctx,
+      adapter,
+      salt,
+      reader,
+      candidates,
+      settingsRuntime.get().settings.openaiCompanionUsage,
+    );
   const cache = new UsageCache(CACHE_TTL_MS);
   const failureBackoff = new Map<string, { until: number; message: string }>();
   const latestQueries = new Map<string, number>();
   const activeControllers = new Set<AbortController>();
+  const nativeQueryControllers = new Set<AbortController>();
   let querySequence = 0;
   let activeCurrentIdentity: string | undefined;
   let sessionActive = false;
@@ -183,7 +198,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     if (shouldSchedule && sessionActive) scheduleStatusRefresh(ctx, model);
     if (
       sessionActive &&
-      showCodexResetCountdown &&
+      (showCodexResetCountdown || outcome.state.report.source === "openai-chatgpt-companion") &&
       outcome.state.report.buckets.some(
         (bucket) => bucket.resetsAt !== undefined && Number.isFinite(bucket.resetsAt) && bucket.resetsAt * 1_000 > now,
       )
@@ -220,7 +235,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     activeCurrentIdentity = nextIdentity;
   };
 
-  const queryAdapterState = async (
+  const queryAdapterStateInternal = async (
     ctx: ExtensionContext,
     adapter: UsageProviderAdapter,
     displayState: UsageDisplayState,
@@ -233,6 +248,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     const expectedSessionId = ctx.sessionManager.getSessionId();
     const expectedModelIdentity = modelIdentity(ctx.model);
     const expectedTargetId = adapter.targets ? settingsRuntime.get().settings.selectedTargets[adapter.id] : undefined;
+    const expectedCompanionUsage = settingsRuntime.get().settings.openaiCompanionUsage;
     const providerName = providerDisplayName(ctx, adapter.id);
     let auth: ResolvedUsageAuth | undefined;
     try {
@@ -244,6 +260,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       );
     } catch (error) {
       if (isStaleExtensionContextError(error) || isAbortError(error)) throw error;
+      if (adapter.id === "openai") invalidateProviderState(adapter.id);
       const authState =
         error instanceof UnsupportedOpenAIUsageAuthError
           ? "unsupported"
@@ -284,10 +301,12 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       expectedSessionGeneration !== sessionGeneration ||
       ctx.sessionManager.getSessionId() !== expectedSessionId ||
       modelIdentity(ctx.model) !== expectedModelIdentity ||
+      (adapter.id === "openai" && settingsRuntime.get().settings.openaiCompanionUsage !== expectedCompanionUsage) ||
       (adapter.targets !== undefined &&
         settingsRuntime.get().settings.selectedTargets[adapter.id] !== expectedTargetId);
     if (requiresRequestBoundaryGuard && requestContextChanged()) throw abortError();
     if (!auth) {
+      if (adapter.id === "openai") invalidateProviderState(adapter.id);
       if (displayState === "current") {
         transitionCurrentIdentity(`${adapter.id}:unavailable`, adapter.id);
       }
@@ -302,6 +321,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         authState: "unavailable",
       };
     }
+    if (adapter.id === "openai" && !auth.openaiCompanion) invalidateProviderState(adapter.id);
     let retryableAuthChanged = false;
     const guard = async () => {
       if (signal.aborted || requestContextChanged()) throw abortError();
@@ -463,6 +483,25 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         fingerprint: auth.fingerprint,
         rememberedTargetId: expectedTargetId,
       };
+    }
+  };
+
+  const queryAdapterState = async (...args: Parameters<typeof queryAdapterStateInternal>): Promise<QueryOutcome> => {
+    const [ctx, adapter, displayState, force, signal, ...rest] = args;
+    if (adapter.id !== "openai") return queryAdapterStateInternal(...args);
+    const controller = new AbortController();
+    nativeQueryControllers.add(controller);
+    try {
+      return await queryAdapterStateInternal(
+        ctx,
+        adapter,
+        displayState,
+        force,
+        AbortSignal.any([signal, controller.signal]),
+        ...rest,
+      );
+    } finally {
+      nativeQueryControllers.delete(controller);
     }
   };
 
@@ -686,7 +725,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       const generation = statusGeneration;
       const outcome = await queryAdapterState(ctx, adapter, displayState, force, signal);
       if (signal.aborted) throw abortError();
-      if (!outcome.authState || (await outcomeStillCurrent(ctx, model, generation, outcome, signal))) return outcome;
+      if (await outcomeStillCurrent(ctx, model, generation, outcome, signal)) return outcome;
       force = false;
     }
     throw new Error("OpenAI runtime authentication kept changing; reopen /usage to retry.");
@@ -1052,6 +1091,20 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
               () => statusGeneration === menuGeneration && !controller.signal.aborted,
               (id) => {
                 if (
+                  id === "openaiCompanionUsage" &&
+                  statusGeneration === menuGeneration &&
+                  !controller.signal.aborted
+                ) {
+                  for (const active of nativeQueryControllers) active.abort();
+                  invalidateProviderState("openai");
+                  if (ctx.model?.provider === "openai") {
+                    statusController?.abort();
+                    statusController = undefined;
+                    clearStatusTimers();
+                    safeSetStatus(ctx, undefined);
+                  }
+                }
+                if (
                   (id === "codexStatusResetCountdown" || id === "codexStatusPercentage") &&
                   stableCurrent &&
                   statusGeneration === menuGeneration &&
@@ -1253,6 +1306,17 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
             }
             const revalidated = await queryStableCurrent(ctx, false, controller, "Revalidating current usage…");
             if (!revalidated) return { kind: "back" };
+            // Current-provider revalidation can await unrelated work after the configured
+            // native report was checked. Refresh its identity at the publication boundary.
+            if (adapter.id === "openai") {
+              outcome = await runMenuOperation(
+                ctx,
+                "Revalidating ChatGPT companion usage…",
+                controller.signal,
+                (signal) => queryStableAdapterState(ctx, adapter, "configured", false, signal),
+              );
+              if (!outcome) return { kind: "back" };
+            }
             stableCurrent = revalidated;
             current = revalidated.outcome;
             visibleStates = [
@@ -1300,6 +1364,22 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
             });
             const revalidated = await queryStableCurrent(ctx, false, controller, "Revalidating current usage…");
             if (!revalidated) return { kind: "stay" };
+            const nativeIndex = adapters.findIndex(
+              (adapter) => adapter.id === "openai" && adapter.id !== currentProviderId,
+            );
+            if (nativeIndex >= 0) {
+              const nativeAdapter = adapters[nativeIndex];
+              if (nativeAdapter) {
+                const native = await runMenuOperation(
+                  ctx,
+                  "Revalidating ChatGPT companion usage…",
+                  controller.signal,
+                  (signal) => queryStableAdapterState(ctx, nativeAdapter, "configured", false, signal),
+                );
+                if (!native) return { kind: "stay" };
+                queriedStates[nativeIndex] = native.state;
+              }
+            }
             stableCurrent = revalidated;
             current = revalidated.outcome;
             visibleStates = [
@@ -1356,6 +1436,8 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     startStatusRefresh(ctx, ctx.model, false);
   });
   pi.on("model_select", (event, ctx) => {
+    // Cancel read-only native queries, not confirmed legacy reset mutations.
+    for (const controller of nativeQueryControllers) controller.abort();
     startStatusRefresh(ctx, event.model, false);
   });
   pi.on("turn_start", (_event, ctx) => {

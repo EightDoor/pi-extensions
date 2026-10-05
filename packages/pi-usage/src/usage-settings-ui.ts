@@ -9,7 +9,7 @@ const ON = "On";
 const REMAINING = "Remaining";
 const USED = "Used";
 
-type UsageSettingId = "codexFastMode" | "codexStatusResetCountdown" | "codexStatusPercentage";
+type UsageSettingId = "codexFastMode" | "codexStatusResetCountdown" | "codexStatusPercentage" | "openaiCompanionUsage";
 
 function settingValueLabel(id: UsageSettingId, value: UsageSettings[UsageSettingId]): string {
   if (id === "codexStatusPercentage") return value === "used" ? USED : REMAINING;
@@ -59,6 +59,14 @@ export async function showUsageSettings(
           currentValue: settingValueLabel("codexStatusPercentage", state.settings.codexStatusPercentage),
           values: [REMAINING, USED],
         },
+        {
+          id: "openaiCompanionUsage",
+          label: "Experimental ChatGPT companion usage",
+          description:
+            "Read undocumented plan/app usage using a same-account Codex login; matching registration does not prove identity.",
+          currentValue: state.settings.openaiCompanionUsage ? ON : OFF,
+          values: [OFF, ON],
+        },
       ];
       const rule = new HorizontalRule({ ruleStyle: (text) => theme.fg("border", text) });
 
@@ -71,6 +79,7 @@ export async function showUsageSettings(
       };
       const queueUpdate = <Id extends UsageSettingId>(id: Id, requested: UsageSettings[Id], display: string) => {
         saveQueue = saveQueue.then(async () => {
+          if (signal.aborted || !isCurrent()) return;
           const previous = settingsRuntime.get().settings[id];
           if (settingsRuntime.get().kind === "invalid") {
             settingsList.updateValue(id, settingValueLabel(id, previous));
@@ -81,6 +90,19 @@ export async function showUsageSettings(
             return;
           }
           try {
+            if (id === "openaiCompanionUsage" && requested === true && previous !== true) {
+              const accepted = await ctx.ui.confirm(
+                "Enable experimental ChatGPT companion usage?",
+                "Requires /login openai-codex with the same ChatGPT account/workspace as native OpenAI. Only the companion token and its matching account ID are sent to undocumented ChatGPT usage endpoints. Registration matching is not independent proof of the same user/workspace. No reset or allowance mutations are performed.",
+                { signal },
+              );
+              if (signal.aborted || !isCurrent()) return;
+              if (!accepted) {
+                settingsList.updateValue(id, settingValueLabel(id, previous));
+                tui.requestRender();
+                return;
+              }
+            }
             const patch: Partial<UsageSettings> = {};
             patch[id] = requested;
             await settingsRuntime.update(patch, signal);
@@ -91,6 +113,8 @@ export async function showUsageSettings(
             tui.requestRender();
             return;
           }
+          // A rename can win a cancellation race. Apply owned lifecycle cleanup after a
+          // durable save, but let the owner guard its session before touching UI.
           if (previous !== requested) {
             changed = true;
             onApplied(id);
@@ -108,7 +132,7 @@ export async function showUsageSettings(
           if (closing || signal.aborted || !isCurrent()) return;
           if (id === "codexStatusPercentage") {
             queueUpdate(id, value === USED ? "used" : "remaining", value);
-          } else if (id === "codexFastMode" || id === "codexStatusResetCountdown") {
+          } else if (id === "codexFastMode" || id === "codexStatusResetCountdown" || id === "openaiCompanionUsage") {
             queueUpdate(id, value === ON, value);
           }
         },
