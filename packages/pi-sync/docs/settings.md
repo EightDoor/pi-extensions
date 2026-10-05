@@ -210,6 +210,18 @@ When explicitly enabled, one startup transfer waits for an idle boundary in TUI/
 
 Turning it off does not revert transfers or remove backups/journals. For interrupted operations, follow [merge recovery](merge-implementation-audit.md). Unknown fields remain preserved and malformed/invalid files block saves, just as for the existing policy.
 
+### Settings field merge and machine-local fields
+
+`sync.mergeSettings` is experimental, defaults to `false`, and is available in the owning Settings screen. With a verified accepted ancestor, global `settings.json` root fields merge conservatively: absent differs from null, arrays/nested objects are atomic, and provider/model and other coupled fields form one unit. Unknown fields are preserved. Pi accepts plain UTF-8 JSON with an optional BOM, not JSONC; duplicate/prototype-sensitive keys, invalid encodings, migration-dependent syntax, and over-bound inputs require directional review. `keybindings.json` remains file-level because alias and matcher semantics need a separate strategy.
+
+`sync.localFields` is an explicit sorted string array of whole global `settings.json` root field names, not a heuristic or project override. Example: `"localFields": ["shellPath"]`. Coupled fields must be excluded together. Saving nonempty rules in Settings confirms an upgrade to settings version 4; manual edits must declare version 4 too. Version 3 without rules keeps existing compatibility. Version 4 persists after rule removal and emits snapshot version 2, so an older client must refuse portable data rather than replace local-only values.
+
+Portable projections normalize remote JSON deterministically while local overlay preserves unaffected local member/value bytes and excluded values or absence. A portable whole-file deletion with local-only content is refused for review. No override file is loaded and no resources are automatically activated. Excluded data can remain in old remote versions and local backups; removing a rule can make it publishable or replaceable again.
+
+Changing rules blocks ordinary/background merge until a reviewed explicit `push --force` or `pull --force` migration. It requires an additional observable TUI/RPC confirmation even with `--yes`. Cancellation, changed bytes/settings/head, and invalid files prevent acceptance. Inspect `/sync diff` first. Configure the same portable rule set on every receiving machine; other local values may differ. Rule names, not credential values, appear in review.
+
+Accepted ancestors are private, hash/identity-bound, bounded records below the denied state directory. Capture occurs after accepted directions or journaled merge; cache staging precedes state acceptance, and previous ancestors survive failures until completed journal retirement permits pruning. Missing/corrupt cache never invents a baseline from current data or assumes remote retention. Preserve unknown/corrupted records and pending journals for manual review; do not downgrade portable setups. To return to an older client, first use this version to review rule removal and publish a complete nonportable copy to a separate version-3 setup, with Pi closed during the change. Never reinterpret portable snapshots with an old binary.
+
 ### Unsupported old settings and recovery
 
 Version 1, version 2, and non-empty unversioned documents are unsupported after the version 3 schema reset.

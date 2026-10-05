@@ -19,6 +19,7 @@ export interface Snapshot {
   syncSessions?: boolean;
   /** Portable, credential-free included-content intent. Absent on legacy snapshots. */
   selection?: SnapshotSelection;
+  localFields?: string[];
   files: SnapshotFile[];
 }
 

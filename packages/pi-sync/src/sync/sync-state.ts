@@ -8,6 +8,7 @@ import {
 } from "../snapshot/snapshot.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
 import type { SyncState } from "../state/state-types.js";
+import { portableSnapshot, sameLocalFields } from "./local-fields.js";
 import {
   customIncludePathsByLower,
   includeFromSelectionConfig,
@@ -15,10 +16,10 @@ import {
   type SyncSelectionConfig,
 } from "./sync-policy.js";
 
-type SyncPolicyConfig = SyncSelectionConfig;
+type SyncPolicyConfig = SyncSelectionConfig & { localFields?: string[] };
 
 export function hasLocalChanges(local: Snapshot, state: SyncState, config: SyncPolicyConfig) {
-  return !sameHashes(fileHashMap(local), stateHashMapForConfig(state, config));
+  return !sameHashes(fileHashMap(portableSnapshot(local, config.localFields)), stateHashMapForConfig(state, config));
 }
 
 export function remoteChangedSinceState(
@@ -87,7 +88,7 @@ function withoutHashPaths(hashes: Record<string, string>, ignoredPaths: Set<stri
 }
 
 export function syncPolicyChanged(state: SyncState, config: SyncPolicyConfig) {
-  return syncIncludeChanged(state, config);
+  return syncIncludeChanged(state, config) || !sameLocalFields(state.localFields, config.localFields);
 }
 
 export function shouldRefreshSyncedState(

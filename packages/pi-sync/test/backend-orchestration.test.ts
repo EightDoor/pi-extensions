@@ -170,8 +170,9 @@ test("rollback rejects a remote head change that lands during confirmation", asy
 
     await assert.rejects(
       rollback(ctx, { ...commandOptions(), args: [historical.id], yes: false }, () => backend),
-      RollbackPublicationError,
+      /Remote changed during rollback review/,
     );
+    assert.equal(readFileSync(path.join(agentDir, "settings.json"), "utf8"), '{"current":true}\n');
     assert.equal((await backend.readHead())?.snapshotId, concurrent.id);
   });
 });

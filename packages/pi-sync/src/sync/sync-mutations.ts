@@ -7,7 +7,7 @@ import {
   type SyncBackend,
 } from "../backends/sync-backend.js";
 import type { CommandOptions } from "../commands/command-types.js";
-import { loadConfig } from "../settings/config.js";
+import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import { sessionDirForApply, snapshotOptionsForContext } from "../snapshot/session-paths.js";
 import {
@@ -21,6 +21,7 @@ import {
 } from "../snapshot/snapshot.js";
 import { applySnapshot } from "../snapshot/snapshot-apply.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
+import { pruneMergeBaselines } from "../state/merge-baseline-store.js";
 import type { SyncState } from "../state/state-types.js";
 import { readStateForConfig, writeStateForConfig } from "../state/sync-state-store.js";
 import {
@@ -30,6 +31,8 @@ import {
   formatRollbackSummary,
 } from "../ui/sync-format.js";
 import { setSyncStatus } from "../ui/sync-status.js";
+import { confirmFieldMigration } from "./field-migration.js";
+import { overlayLocalFields, portableSnapshot } from "./local-fields.js";
 import { readMergeJournal, requireNoMergeJournal, retireMergeJournal } from "./merge-journal.js";
 import { mergeSync } from "./merged-sync.js";
 import { readRemoteSnapshot, readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
@@ -96,6 +99,7 @@ export async function push(
   input?: PushInput,
   factory: SyncBackendFactory = createSyncBackend,
 ) {
+  const validateMutation = captureMutationOwner(ctx, options.signal);
   const config = input?.config ?? (await loadConfig(options.setup));
   throwIfAborted(options.signal);
   await requireNoMergeJournal(config, options);
@@ -103,7 +107,9 @@ export async function push(
   const backend = input?.backend ?? (await factory(config));
   const state = input?.state ?? (await readStateForConfig(config));
   throwIfAborted(options.signal);
-  const local = input?.local ?? (await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config)));
+  const localRaw =
+    input?.local ?? (await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config)));
+  const local = portableSnapshot(localRaw, config.localFields);
   throwIfAborted(options.signal);
 
   let head = await backend.readHead(options.signal);
@@ -138,6 +144,11 @@ export async function push(
     }
   }
 
+  if (!remoteForUpload && head && config.localFields !== undefined)
+    remoteForUpload = await readSnapshotForHead(backend, head, options.signal);
+  if (!(await confirmFieldMigration(ctx, config, state, remoteForUpload, options.force, options.signal)))
+    return "cancelled" as const;
+  const configIdentity = syncCheckConfigFingerprint(config);
   let upload = await snapshotForUpload(backend, config, local, head, remoteForUpload, options.signal);
   if (!config.skipSecretScan) {
     const secrets = scanSnapshot(local);
@@ -174,9 +185,13 @@ export async function push(
     }
   }
 
-  if (await readMergeJournal(config)) {
+  validateMutation();
+  if (configIdentity !== syncCheckConfigFingerprint(await loadConfig(options.setup)))
+    throw new Error("Settings changed during push review.");
+  validateMutation();
+  if (config.localFields !== undefined || (await readMergeJournal(config))) {
     const current = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
-    if (!sameHashes(fileHashMap(current), fileHashMap(local)))
+    if (!sameHashes(fileHashMap(current), fileHashMap(localRaw)))
       throw new Error("Local content changed during recovery review; retry from current bytes.");
   }
   const result = await backend.publishSnapshot(upload, expectedRemoteHead(head), {
@@ -184,19 +199,27 @@ export async function push(
     onCommit: options.onCommit,
   });
   try {
-    await writeStateForConfig(config, {
-      version: VERSION,
-      profile: config.snapshotIdentity,
-      lastAppliedSnapshot: result.head.snapshotId,
-      lastRemoteRevision: result.head.revision,
-      lastFileHashes: fileHashMap(local),
-      include: [...config.include],
-    });
+    await writeStateForConfig(
+      config,
+      {
+        version: VERSION,
+        profile: config.snapshotIdentity,
+        lastAppliedSnapshot: result.head.snapshotId,
+        lastRemoteRevision: result.head.revision,
+        lastFileHashes: fileHashMap(local),
+        include: [...config.include],
+        ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
+      },
+      local,
+      validateMutation,
+    );
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error);
   }
   await retireMergeJournal(config);
   if (options.signal?.aborted) return;
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
+  validateMutation();
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(
@@ -242,6 +265,9 @@ export async function pull(
     });
   }
 
+  if (!(await confirmFieldMigration(ctx, config, state, remote, options.force, options.signal)))
+    return "cancelled" as const;
+  const configIdentity = syncCheckConfigFingerprint(config);
   const remoteChanged = hasRemoteChanges(remote, state, config, protectedSessionPaths(ctx));
   if (localChanged && remoteChanged && state.lastAppliedSnapshot && !options.force) {
     throw createSyncDecision({
@@ -277,27 +303,47 @@ export async function pull(
       throw new Error("Local or remote content changed during recovery review; retry from a fresh diff.");
     }
   }
+  if (configIdentity !== syncCheckConfigFingerprint(await loadConfig(options.setup)))
+    throw new Error("Settings changed during pull review.");
+  validateMutation();
+  const refreshed = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+  if (!sameHashes(fileHashMap(local), fileHashMap(refreshed)))
+    throw new Error("Local bytes changed during pull review.");
+  if (!sameRemoteHead(backend, head, await backend.readHead(options.signal)))
+    throw new Error("Remote changed during pull review.");
+  validateMutation();
+  const logical = portableSnapshot(remote, config.localFields);
+  const physical = overlayLocalFields(logical, refreshed, config.localFields);
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
-  const applySessionDir = await sessionDirForApply(ctx, remote);
+  const applySessionDir = await sessionDirForApply(ctx, physical);
   throwIfAborted(options.signal);
   options.onCommit?.();
-  const lastFileHashes = await applySnapshot(remote, protectedSessionPaths(ctx), {
+  const lastFileHashes = await applySnapshot(physical, protectedSessionPaths(ctx), {
     include: config.include,
     sessionDir: applySessionDir,
     signal: options.signal,
     validateMutation,
   });
   validateMutation();
-  await writeStateForConfig(config, {
-    version: VERSION,
-    profile: config.snapshotIdentity,
-    lastAppliedSnapshot: remote.id,
-    lastRemoteRevision: head?.revision,
-    lastFileHashes,
-    include: [...config.include],
-  });
+  await writeStateForConfig(
+    config,
+    {
+      version: VERSION,
+      profile: config.snapshotIdentity,
+      lastAppliedSnapshot: remote.id,
+      lastRemoteRevision: head?.revision,
+      lastFileHashes: config.localFields?.length
+        ? { ...lastFileHashes, "settings.json": fileHashMap(logical)["settings.json"] }
+        : lastFileHashes,
+      include: [...config.include],
+      ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
+    },
+    logical,
+    validateMutation,
+  );
   await retireMergeJournal(config);
   if (options.signal?.aborted) return "applied" as const;
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
   validateMutation();
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
@@ -454,8 +500,10 @@ export async function rollback(
     config.include.includes("sessions") ? decoded : snapshotWithoutSessions(decoded),
     config,
   );
-  const remote = regenerateSnapshotIdentity(selected);
+  const remote = portableSnapshot(regenerateSnapshotIdentity(selected), config.localFields);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+  if (!(await confirmFieldMigration(ctx, config, await readStateForConfig(config), decoded, true, options.signal)))
+    return;
   const expectedHead = await backend.readHead(options.signal);
   throwIfAborted(options.signal);
 
@@ -470,17 +518,30 @@ export async function rollback(
     return;
   }
 
+  validateMutation();
+  const currentLocal = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+  if (!sameHashes(fileHashMap(currentLocal), fileHashMap(local)))
+    throw new Error("Local bytes changed during rollback review.");
+  if (syncCheckConfigFingerprint(config) !== syncCheckConfigFingerprint(await loadConfig(options.setup)))
+    throw new Error("Settings changed during rollback review.");
+  if (!sameRemoteHead(backend, expectedHead, await backend.readHead(options.signal)))
+    throw new Error("Remote changed during rollback review.");
+  validateMutation();
   throwIfAborted(options.signal);
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, remote);
   throwIfAborted(options.signal);
   options.onCommit?.();
-  const lastFileHashes = await applySnapshot(remote, protectedSessionPaths(ctx), {
-    include: config.include,
-    sessionDir: applySessionDir,
-    signal: options.signal,
-    validateMutation,
-  });
+  const lastFileHashes = await applySnapshot(
+    overlayLocalFields(remote, local, config.localFields),
+    protectedSessionPaths(ctx),
+    {
+      include: config.include,
+      sessionDir: applySessionDir,
+      signal: options.signal,
+      validateMutation,
+    },
+  );
   validateMutation();
   let result: PublishSnapshotResult;
   try {
@@ -495,19 +556,28 @@ export async function rollback(
     throw new RollbackPublicationError(backup, error);
   }
   try {
-    await writeStateForConfig(config, {
-      version: VERSION,
-      profile: config.snapshotIdentity,
-      lastAppliedSnapshot: result.head.snapshotId,
-      lastRemoteRevision: result.head.revision,
-      lastFileHashes,
-      include: [...config.include],
-    });
+    await writeStateForConfig(
+      config,
+      {
+        version: VERSION,
+        profile: config.snapshotIdentity,
+        lastAppliedSnapshot: result.head.snapshotId,
+        lastRemoteRevision: result.head.revision,
+        lastFileHashes: config.localFields?.length
+          ? { ...lastFileHashes, "settings.json": fileHashMap(remote)["settings.json"] }
+          : lastFileHashes,
+        include: [...config.include],
+        ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
+      },
+      remote,
+      validateMutation,
+    );
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error, backup);
   }
   await retireMergeJournal(config);
   if (options.signal?.aborted) return;
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
   validateMutation();
   ctx.ui.notify(
     [

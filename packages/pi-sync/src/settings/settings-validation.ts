@@ -12,6 +12,7 @@ import {
   normalizeWebDavUrl,
   validateWebDavCredentials,
 } from "../backends/webdav/webdav-config.js";
+import { normalizeLocalFields } from "../sync/local-fields.js";
 import { normalizeSyncInclude } from "../sync/sync-policy.js";
 import { localConfigPath } from "./config-file.js";
 import type {
@@ -33,7 +34,7 @@ export function normalizeOnSwitch(value: unknown): OnSwitchAction {
 }
 
 export function validateSettingsDocument(value: Record<string, unknown>): PiSyncSettingsV3 {
-  if (value.version !== 3) {
+  if (value.version !== 3 && value.version !== 4) {
     throw new Error(
       `Unsupported pi-sync settings: version 3 is required. Keep the existing file for recovery, then create a new version 3 ${path.basename(localConfigPath())}; pi-sync will not migrate or overwrite old settings.`,
     );
@@ -94,6 +95,11 @@ export function validateSettingsDocument(value: Record<string, unknown>): PiSync
     }
   } else if (!activeSyncSetup || !Object.hasOwn(syncSetups, activeSyncSetup)) {
     throw new Error("Invalid pi-sync settings: activeSyncSetup must reference an existing own-property sync setup.");
+  }
+  for (const setup of Object.values(syncSetups)) {
+    const policy = (setup as SyncSetupSettings).sync;
+    if (policy.localFields !== undefined && value.version !== 4)
+      throw new Error("localFields requires explicit settings version 4; older binaries must refuse portable state.");
   }
   validateUniqueRemoteSyncSetups(syncSetups, storageConnections);
   return value as PiSyncSettingsV3;
@@ -202,6 +208,9 @@ function validateSyncSetup(name: string, value: Record<string, unknown>, connect
     throw new Error(`Invalid pi-sync settings: sync setup “${name}” is missing sync.include.`);
   }
   normalizeSyncInclude(sync.include);
+  normalizeLocalFields(sync.localFields);
+  if (sync.mergeSettings !== undefined && typeof sync.mergeSettings !== "boolean")
+    throw new Error("mergeSettings must be boolean.");
   if (sync.automaticTransfer !== undefined && typeof sync.automaticTransfer !== "boolean") {
     throw new Error(`Invalid pi-sync settings: sync setup “${name}” sync.automaticTransfer must be boolean.`);
   }

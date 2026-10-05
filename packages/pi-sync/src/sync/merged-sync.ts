@@ -18,11 +18,13 @@ import {
   scanSnapshot,
 } from "../snapshot/snapshot.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
+import { pruneMergeBaselines, stageMergeBaseline } from "../state/merge-baseline-store.js";
 import { readStateForConfig, syncStateFingerprint, writeStateForConfig } from "../state/sync-state-store.js";
 import { confirmMergeReview } from "../ui/merge-review.js";
 import { formatApplyPreview, formatPublicationPreview } from "../ui/sync-format.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
 import { planFileMerge } from "./file-merge-planner.js";
+import { overlayLocalFields, portableSnapshot, sameLocalFields } from "./local-fields.js";
 import { applyMergedSnapshot, preflightMergedTargets } from "./merge-apply.js";
 import {
   clearMergeJournal,
@@ -32,6 +34,7 @@ import {
   writeMergeJournal,
 } from "./merge-journal.js";
 import { readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
+import { resolveSettingsConflicts } from "./settings-conflicts.js";
 import { createSyncDecision } from "./sync-decision.js";
 import { backupLocal, captureMutationOwner, protectedSessionPaths } from "./sync-local.js";
 import { fileHashMap, hasLocalChanges, hasRemoteChanges, sameHashes, syncPolicyChanged } from "./sync-state.js";
@@ -91,10 +94,13 @@ export async function mergeSync(
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     await validate();
     const state = await readStateForConfig(config);
-    const local = await createSnapshot(config.snapshotIdentity, {
+    const localRaw = await createSnapshot(config.snapshotIdentity, {
       ...snapshotOptionsForContext(ctx, config),
       signal: options.signal,
     });
+    const local = portableSnapshot(localRaw, config.localFields);
+    if (!sameLocalFields(state.localFields, config.localFields))
+      throw new Error("Local-field rules changed; review and confirm a directional migration first.");
     const head = await backend.readHead(options.signal);
     await validate();
     const rawRemote = head ? await readSnapshotForHead(backend, head, options.signal) : undefined;
@@ -141,34 +147,43 @@ export async function mergeSync(
       throw review("Included content changed; review the selection before merging.", "remote-or-policy-changed");
     if (!head || !remote || !rawRemote)
       throw review("The established remote is missing; choose an explicit recovery direction.", "remote-empty");
-    const plan = planFileMerge({
+    let plan = planFileMerge({
       baseline: state.lastFileHashes,
       local: local.files,
       remote: remote.files,
       selectionCompatible: true,
       protectedPaths: protectedSessionPaths(ctx),
     });
+    const resolved = config.mergeSettings
+      ? await resolveSettingsConflicts(config, state, local, remote, plan)
+      : { plan, fields: [] as string[] };
+    await validate();
+    plan = resolved.plan;
     if (plan.kind !== "planned" || plan.conflicts.length) {
       throw review(
-        "Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.",
+        `Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.${resolved.fields.length ? ` Settings fields: ${resolved.fields.map(safeTerminalText).join(", ")}` : ""}`,
       );
     }
-    const after = regenerateSnapshotIdentity({
+    const accepted = regenerateSnapshotIdentity({
       ...local,
       files: plan.decisions.flatMap((decision) =>
         decision.kind === "accepted" && decision.file ? [decision.file] : [],
       ),
     });
-    const upload = mergeRemotePreservedFiles(after, rawRemote, config);
-    const publish = !sameHashes(fileHashMap(after), fileHashMap(remote));
-    const apply = !sameHashes(fileHashMap(local), fileHashMap(after));
+    const after = overlayLocalFields(accepted, localRaw, config.localFields);
+    const upload = mergeRemotePreservedFiles(accepted, rawRemote, config);
+    const publish = !sameHashes(fileHashMap(accepted), fileHashMap(remote));
+    const apply = !sameHashes(fileHashMap(localRaw), fileHashMap(after));
     if (!publish && !apply) {
       await validate();
-      await writeAcceptedState(config, head, after);
+      await writeAcceptedState(config, head, accepted, validate);
       if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
       return "applied" as const;
     }
-    await preflightMergedTargets(local, after, { ...snapshotOptionsForContext(ctx, config), signal: options.signal });
+    await preflightMergedTargets(localRaw, after, {
+      ...snapshotOptionsForContext(ctx, config),
+      signal: options.signal,
+    });
     await validate();
     if (!config.skipSecretScan && scanSnapshot(upload).length)
       throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
@@ -181,8 +196,8 @@ export async function mergeSync(
           `Sync setup: ${safeTerminalText(config.setupName)}`,
           `Storage location: ${safeTerminalText(backend.destination)}`,
           `Sessions: ${config.include.includes("sessions") ? "included — may contain private conversations" : "not included"}`,
-          `Local writes/deletions: ${plan.decisions.filter((item) => item.kind === "accepted" && item.source === "remote").length}`,
-          formatApplyPreview(local, after).split("\n").map(safeTerminalText).join("\n"),
+          `Local writes/deletions: ${plan.decisions.filter((item) => item.kind === "accepted" && (item.source === "remote" || item.source === "merged")).length}`,
+          formatApplyPreview(localRaw, after).split("\n").map(safeTerminalText).join("\n"),
           `Remote publication: ${publish ? "yes" : "no"}`,
           formatPublicationPreview(rawRemote, upload).split("\n").map(safeTerminalText).join("\n"),
           `Backend publication: ${backend.capability}`,
@@ -195,7 +210,7 @@ export async function mergeSync(
       return "cancelled" as const;
     await validate();
     const refreshed = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
-    if (!sameHashes(fileHashMap(refreshed), fileHashMap(local)))
+    if (!sameHashes(fileHashMap(refreshed), fileHashMap(localRaw)))
       throw new Error("Local content changed during review; no merged transfer was performed.");
     if (syncStateFingerprint(await readStateForConfig(config)) !== syncStateFingerprint(state))
       throw new Error("Sync baseline changed during review; retry from a fresh observation.");
@@ -204,8 +219,9 @@ export async function mergeSync(
     const journal: MergeJournal = {
       version: 1,
       identity: mergeJournalIdentity(config, backend.identity),
-      before: local,
+      before: localRaw,
       after,
+      accepted,
       upload: publish ? upload : rawRemote,
       expectedHead: head,
       backup,
@@ -299,7 +315,9 @@ async function completeJournal(
   )
     throw new Error("Remote snapshot does not match the recorded merge publication.");
   const state = await readStateForConfig(config);
-  if (syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, journal.after))) {
+  if (
+    syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, journal.accepted ?? journal.after))
+  ) {
     await validate();
     await clearMergeJournal(config);
     return true;
@@ -322,9 +340,15 @@ async function completeJournal(
     validate,
   );
   await validate();
-  await writeAcceptedState(config, head, journal.after);
+  await writeAcceptedState(config, head, journal.accepted ?? journal.after, validate);
   await validate();
   await clearMergeJournal(config);
+  await validate();
+  await pruneMergeBaselines(
+    config,
+    acceptedState(config, head, journal.accepted ?? journal.after),
+    captureMutationOwner(ctx, signal),
+  );
   await validate();
   return true;
 }
@@ -337,9 +361,19 @@ function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapsh
     lastRemoteRevision: head.revision,
     lastFileHashes: fileHashMap(snapshot),
     include: [...config.include],
+    ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
   };
 }
 
-async function writeAcceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot) {
-  await writeStateForConfig(config, acceptedState(config, head, snapshot));
+async function writeAcceptedState(
+  config: AnySyncConfig,
+  head: RemoteHead,
+  snapshot: Snapshot,
+  validate: () => Promise<void>,
+) {
+  const state = acceptedState(config, head, snapshot);
+  await stageMergeBaseline(config, snapshot, state);
+  await validate();
+  await writeStateForConfig(config, state);
+  await validate();
 }

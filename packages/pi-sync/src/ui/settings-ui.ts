@@ -4,12 +4,14 @@ import { loadConfig } from "../settings/config.js";
 import { localConfigPath } from "../settings/config-file.js";
 import { updateSyncSetup } from "../settings/settings-management.js";
 import { updateLocalConfig } from "../settings/settings-store.js";
+import { normalizeLocalFields, sameLocalFields } from "../sync/local-fields.js";
 import {
   SETUP_SWITCH_ACTION_OPTIONS,
   saveOnSwitch,
   setupSwitchActionFromLabel,
   setupSwitchActionLabel,
 } from "../sync/setup-switch.js";
+import { captureMutationOwner } from "../sync/sync-local.js";
 import type { RunRoute } from "./cancellable-operation.js";
 import { dispatchManagerResult } from "./manager-result-dispatcher.js";
 import { AUTOMATIC_SYNC_DESCRIPTION } from "./setup/setup-prompts.js";
@@ -33,6 +35,8 @@ export async function showSyncSettings(
   type Action =
     | "automatic"
     | "automatic-transfer"
+    | "merge-settings"
+    | "local-fields"
     | "skip-secret-scan"
     | "show-status"
     | "on-switch"
@@ -103,10 +107,92 @@ export async function showSyncSettings(
             values: ["On", "Off"],
             action: "automatic-transfer",
           },
+          {
+            id: "mergeSettings",
+            label: "Settings field merge (experimental)",
+            description:
+              "Combine independent global settings.json fields using a verified private ancestor; arrays and nested objects remain atomic. No reload.",
+            currentValue: state.mergeSettings ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "merge-settings",
+          },
+          {
+            id: "localFields",
+            label: "Machine-local settings fields",
+            description:
+              "Root field names omitted from future portable snapshots. Policy changes require directional migration; old history remains.",
+            currentValue: `${state.localFields?.length ?? 0} fields · Edit`,
+            action: "local-fields",
+          },
         ],
       }),
     },
     actions: {
+      "merge-settings": async ({ value, signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          validate();
+          await updateSyncSetup(
+            setupName,
+            (setup) => ({ ...setup, sync: { ...setup.sync, mergeSettings: value === "On" } }),
+            { signal: mutationSignal },
+          );
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
+      "local-fields": async ({ signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          const previous = await loadConfig(setupName);
+          validate();
+          const input = await ctx.ui.input(
+            "Machine-local settings.json root fields (JSON string array)",
+            JSON.stringify(previous.localFields ?? []),
+            { signal: mutationSignal },
+          );
+          validate();
+          if (input === undefined) return { kind: "rejected" };
+          let fields: string[];
+          try {
+            fields = normalizeLocalFields(JSON.parse(input));
+          } catch {
+            throw new Error("Invalid localFields JSON array; no policy was changed.");
+          }
+          if (sameLocalFields(previous.localFields, fields)) return { kind: "stay" };
+          const confirmed = await ctx.ui.confirm(
+            "Save portable field policy?",
+            "This opts into settings/snapshot version 4/2; older clients must refuse them. Future snapshots omit these fields, but old remote history is NOT erased. Review an explicit force push/pull migration before further sync. Removed rules can expose or replace local-only values.",
+            { signal: mutationSignal },
+          );
+          validate();
+          if (!confirmed) return { kind: "rejected" };
+          await updateLocalConfig((current) => {
+            validate();
+            const setup = current.syncSetups[setupName];
+            if (!setup || !sameLocalFields(setup.sync.localFields, previous.localFields))
+              throw new Error("Field policy changed while under review; reopen settings.");
+            return {
+              ...current,
+              version: 4,
+              syncSetups: {
+                ...current.syncSetups,
+                [setupName]: { ...setup, sync: { ...setup.sync, localFields: fields } },
+              },
+            };
+          }, mutationSignal);
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
       automatic: async ({ value, signal: actionSignal }) => {
         const automatic = value === "On";
         const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
