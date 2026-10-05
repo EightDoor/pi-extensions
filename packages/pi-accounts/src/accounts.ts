@@ -73,6 +73,8 @@ type SessionSelectionOwner = {
   sessionId: string;
   selections: ProviderAccountSelections;
   error?: string;
+  environmentAccount?: string;
+  environmentError?: string;
   controller: AbortController;
   signal: AbortSignal;
   ready: Promise<void>;
@@ -178,6 +180,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       for (const coordinator of previous.coordinators.values()) coordinator.invalidate(ctx);
     }
     const controller = new AbortController();
+    const environment = readEnvironmentAccount();
     const owner: SessionSelectionOwner = {
       context: ctx,
       // Pi exposes this as read-only to extensions, but the runtime context contains the concrete
@@ -185,6 +188,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       sessionManager: ctx.sessionManager as ExtensionContext["sessionManager"] & SessionEntryWriter,
       sessionId: ctx.sessionManager.getSessionId(),
       selections: cloneAccountSelections(Object.create(null) as ProviderAccountSelections),
+      environmentAccount: environment.account,
+      environmentError: environment.error,
       controller,
       signal: controller.signal,
       ready: Promise.resolve(),
@@ -199,6 +204,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       startupCompletedProviders: new Set(),
     };
     sessionOwners.set(ctx.sessionManager, owner);
+    if (owner.environmentError) ctx.ui.notify(owner.environmentError, "error");
     owner.ready = initializeOwner(owner, ctx);
     return owner;
   };
@@ -213,7 +219,9 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
   };
 
   const persistSelection: PersistSelection = (owner, providerId, accountName, isCurrent) => {
-    if (!isOwnerCurrent(owner) || !isCurrent()) return false;
+    if (!isOwnerCurrent(owner) || !isCurrent() || owner.environmentAccount !== undefined || owner.environmentError) {
+      return false;
+    }
     let selections = owner.error
       ? providers.reduce<ProviderAccountSelections>(
           (current, provider) => setAccountSelection(current, provider.id, null),
@@ -244,9 +252,16 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (!coordinator) throw new Error(`Missing runtime coordinator for ${providerId}.`);
       if (!isOwnerCurrent(owner)) return staleResult(providerId);
       const signal = ownerSignal ? AbortSignal.any([owner.signal, ownerSignal]) : owner.signal;
-      let result = owner.error
-        ? await coordinator.forceFailClosed(ctx, "unknown", new Error(owner.error))
-        : await coordinator.ensureActive(ctx, store, owner.selections[providerId] ?? null, Date.now(), signal);
+      const selectionError = owner.error ?? owner.environmentError;
+      let result = selectionError
+        ? await coordinator.forceFailClosed(ctx, "unknown", new Error(selectionError))
+        : await coordinator.ensureActive(
+            ctx,
+            store,
+            owner.environmentAccount ?? owner.selections[providerId] ?? null,
+            Date.now(),
+            signal,
+          );
       let identity: string | undefined;
       let latest = owner.syncTasks.get(providerId);
       if (!isOwnerCurrent(owner)) return latest && latest !== task ? latest : staleResult(providerId);
@@ -283,7 +298,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (latest && latest !== task) return latest;
       coordinator.publishCredentialOffer(ctx, result, identity ?? "");
       owner.results.set(providerId, result);
-      updateStatus(ctx, owner.results, model);
+      updateStatus(ctx, owner.results, model, hasEnvironmentSelection(owner));
       return result;
     })();
     owner.syncTasks.set(providerId, task);
@@ -321,14 +336,16 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (!isOwnerCurrent(owner)) return;
       const result = await startupProvider(provider.id, ctx, owner);
       if (!isOwnerCurrent(owner)) return;
-      if (result.status === "error") {
+      if (result.status === "error" && (!hasEnvironmentSelection(owner) || ctx.model?.provider === provider.id)) {
         ctx.ui.notify(
-          `${provider.displayName} account "${result.accountName}" failed closed: ${result.message}`,
+          hasEnvironmentSelection(owner)
+            ? `${provider.displayName} account selected by PI_ACCOUNT failed closed. Check that the account exists and its authentication is valid.`
+            : `${provider.displayName} account "${result.accountName}" failed closed: ${result.message}`,
           "error",
         );
       }
     }
-    if (isOwnerCurrent(owner)) updateStatus(ctx, owner.results);
+    if (isOwnerCurrent(owner)) updateStatus(ctx, owner.results, ctx.model, hasEnvironmentSelection(owner));
   };
 
   const waitForCurrentProvider = async (providerId: AccountProviderId, owner: SessionSelectionOwner): Promise<void> => {
@@ -416,8 +433,15 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     const owner = await ensureSessionOwner(ctx);
     if (!isOwnerCurrent(owner)) return;
     const providerId = toProviderId(event.model.provider);
-    if (providerId) await syncProvider(providerId, ctx, owner, undefined, event.model);
-    else updateStatus(ctx, owner.results, event.model);
+    if (providerId) {
+      const result = await syncProvider(providerId, ctx, owner, undefined, event.model);
+      if (isOwnerCurrent(owner) && result.status === "error" && hasEnvironmentSelection(owner)) {
+        ctx.ui.notify(
+          `${requireAdapter(adapters, providerId).displayName} account selected by PI_ACCOUNT failed closed. Check that the account exists and its authentication is valid.`,
+          "error",
+        );
+      }
+    } else updateStatus(ctx, owner.results, event.model, hasEnvironmentSelection(owner));
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
@@ -570,12 +594,14 @@ async function loginAccount(
     );
     if (!isCurrent()) return;
     credentialSaved = true;
-    if (!persistSelection(session, adapter.id, parsed.name, isCurrent)) return;
+    if (!hasEnvironmentSelection(session) && !persistSelection(session, adapter.id, parsed.name, isCurrent)) return;
     const result = await syncProvider(adapter.id, ctx, session, signal);
     if (!isCurrent()) return;
     ctx.ui.notify(
-      formatActivationMessage("Logged in", adapter, parsed.name, result),
-      result.status === "active" ? "info" : "error",
+      hasEnvironmentSelection(session)
+        ? `Saved ${adapter.displayName} account "${parsed.name}". PI_ACCOUNT still controls this process's selection.${result.status === "error" ? " Authentication failed closed; check the selected account." : ""}`
+        : formatActivationMessage("Logged in", adapter, parsed.name, result),
+      result.status === "error" ? "error" : "info",
     );
   } catch (error) {
     if (!isCurrent()) return;
@@ -601,6 +627,13 @@ async function switchAccount(
   isCurrent: () => boolean,
 ): Promise<void> {
   if (!isCurrent()) return;
+  if (hasEnvironmentSelection(session)) {
+    ctx.ui.notify(
+      "PI_ACCOUNT controls this process's account selection. Unset it and restart Pi to switch accounts.",
+      "warning",
+    );
+    return;
+  }
   const name = nameArg.trim();
   if (!name) {
     ctx.ui.notify(`Select a ${adapter.displayName} account from /accounts.`, "warning");
@@ -684,6 +717,22 @@ async function removeAccount(
   if (!isCurrent()) return;
   if (!removed) {
     ctx.ui.notify(`${adapter.displayName} account "${parsed.name}" was not found.`, "warning");
+    return;
+  }
+  if (hasEnvironmentSelection(session)) {
+    if (session.environmentAccount === parsed.name) {
+      const result = await syncProvider(adapter.id, ctx, session, signal);
+      if (!isCurrent()) return;
+      ctx.ui.notify(
+        `Removed ${adapter.displayName} account "${parsed.name}". PI_ACCOUNT still selects this name; ${result.status === "error" ? "requests will fail closed until the account is restored or Pi is restarted without PI_ACCOUNT." : "check the effective selection."}`,
+        result.status === "error" ? "error" : "warning",
+      );
+    } else {
+      ctx.ui.notify(
+        `Removed ${adapter.displayName} account "${parsed.name}". PI_ACCOUNT still controls this process.`,
+        "info",
+      );
+    }
     return;
   }
   const removedSelection = !session.error && session.selections[adapter.id] === parsed.name;
@@ -784,6 +833,7 @@ function updateStatus(
   ctx: ExtensionContext,
   results: Map<AccountProviderId, EnsureActiveProviderAuthResult>,
   model = ctx.model,
+  fromEnvironment = false,
 ): void {
   const providerId = toProviderId(model?.provider);
   const result = providerId ? results.get(providerId) : undefined;
@@ -792,10 +842,25 @@ function updateStatus(
     return;
   }
   if (result.status === "active") {
-    setStatus(ctx, `account:${result.accountName}`);
+    setStatus(ctx, fromEnvironment ? "account:PI_ACCOUNT" : `account:${result.accountName}`);
     return;
   }
-  setStatus(ctx, `account:${result.accountName} auth error`);
+  setStatus(ctx, fromEnvironment ? "account:PI_ACCOUNT auth error" : `account:${result.accountName} auth error`);
+}
+
+function hasEnvironmentSelection(owner: SessionSelectionOwner): boolean {
+  return owner.environmentAccount !== undefined || owner.environmentError !== undefined;
+}
+
+function readEnvironmentAccount(): { account?: string; error?: string } {
+  const value = process.env.PI_ACCOUNT;
+  if (value === undefined) return {};
+  const parsed = parseAccountName(value);
+  if (parsed.ok && !isDefaultPiLoginArg(parsed.name)) return { account: parsed.name };
+  return {
+    error:
+      "PI_ACCOUNT must name a saved account (1-64 letters, numbers, dots, underscores, or hyphens; not default). Unset it and restart Pi to restore session selection.",
+  };
 }
 
 function setStatus(ctx: ExtensionContext, value: string | undefined): void {

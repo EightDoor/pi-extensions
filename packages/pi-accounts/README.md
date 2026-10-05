@@ -16,7 +16,7 @@ Each Pi session keeps its own selection for every provider, and choosing `defaul
 
 - Manages named OAuth accounts for every built-in `/login` provider: Anthropic, GitHub Copilot, Kimi For Coding, Meta, OpenAI, OpenAI Codex (legacy), OpenRouter, Radius, and xAI.
 - Saves named API key accounts for the same providers except OAuth-only OpenAI Codex (legacy).
-- Selects an account—or Pi's default login—independently for each provider and Pi session.
+- Selects an account—or Pi's default login—independently for each provider and Pi session, with an optional `PI_ACCOUNT` override for scripts and concurrent Pi processes.
 - Saves a default account for each provider to use in new sessions without changing existing sessions.
 - Restores session selections after resume or reload while allowing concurrent sessions to use different accounts.
 - Applies provider-specific credentials, endpoints, headers, and model availability through Pi's built-in providers.
@@ -63,6 +63,8 @@ The package declares `dist/index.ts`, so an unbuilt local checkout must be built
 Run `/accounts` in TUI or RPC mode.
 Log in to save a named account, then choose **Set default account → provider → account** to use it when starting a new Pi session.
 Use **Switch … account** to change only the current session.
+For a process-local, non-interactive choice, run `PI_ACCOUNT=work pi` or `PI_ACCOUNT=personal pi --print "..."` after saving those accounts.
+The name applies to **every supported provider used by that process**; a provider without that name fails closed rather than falling back to another account.
 
 Routine account selection and provider activation continue in the background after Pi starts.
 The first prompt, model switch, or `/accounts` operation that needs a provider waits for its current selection and authentication to finish; activation failures still fail that provider closed before a request is sent.
@@ -103,11 +105,19 @@ The picker shows the saved default and saves your selection immediately; leaving
 Defaults are user-wide settings in `<getAgentDir()>/pi-accounts.json` (normally `~/.pi/agent/pi-accounts.json`); project overrides are not supported.
 The existing `providers.<provider-id>.active` field stores the saved account name, so previous values remain compatible without migration.
 An absent or `null` value means Pi's built-in login; named values must match a saved account under that provider.
-The menu clears `active` when you choose **Pi built-in login** or remove the configured default account.
+The menu clears `active` when you choose **Pi built-in login** or remove the configured default account. Editing a saved default while `PI_ACCOUNT` is set does not change that process's effective selection.
 
 New sessions, including `/new`, forks, and clones, snapshot these defaults.
 A session's saved selection takes precedence on restart, resume, and `/reload`; changing a default never switches that session or other existing sessions.
 Login and **Switch … account** still change only the current session, not the startup default.
+
+`PI_ACCOUNT=<name>` takes precedence over both saved defaults and session selections, including on resume and `/reload`.
+It is read when a session starts and remains fixed for that session; changing the process environment afterward affects only subsequently started sessions.
+The value must be a saved account name: 1–64 letters, numbers, dots, underscores, or hyphens (surrounding whitespace is trimmed); `default` is reserved and invalid.
+A missing name for **any supported provider when used**, or an invalid value, fails that provider closed rather than using a default or an existing session choice. Providers not managed by this package remain unchanged.
+Unset `PI_ACCOUNT` and restart Pi to restore the session's saved selection. The override never changes `pi-accounts.json` or session entries; the session snapshot underneath it remains available when it is removed.
+`/accounts` and the account status indicate the environment as the effective source without echoing raw environment input. While it is set, interactive switching is unavailable; login can save an account but does not replace the override, and removing its selected credential fails that provider closed immediately.
+
 Sessions predating session-local selection support snapshot the current default once because their historical choice cannot be inferred.
 If a manually configured default names a missing account, affected sessions fail closed until you choose an available account or Pi's built-in login.
 
