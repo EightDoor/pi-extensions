@@ -580,7 +580,7 @@ export class RuntimeAuthCoordinator {
       const model = findProviderModel(ctx, this.provider.id, candidate.id);
       if (!model) continue;
       if (auth.baseUrl && model.baseUrl !== auth.baseUrl) {
-        throw new Error(`Pi did not apply the runtime ${this.provider.displayName} endpoint.`);
+        throw new EffectiveAuthConflictError(`Pi did not apply the runtime ${this.provider.displayName} endpoint.`);
       }
       if (!auth.headers) continue;
       const resolved = await getApiKeyAndHeaders(ctx, model);

@@ -228,6 +228,45 @@ for (const scope of ["first", "later", "header-alias"] as const) {
   });
 }
 
+test("model endpoint override reports an effective auth conflict", async () => {
+  const store = new AccountStore(new InMemoryAccountStorageBackend());
+  await store.updateProvider("openai", () => ({ accounts: { subscription: credential } }));
+  const adapter: AccountProviderAdapter = {
+    ...provider,
+    oauth: {
+      ...provider.oauth,
+      toAuth: async (value) => ({ apiKey: value.access, baseUrl: "https://selected.example.test/v1" }),
+    },
+  };
+  const mock = createMockPi();
+  accountsExtension(mock.pi, { store, providers: [adapter] });
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  const registry = new ModelRegistry(runtime);
+  const models = registry.getAll().filter((model) => model.provider === "openai");
+  const target = models.at(-1);
+  assert.ok(target && models.length > 1);
+  registry.registerProvider("openai", {
+    models: models.map((model) =>
+      model.id === target.id ? { ...model, baseUrl: "https://overridden.example.test/v1" } : model,
+    ),
+  });
+  const manager = SessionManager.inMemory(process.cwd());
+  const { ctx } = createMockContext({ modelRegistry: registry, sessionManager: manager });
+  await mock.events.get("session_start")?.[0]?.({}, ctx);
+  try {
+    const result = await activate(mock, manager, "subscription", { model: target.id });
+    assert.equal(result.code, "effective_auth_conflict");
+    safe(result);
+    assert.equal(await registry.getApiKeyForProvider("openai"), RUNTIME_FAIL_CLOSED_API_KEY);
+  } finally {
+    await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+  }
+});
+
 test("stale conversion cannot overwrite a newer selection", async () => {
   let entered!: () => void;
   let release!: () => void;
