@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 
 const { packageRoot, loadBuilder } = registerRuntimeBuilderContract({
@@ -124,23 +124,31 @@ test("generated main entry references the generated child entries", async () => 
   }
 });
 
-describe("generated Jiti entrypoints", () => {
+// Build and consume one fixture in declaration order, each under the test cap.
+describe("generated Jiti entrypoints", { concurrent: false, shuffle: false }, () => {
   let root: string;
   let agentDir: string;
   let output: string;
+  let fixtureReady: Promise<void> | undefined;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
-  beforeAll(async () => {
-    const builder = await loadBuilder();
-    root = await mkdtemp(join(packageRoot, ".pi-subagents-build-test-"));
-    agentDir = join(root, "agent");
-    output = join(root, "dist");
-    await builder.buildRuntime({ outputDirectory: output });
-    await mkdir(agentDir, { recursive: true });
-    process.env.PI_CODING_AGENT_DIR = agentDir;
+  test("builds the shared Jiti fixture within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
+    fixtureReady = (async () => {
+      const builder = await loadBuilder();
+      root = await mkdtemp(join(packageRoot, ".pi-subagents-build-test-"));
+      agentDir = join(root, "agent");
+      output = join(root, "dist");
+      await builder.buildRuntime({ outputDirectory: output });
+      await mkdir(agentDir, { recursive: true });
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+    })();
+    await fixtureReady;
   });
 
   afterAll(async () => {
+    // Drain non-cancellable fixture work before removing paths or restoring the environment.
+    await fixtureReady?.catch(() => {});
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     if (root) await rm(root, { force: true, recursive: true });

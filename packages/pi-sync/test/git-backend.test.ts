@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { GitSyncBackend, gitBackendIdentity, isSupportedGitVersion } from "../src/backends/git/git-backend.js";
 import { isGitPayloadSizeAllowed } from "../src/backends/git/git-storage.js";
 import {
@@ -24,7 +24,8 @@ import type { Snapshot } from "../src/snapshot/snapshot-types.js";
 import { createBareRemote, gitConfig } from "./git-test-helpers.js";
 import { snapshot } from "./helpers.js";
 
-describe("lease-protected repeated-content history", () => {
+// Each real publication has its own test budget; subsequent checks reuse the history.
+describe("lease-protected repeated-content history", { concurrent: false, shuffle: false }, () => {
   let fixture: ReturnType<typeof createBareRemote>;
   let backend: GitSyncBackend;
   let content: Snapshot;
@@ -33,8 +34,10 @@ describe("lease-protected repeated-content history", () => {
   let first: Publication;
   let second: Publication;
   let third: Publication;
+  let publicationReady: Promise<Publication> | undefined;
 
-  beforeAll(async () => {
+  test("publishes the initial snapshot within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
     fixture = createBareRemote();
     backend = new GitSyncBackend(gitConfig(fixture.remote), {
       cacheRoot: path.join(fixture.root, "cache"),
@@ -51,8 +54,21 @@ describe("lease-protected repeated-content history", () => {
         include: ["settings.json", "keybindings.json", "copies", "missing.toml"],
       },
     };
-    first = await backend.publishSnapshot(content, { kind: "missing" });
-    second = await backend.publishSnapshot(content, expectedRemoteHead(first.head));
+    publicationReady = backend.publishSnapshot(content, { kind: "missing" });
+    first = await publicationReady;
+    assert.match(first.head.revision, new RegExp(`^${gitBackendIdentity(gitConfig(fixture.remote))}:[0-9a-f]{40}$`));
+  });
+
+  test("publishes repeated content against the first lease within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
+    publicationReady = backend.publishSnapshot(content, expectedRemoteHead(first.head));
+    second = await publicationReady;
+    assert.notEqual(first.head.snapshotRef, second.head.snapshotRef);
+    assert.equal(first.head.snapshotId, second.head.snapshotId);
+  });
+
+  test("publishes changed content against the second lease within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
     changed = {
       ...content,
       id: "changed",
@@ -62,10 +78,15 @@ describe("lease-protected repeated-content history", () => {
           : file,
       ),
     };
-    third = await backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+    publicationReady = backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+    third = await publicationReady;
+    assert.notEqual(third.head.snapshotRef, second.head.snapshotRef);
+    assert.equal(third.head.snapshotId, "changed");
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Publication can outlive a failed test; cleanup must not race its Git children.
+    await publicationReady?.catch(() => {});
     if (fixture) rmSync(fixture.root, { recursive: true, force: true });
   });
 

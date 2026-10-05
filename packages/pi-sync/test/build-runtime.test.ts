@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 import { v3WebDavSettings } from "./helpers.js";
@@ -177,39 +177,53 @@ test("generated runtime is mapped, external, self-contained, and loadable by Pi"
   }
 });
 
-describe("generated lazy background check", () => {
+// Build, load, and exercise one fixture in order without a longer setup budget.
+describe("generated lazy background check", { concurrent: false, shuffle: false }, () => {
   let root: string;
+  let agentDir: string;
+  let fixtureReady: Promise<void> | undefined;
+  let reloadReady: Promise<void> | undefined;
   let loaded: ReturnType<DefaultResourceLoader["getExtensions"]> | undefined;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
-  beforeAll(async () => {
-    const builder = await loadBuilder();
-    root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
-    const agentDir = join(root, "agent");
-    await builder.buildRuntime({ outputDirectory: join(root, "dist") });
-    await mkdir(agentDir);
-    await writeFile(join(agentDir, "pi-sync.json"), JSON.stringify(v3WebDavSettings({ automatic: true })));
-    await writeFile(join(agentDir, "settings.json"), "{}\n");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-    const loader = new DefaultResourceLoader({
-      cwd: root,
-      agentDir,
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [join(root, "dist/index.ts")],
-    });
-    await loader.reload();
-    loaded = loader.getExtensions();
+  test("builds the shared background-check fixture within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
+    fixtureReady = (async () => {
+      const builder = await loadBuilder();
+      root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
+      agentDir = join(root, "agent");
+      await builder.buildRuntime({ outputDirectory: join(root, "dist") });
+      await mkdir(agentDir);
+      await writeFile(join(agentDir, "pi-sync.json"), JSON.stringify(v3WebDavSettings({ automatic: true })));
+      await writeFile(join(agentDir, "settings.json"), "{}\n");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+    })();
+    await fixtureReady;
   });
 
   afterAll(async () => {
+    // A timed-out build can still publish output; finish it before deleting the fixture.
+    await fixtureReady?.catch(() => {});
+    await reloadReady?.catch(() => {});
     loaded?.runtime.invalidate("generated background check smoke complete");
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     if (root) await rm(root, { force: true, recursive: true });
   });
 
-  test("loads the generated registration without starting a session", () => {
-    assert.deepEqual(loaded?.errors, []);
+  test("loads the generated registration without starting a session", async () => {
+    const loader = new DefaultResourceLoader({
+      cwd: root,
+      agentDir,
+      settingsManager: SettingsManager.inMemory({}),
+      additionalExtensionPaths: [join(root, "dist/index.ts")],
+    });
+    // Retain the runtime before reload so partial initialization is also cleaned up.
+    loaded = loader.getExtensions();
+    reloadReady = loader.reload();
+    await reloadReady;
+    loaded = loader.getExtensions();
+    assert.deepEqual(loaded.errors, []);
     assert.equal(loaded?.extensions.length, 1);
     assert.ok(loaded?.extensions[0]?.commands.has("sync"));
   });
