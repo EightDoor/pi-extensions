@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { test } from "vitest";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 import { v3WebDavSettings } from "./helpers.js";
@@ -177,22 +177,51 @@ test("generated runtime is mapped, external, self-contained, and loadable by Pi"
   }
 });
 
-test("generated Jiti runtime starts a lazy background check and accepts foreground help before remote completion", async () => {
-  const builder = await loadBuilder();
-  const root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
-  const agentDir = join(root, "agent");
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const previousFetch = globalThis.fetch;
-  const requested = deferred();
-  let aborted = false;
-  let requests = 0;
+describe("generated lazy background check", () => {
+  let root: string;
   let loaded: ReturnType<DefaultResourceLoader["getExtensions"]> | undefined;
-  try {
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  beforeAll(async () => {
+    const builder = await loadBuilder();
+    root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
+    const agentDir = join(root, "agent");
     await builder.buildRuntime({ outputDirectory: join(root, "dist") });
     await mkdir(agentDir);
     await writeFile(join(agentDir, "pi-sync.json"), JSON.stringify(v3WebDavSettings({ automatic: true })));
     await writeFile(join(agentDir, "settings.json"), "{}\n");
     process.env.PI_CODING_AGENT_DIR = agentDir;
+    const loader = new DefaultResourceLoader({
+      cwd: root,
+      agentDir,
+      settingsManager: SettingsManager.inMemory({}),
+      additionalExtensionPaths: [join(root, "dist/index.ts")],
+    });
+    await loader.reload();
+    loaded = loader.getExtensions();
+  });
+
+  afterAll(async () => {
+    loaded?.runtime.invalidate("generated background check smoke complete");
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (root) await rm(root, { force: true, recursive: true });
+  });
+
+  test("loads the generated registration without starting a session", () => {
+    assert.deepEqual(loaded?.errors, []);
+    assert.equal(loaded?.extensions.length, 1);
+    assert.ok(loaded?.extensions[0]?.commands.has("sync"));
+  });
+
+  test("accepts foreground help before the lazy remote check completes", async () => {
+    const previousFetch = globalThis.fetch;
+    const requested = deferred();
+    let aborted = false;
+    let requests = 0;
+    const extension = loaded?.extensions[0];
+    assert.ok(extension);
+    const context = createMockContext({ mode: "rpc" });
     globalThis.fetch = (async (_input, init) => {
       assert.equal(init?.method, "GET");
       requests++;
@@ -208,18 +237,6 @@ test("generated Jiti runtime starts a lazy background check and accepts foregrou
         );
       });
     }) as typeof fetch;
-    const loader = new DefaultResourceLoader({
-      cwd: root,
-      agentDir,
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [join(root, "dist/index.ts")],
-    });
-    await loader.reload();
-    loaded = loader.getExtensions();
-    assert.deepEqual(loaded.errors, []);
-    const extension = loaded.extensions[0];
-    assert.ok(extension);
-    const context = createMockContext({ mode: "rpc" });
     try {
       for (const handler of extension.handlers.get("session_start") ?? [])
         await handler({ type: "session_start", reason: "startup" }, context.ctx);
@@ -231,16 +248,14 @@ test("generated Jiti runtime starts a lazy background check and accepts foregrou
       assert.ok(context.notifications.some((n) => n.message.includes("/sync")));
       assert.ok(context.notifications.every((n) => !/failed|skipped/iu.test(n.message)));
     } finally {
-      for (const handler of extension.handlers.get("session_shutdown") ?? [])
-        await handler({ type: "session_shutdown", reason: "reload" }, context.ctx);
+      try {
+        for (const handler of extension.handlers.get("session_shutdown") ?? [])
+          await handler({ type: "session_shutdown", reason: "reload" }, context.ctx);
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
     }
-  } finally {
-    loaded?.runtime.invalidate("generated background check smoke complete");
-    globalThis.fetch = previousFetch;
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(root, { force: true, recursive: true });
-  }
+  });
 });
 
 test("failed runtime publication restores the previous output", async () => {

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { describe, test } from "vitest";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { GitSyncBackend, gitBackendIdentity, isSupportedGitVersion } from "../src/backends/git/git-backend.js";
 import { isGitPayloadSizeAllowed } from "../src/backends/git/git-storage.js";
 import {
@@ -20,17 +20,27 @@ import {
   SyncBackendConflictError,
   SyncBackendPublicationOutcomeUnknownError,
 } from "../src/backends/sync-backend.js";
+import type { Snapshot } from "../src/snapshot/snapshot-types.js";
 import { createBareRemote, gitConfig } from "./git-test-helpers.js";
 import { snapshot } from "./helpers.js";
 
-test("Git backend publishes lease-protected commits and preserves repeated-content history", async () => {
-  const fixture = createBareRemote();
-  try {
-    const backend = new GitSyncBackend(gitConfig(fixture.remote), {
+describe("lease-protected repeated-content history", () => {
+  let fixture: ReturnType<typeof createBareRemote>;
+  let backend: GitSyncBackend;
+  let content: Snapshot;
+  let changed: Snapshot;
+  type Publication = Awaited<ReturnType<GitSyncBackend["publishSnapshot"]>>;
+  let first: Publication;
+  let second: Publication;
+  let third: Publication;
+
+  beforeAll(async () => {
+    fixture = createBareRemote();
+    backend = new GitSyncBackend(gitConfig(fixture.remote), {
       cacheRoot: path.join(fixture.root, "cache"),
       allowLocalRemotes: true,
     });
-    const content = {
+    content = {
       ...snapshot([
         { path: "settings.json", content: Buffer.from("one") },
         { path: "keybindings.json", content: Buffer.from("shared") },
@@ -41,10 +51,9 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
         include: ["settings.json", "keybindings.json", "copies", "missing.toml"],
       },
     };
-    const first = await backend.publishSnapshot(content, { kind: "missing" });
-    assert.match(first.head.revision, new RegExp(`^${gitBackendIdentity(gitConfig(fixture.remote))}:[0-9a-f]{40}$`));
-    const second = await backend.publishSnapshot(content, expectedRemoteHead(first.head));
-    const changed = {
+    first = await backend.publishSnapshot(content, { kind: "missing" });
+    second = await backend.publishSnapshot(content, expectedRemoteHead(first.head));
+    changed = {
       ...content,
       id: "changed",
       files: content.files.map((file) =>
@@ -53,13 +62,24 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
           : file,
       ),
     };
-    const third = await backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+    third = await backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+  });
+
+  afterAll(() => {
+    if (fixture) rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  test("publishes distinct leased commits and preserves repeated-content history", async () => {
+    assert.match(first.head.revision, new RegExp(`^${gitBackendIdentity(gitConfig(fixture.remote))}:[0-9a-f]{40}$`));
     assert.notEqual(first.head.snapshotRef, second.head.snapshotRef);
     assert.equal(first.head.snapshotId, second.head.snapshotId);
     assert.deepEqual(
       (await backend.listHistory()).map((entry) => entry.snapshotRef),
       [first.head.snapshotRef, second.head.snapshotRef, third.head.snapshotRef],
     );
+  });
+
+  test("reuses identical payload blobs and replaces only changed content", () => {
     const firstTree = publicationTree(fixture.remote, first.head.snapshotRef);
     const thirdTree = publicationTree(fixture.remote, third.head.snapshotRef);
     assert.deepEqual([...firstTree.keys()].sort(), [
@@ -83,10 +103,19 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
       ]),
       Buffer.from("two"),
     );
+  });
+
+  test("reads historical and current commit references", async () => {
     assert.deepEqual(await backend.readSnapshot(first.head.snapshotRef), content);
     assert.deepEqual(await backend.readSnapshot(third.head.snapshotRef), changed);
+  });
+
+  test("resolves unique content IDs and rejects ambiguous repeated IDs", async () => {
     assert.deepEqual(await backend.readSnapshot("changed"), changed);
     await assert.rejects(backend.readSnapshot("snap"), /ambiguous.*commit reference/i);
+  });
+
+  test("restores history from a fresh cache without moving the owned remote ref", async () => {
     const freshBackend = new GitSyncBackend(gitConfig(fixture.remote), {
       cacheRoot: path.join(fixture.root, "fresh-cache"),
       allowLocalRemotes: true,
@@ -98,9 +127,7 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
       }).trim(),
       third.head.snapshotRef,
     );
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("Git backend publishes and reads snapshots with a relative cache root", async () => {
