@@ -75,6 +75,7 @@ export async function loadPartialConfig(setupName?: string): Promise<PartialConf
     ...storageReviewFromConfig(config),
     include: [...config.include],
     automatic: config.automatic,
+    automaticTransfer: config.automaticTransfer ?? false,
     onSwitch: config.onSwitch,
     showStatus: config.showStatus,
   };
@@ -109,6 +110,7 @@ export function syncConfigReviewIdentity(config: AnySyncConfig) {
     backendIdentityCoordinates(config),
     config.include,
     config.automatic,
+    config.automaticTransfer ?? false,
   ]);
 }
 
@@ -155,6 +157,7 @@ function resolveSyncConfig(
     snapshotIdentity: namespace,
     include,
     automatic: setup.sync.automatic,
+    automaticTransfer: setup.sync.automaticTransfer ?? false,
     onSwitch,
     skipSecretScan,
     showStatus,

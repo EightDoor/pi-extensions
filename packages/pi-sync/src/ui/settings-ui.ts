@@ -30,7 +30,14 @@ export async function showSyncSettings(
   const initial = await loadConfig();
   if (signal?.aborted) return;
   const setupName = initial.setupName;
-  type Action = "automatic" | "skip-secret-scan" | "show-status" | "on-switch" | "include" | "remote-include";
+  type Action =
+    | "automatic"
+    | "automatic-transfer"
+    | "skip-secret-scan"
+    | "show-status"
+    | "on-switch"
+    | "include"
+    | "remote-include";
   const menu = defineMenu<Awaited<ReturnType<typeof loadConfig>>, "settings", Action, ExtensionCommandContext>({
     start: "settings",
     screens: {
@@ -87,6 +94,15 @@ export async function showSyncSettings(
             currentValue: "Review",
             action: "remote-include",
           },
+          {
+            id: "automaticTransfer",
+            label: "Automatic transfer at startup",
+            description:
+              "May upload, replace, or delete selected files once at idle startup in TUI/RPC. Requires a baseline and conditional/lease publication; never reloads resources. Turning off cancels pending work.",
+            currentValue: state.automaticTransfer ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "automatic-transfer",
+          },
         ],
       }),
     },
@@ -104,6 +120,24 @@ export async function showSyncSettings(
           if (mutationSignal.aborted) return { kind: "rejected" };
           ctx.ui.notify(
             `Automatic sync ${automatic ? "enabled" : "disabled"} for “${safeTerminalText(setupName)}”.`,
+            "info",
+          );
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
+      "automatic-transfer": async ({ value, signal: actionSignal }) => {
+        const automaticTransfer = value === "On";
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        try {
+          await updateSyncSetup(setupName, (setup) => ({ ...setup, sync: { ...setup.sync, automaticTransfer } }), {
+            signal: mutationSignal,
+          });
+          if (mutationSignal.aborted) return { kind: "rejected" };
+          ctx.ui.notify(
+            `Automatic startup transfer ${automaticTransfer ? "enabled for the next session start" : "disabled"}. Completed transfers are not undone.`,
             "info",
           );
           return { kind: "stay" };
@@ -192,5 +226,8 @@ export async function showSyncSettings(
 }
 
 function notifySaveFailure(ctx: ExtensionCommandContext, error: unknown) {
-  ctx.ui.notify(`Pi Sync settings save failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+  ctx.ui.notify(
+    `Pi Sync settings save failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}`,
+    "error",
+  );
 }

@@ -202,6 +202,14 @@ Adding `sessions` requires a privacy acknowledgement in interactive flows.
 Session JSONL can contain prompts, tool output, file paths, images, and secrets.
 Pull protects the currently open session file; restart Pi or resume a pulled session to use newly synchronized conversations.
 
+### Automatic startup transfer
+
+`sync.automaticTransfer` is optional and accepts only a boolean; absent means `false`. Set it through **/sync → Settings → Automatic transfer at startup**. It is separate from `sync.automatic`: the legacy setting retains observation and selected-content shutdown behavior.
+
+When explicitly enabled, one startup transfer waits for an idle boundary in TUI/RPC. It requires an accepted baseline and a matching authoritative remote include list, retains all-or-nothing conflict review, checks secrets unless the global scan override is enabled, and never reloads resources. Git and verified conditional WebDAV support this automatic policy; R2/S3 require manual sync. Print/JSON skip automatic startup transfer. A settings save takes effect for subsequent authorization checks; enabling schedules the next session start, while foreground Settings cancels and drains any current work before saving. There is no polling.
+
+Turning it off does not revert transfers or remove backups/journals. For interrupted operations, follow [merge recovery](merge-implementation-audit.md). Unknown fields remain preserved and malformed/invalid files block saves, just as for the existing policy.
+
 ### Unsupported old settings and recovery
 
 Version 1, version 2, and non-empty unversioned documents are unsupported after the version 3 schema reset.

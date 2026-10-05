@@ -230,6 +230,7 @@ export function usage() {
     "Usage: /sync <command>",
     `Commands: ${commands}`,
     "Automatic sync: background startup checks only; use /sync to review and transfer. At shutdown, selected content is pushed automatically only when sessions are included. Startup checks run in TUI/RPC, not print/JSON.",
+    "Automatic transfer at startup is a separate opt-in: one conflict-free established-baseline transfer at idle in TUI/RPC, with conditional/lease publication and no resource reload.",
     "Settings: use /sync init or edit storage connections and sync setups in ~/.pi/agent/pi-sync.json (or the configured Pi agent directory). Version 1 and version 2 settings are unsupported and are never rewritten.",
   ].join("\n");
 }
