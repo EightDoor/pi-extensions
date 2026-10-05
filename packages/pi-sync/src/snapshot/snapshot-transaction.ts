@@ -266,10 +266,11 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
         } finally {
           await handle.close();
         }
-        await verifyTarget(directory, entry, journal);
+        const verified = await verifyTarget(directory, entry, journal);
         options.validateMutation?.();
         options.signal?.throwIfAborted();
-        if (current.startsWith("directory:")) await fs.rm(entry.target, { recursive: true, force: true });
+        if (verified === before) continue;
+        if (verified.startsWith("directory:")) await fs.rm(entry.target, { recursive: true, force: true });
         await fs.rename(temporary, entry.target);
         await syncDirectory(path.dirname(entry.target));
       } finally {
@@ -277,6 +278,10 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
       }
       continue;
     }
+    const verified = await verifyTarget(directory, entry, journal);
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    if (verified === before) continue;
     await fs.rm(entry.target, { recursive: true, force: true });
     if (entry.kind !== "missing") {
       await fs.mkdir(path.dirname(entry.target), { recursive: true });
@@ -308,10 +313,11 @@ async function verifyTarget(
   deletedByThisCall = false,
 ) {
   await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
-  const current = await image(entry.target);
+  // Hash the potentially large backup before observing the live target, not after it.
   const before = await beforeImage(directory, entry);
   if (journal.version === 2 && before !== entry.beforeImage)
     throw new Error("Transaction backup changed; preserve evidence for review.");
+  const current = await image(entry.target);
   if (current === before || (deletedByThisCall && current === "missing")) return current;
   if (
     journal.version === 2 &&
