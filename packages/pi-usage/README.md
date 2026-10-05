@@ -90,7 +90,10 @@ A successful explicit Fireworks account selection writes the generic field and r
 **Experimental:** this read-only feature uses undocumented ChatGPT backend endpoints. Live numerical agreement has not been independently verified; endpoint changes can make reporting unavailable.
 
 Keep `/login openai` for native inference, then run `/login openai-codex` with the **same ChatGPT account and workspace**.
-Enable **Experimental ChatGPT companion usage** in Settings and accept its disclosure, or explicitly set this user-level preference and run `/reload`:
+Enable **Experimental ChatGPT companion usage** in Settings and accept its disclosure.
+The confirmation returns to the same settings row; exit Settings to refresh the report and footer without `/reload`.
+Declining or cancelling confirmation leaves the preference unchanged.
+Alternatively, explicitly set this user-level preference and run `/reload`:
 
 ```json
 {
