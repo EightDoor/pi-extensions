@@ -9,7 +9,12 @@ import {
 import type { CommandOptions } from "../commands/command-types.js";
 import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
-import { sessionDirForApply, snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import {
+  configuredSessionDir,
+  requireStableMergeSessionRoot,
+  sessionDirForApply,
+  snapshotOptionsForContext,
+} from "../snapshot/session-paths.js";
 import {
   createSnapshot,
   filterSnapshotForConfigPolicy,
@@ -159,6 +164,7 @@ export async function mergeSync(
         decision.kind === "accepted" && decision.file ? [decision.file] : [],
       ),
     });
+    if (config.include.includes("sessions")) requireStableMergeSessionRoot(local, after);
     const upload = mergeRemotePreservedFiles(after, rawRemote, config);
     const publish = !sameHashes(fileHashMap(after), fileHashMap(remote));
     const apply = !sameHashes(fileHashMap(local), fileHashMap(after));
@@ -168,7 +174,10 @@ export async function mergeSync(
       if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
       return "applied" as const;
     }
-    await preflightMergedTargets(local, after, { ...snapshotOptionsForContext(ctx, config), signal: options.signal });
+    const snapshotOptions = snapshotOptionsForContext(ctx, config);
+    const sessionDir = snapshotOptions.sessionDir ?? (await configuredSessionDir());
+    await validate();
+    await preflightMergedTargets(local, after, { ...snapshotOptions, sessionDir, signal: options.signal });
     await validate();
     if (!config.skipSecretScan && scanSnapshot(upload).length)
       throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
@@ -307,7 +316,8 @@ async function completeJournal(
   if (syncStateFingerprint(state) !== journal.stateIdentity) {
     throw new Error("Sync baseline changed after the interrupted merge; preserve its journal and review recovery.");
   }
-  const sessionDir = await sessionDirForApply(ctx, journal.after);
+  if (config.include.includes("sessions")) requireStableMergeSessionRoot(journal.before, journal.after);
+  const sessionDir = (await sessionDirForApply(ctx, journal.after)) ?? (await configuredSessionDir());
   await validate();
   const validateOwner = captureMutationOwner(ctx, signal);
   const validateMutation = () => {
