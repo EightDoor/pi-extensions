@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, test } from "vitest";
 import { GitSyncBackend, gitBackendIdentity, isSupportedGitVersion } from "../src/backends/git/git-backend.js";
@@ -616,7 +618,40 @@ test("Git backend disables local pre-push hooks in its private cache", async () 
   }
 });
 
-describe("Git backend fails closed on malformed native publication trees", () => {
+describe("Git backend fails closed on malformed native publication trees", {
+  concurrent: false,
+  shuffle: false,
+}, () => {
+  let seed: ReturnType<typeof createBareRemote>;
+  let seedWork: string;
+  let seedHead: string;
+  let publicationReady: Promise<unknown> | undefined;
+
+  test("publishes one valid seed within the test budget", async ({ task }) => {
+    assert.equal(task.timeout, 5_000);
+    seed = createBareRemote();
+    const backend = new GitSyncBackend(gitConfig(seed.remote), {
+      cacheRoot: path.join(seed.root, "cache"),
+      allowLocalRemotes: true,
+    });
+    publicationReady = backend.publishSnapshot(snapshot([{ path: "settings.json", content: Buffer.from("valid") }]), {
+      kind: "missing",
+    });
+    await publicationReady;
+  });
+
+  test("clones an immutable valid working-tree seed within the test budget", ({ task }) => {
+    assert.equal(task.timeout, 5_000);
+    seedWork = path.join(seed.root, "seed-work");
+    execFileSync("git", ["clone", "--branch", "pi-sync/default", seed.remote, seedWork], { stdio: "ignore" });
+    seedHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: seedWork, encoding: "utf8" }).trim();
+  });
+
+  afterAll(async () => {
+    await publicationReady?.catch(() => {});
+    if (seed) rmSync(seed.root, { recursive: true, force: true });
+  });
+
   const cases: Array<{
     name: string;
     expected: RegExp;
@@ -723,8 +758,16 @@ describe("Git backend fails closed on malformed native publication trees", () =>
   ];
   for (const entry of cases) {
     test(entry.name, { skip: entry.skip }, async () => {
-      const error = await malformedPublicationError(entry.mutate, entry.verify);
+      const error = await malformedPublicationError(seed.remote, seedWork, entry.mutate, entry.verify);
       assert.match(error, entry.expected);
+      // Neither the copied worktree nor its push may mutate the reusable seed.
+      assert.equal(
+        execFileSync("git", ["--git-dir", seed.remote, "rev-parse", "refs/heads/pi-sync/default"], {
+          encoding: "utf8",
+        }).trim(),
+        seedHead,
+      );
+      assert.equal(readFileSync(path.join(seedWork, "pi-sync/files/settings.json"), "utf8"), "valid");
     });
   }
 });
@@ -835,21 +878,21 @@ test("Git backend requires a supported Git version", () => {
 });
 
 async function malformedPublicationError(
+  seedRemote: string,
+  seedWork: string,
   mutate: (work: string, manifestPath: string, filePath: string) => void,
   verify?: (backend: GitSyncBackend, commit: string) => Promise<unknown>,
 ) {
-  const fixture = createBareRemote();
-  const work = path.join(fixture.root, "mutated-work");
+  const root = mkdtempSync(path.join(tmpdir(), "pi-sync-malformed-"));
+  const remote = path.join(root, "remote.git");
+  const work = path.join(root, "mutated-work");
   try {
-    const backend = new GitSyncBackend(gitConfig(fixture.remote), {
-      cacheRoot: path.join(fixture.root, "cache"),
+    // Copy, do not hard-link: every case owns its refs, objects, index, and payloads.
+    cpSync(seedRemote, remote, { recursive: true });
+    cpSync(seedWork, work, { recursive: true });
+    const backend = new GitSyncBackend(gitConfig(remote), {
+      cacheRoot: path.join(root, "cache"),
       allowLocalRemotes: true,
-    });
-    await backend.publishSnapshot(snapshot([{ path: "settings.json", content: Buffer.from("valid") }]), {
-      kind: "missing",
-    });
-    execFileSync("git", ["clone", "--branch", "pi-sync/default", fixture.remote, work], {
-      stdio: "ignore",
     });
     mutate(work, path.join(work, "pi-sync", "manifest.json"), path.join(work, "pi-sync", "files", "settings.json"));
     execFileSync("git", ["add", "--all"], { cwd: work });
@@ -857,7 +900,7 @@ async function malformedPublicationError(
       cwd: work,
       stdio: "ignore",
     });
-    execFileSync("git", ["push", "origin", "HEAD:refs/heads/pi-sync/default"], {
+    execFileSync("git", ["push", remote, "HEAD:refs/heads/pi-sync/default"], {
       cwd: work,
       stdio: "ignore",
     });
@@ -872,7 +915,7 @@ async function malformedPublicationError(
     }
     assert.fail("Expected malformed Git publication to be rejected.");
   } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
