@@ -120,6 +120,7 @@ test("file planner withholds remote active-session writes and deletions but perm
 
 for (const paths of [
   ["prompts/Foo.md", "prompts/foo.md"],
+  ["prompts/café.md", "prompts/cafe\u0301.md"],
   ["custom", "custom/nested.md"],
   ["Custom", "custom/nested.md"],
 ]) {
@@ -183,11 +184,18 @@ test("file planner is deterministic and does not mutate its input", () => {
 });
 
 for (const unsafe of [
+  "lone-high-\ud800.md",
+  "lone-low-\udc00.md",
   "../escape",
   "/absolute",
   "C:/escape",
   "prompts/../settings.json",
   "prompts\\file",
+  "prompts/file:stream",
+  "prompts/CON.md",
+  "prompts/file. ",
+  "prompts/LPT1",
+  "sessions/not-jsonl.txt",
   "pi-sync.json",
   "prompts/\u001bfile",
   "state/pi-sync/private",
@@ -206,4 +214,36 @@ test("file planner rejects duplicate paths, damaged hashes and noncanonical base
   assert.throws(() => planFileMerge({ ...input, local: [{ ...left, sha256: ancestor.sha256 }] }), /checksum/);
   assert.throws(() => planFileMerge({ ...input, local: [{ ...left, contentBase64: "@@@@" }] }), /content/);
   assert.throws(() => planFileMerge({ ...input, local: [], baseline: { "AGENTS.md": "bad" } }), /baseline hash/);
+});
+
+for (const protectedPath of ["sessions/café/active.jsonl", "sessions/CAFÉ/ACTIVE.JSONL"])
+  test(`protected session identity covers filesystem spelling aliases ${protectedPath}`, () => {
+    const actual = "sessions/cafe\u0301/active.jsonl";
+    const base = file("baseline", actual);
+    const changed = file("remote", actual);
+    const plan = planFileMerge({
+      baseline: { [actual]: base.sha256 },
+      local: [base],
+      remote: [changed],
+      selectionCompatible: true,
+      protectedPaths: new Set([protectedPath]),
+    });
+    assert.equal(plan.kind, "planned");
+    if (plan.kind === "planned")
+      assert.deepEqual(plan.conflicts, [{ kind: "conflict", path: actual, reason: "protected-session" }]);
+  });
+
+test("Node UTF-8 replacement still protects a context's session path", () => {
+  const actual = "sessions/\ufffd.jsonl";
+  const base = file("baseline", actual);
+  const plan = planFileMerge({
+    baseline: { [actual]: base.sha256 },
+    local: [base],
+    remote: [file("remote", actual)],
+    selectionCompatible: true,
+    protectedPaths: new Set(["sessions/\ud800.jsonl"]),
+  });
+  assert.equal(plan.kind, "planned");
+  if (plan.kind === "planned")
+    assert.deepEqual(plan.conflicts, [{ kind: "conflict", path: actual, reason: "protected-session" }]);
 });

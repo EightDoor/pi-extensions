@@ -202,6 +202,9 @@ function validateSyncSetup(name: string, value: Record<string, unknown>, connect
     throw new Error(`Invalid pi-sync settings: sync setup “${name}” is missing sync.include.`);
   }
   normalizeSyncInclude(sync.include);
+  if (sync.automaticTransfer !== undefined && typeof sync.automaticTransfer !== "boolean") {
+    throw new Error(`Invalid pi-sync settings: sync setup “${name}” sync.automaticTransfer must be boolean.`);
+  }
   if (typeof sync.automatic !== "boolean") {
     throw new Error(`Invalid pi-sync settings: sync setup “${name}” sync.automatic must be boolean.`);
   }

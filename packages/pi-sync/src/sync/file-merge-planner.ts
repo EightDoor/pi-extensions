@@ -35,6 +35,7 @@ export function planFileMerge(input: FileMergeInput): FileMergePlan {
   }
   const paths = [...new Set([...Object.keys(baseline), ...local.keys(), ...remote.keys()])].sort();
   const collisions = collidingPaths(paths);
+  const protectedKeys = new Set([...(input.protectedPaths ?? [])].map(mergePathIdentity));
   const decisions: FileMergeDecision[] = paths.map((filePath) => {
     if (collisions.has(filePath)) return { kind: "conflict", path: filePath, reason: "path-collision" };
     const left = local.get(filePath);
@@ -54,7 +55,7 @@ export function planFileMerge(input: FileMergeInput): FileMergePlan {
     } else {
       return { kind: "conflict", path: filePath, reason: "both-changed" };
     }
-    if (source === "remote" && input.protectedPaths?.has(filePath)) {
+    if (source === "remote" && protectedKeys.has(mergePathIdentity(filePath))) {
       return { kind: "conflict", path: filePath, reason: "protected-session" };
     }
     return { kind: "accepted", path: filePath, source, file };
@@ -93,20 +94,30 @@ function validatePath(filePath: string) {
     path.posix.isAbsolute(filePath) ||
     /^[a-z]:/iu.test(filePath) ||
     filePath.includes("\\") ||
+    filePath.includes(":") ||
+    filePath
+      .split("/")
+      .some((segment) => /[ .]$/u.test(segment) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment)) ||
     path.posix.normalize(filePath) !== filePath ||
     // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject unsafe snapshot paths.
-    /[\u0000-\u001f\u007f-\u009f]/u.test(filePath) ||
-    isDeniedPath(filePath)
+    /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ud800-\udfff]/u.test(filePath) ||
+    isDeniedPath(filePath) ||
+    (filePath.startsWith("sessions/") && !filePath.endsWith(".jsonl"))
   ) {
     throw new Error("Unsafe merge path.");
   }
+}
+
+export function mergePathIdentity(filePath: string) {
+  // Node path strings encode invalid UTF-16 as U+FFFD; context paths can still contain it.
+  return Buffer.from(filePath, "utf8").toString("utf8").normalize("NFC").toLowerCase();
 }
 
 /** Conservative dependency groups: never accept a case or file/directory transition independently. */
 function collidingPaths(paths: readonly string[]) {
   const byLower = new Map<string, string[]>();
   for (const filePath of paths) {
-    const lower = filePath.toLowerCase();
+    const lower = mergePathIdentity(filePath);
     const variants = byLower.get(lower) ?? [];
     variants.push(filePath);
     byLower.set(lower, variants);
@@ -116,7 +127,7 @@ function collidingPaths(paths: readonly string[]) {
     if (variants.length > 1) for (const variant of variants) result.add(variant);
   }
   for (const filePath of paths) {
-    const segments = filePath.toLowerCase().split("/");
+    const segments = mergePathIdentity(filePath).split("/");
     for (let length = 1; length < segments.length; length += 1) {
       const ancestors = byLower.get(segments.slice(0, length).join("/"));
       if (ancestors) {

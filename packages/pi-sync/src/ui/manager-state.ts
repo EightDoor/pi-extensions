@@ -129,6 +129,7 @@ export async function describeManagerState(
       `Storage: ${backendStorageDescription(config)}`,
       `Included: ${selection.builtIns.length} built-in group${selection.builtIns.length === 1 ? "" : "s"} · ${selection.custom.length} extra path${selection.custom.length === 1 ? "" : "s"} · Sessions ${selection.sessions ? "on" : "off"}`,
       `Automatic sync: ${automaticSyncSummary(config.automatic)}`,
+      `Automatic transfer at startup: ${config.automaticTransfer ? "On — upload/replace/delete at idle; no reload" : "Off"}`,
       `Last applied: ${lastAppliedSnapshot}`,
       ...(currentAttention
         ? [
