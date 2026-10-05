@@ -8,8 +8,11 @@ import type { CommandOptions } from "../src/commands/command-types.js";
 import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { validateSettingsDocument } from "../src/settings/settings-validation.js";
+import { readMergeAncestor } from "../src/state/merge-baseline-store.js";
+import { readStateForConfig } from "../src/state/sync-state-store.js";
 import { normalizeLocalFields, overlayLocalFields, portableSnapshot } from "../src/sync/local-fields.js";
-import { pull, push, syncBoth } from "../src/sync/sync-mutations.js";
+import { pull, push, rollback, syncBoth } from "../src/sync/sync-mutations.js";
+import { diff } from "../src/sync/sync-queries.js";
 import { snapshot, v3S3Settings, withTempHome } from "./helpers.js";
 import { MemorySyncBackend } from "./memory-sync-backend.js";
 
@@ -84,6 +87,70 @@ test("two machines converge portable fields without upload, false conflict or lo
     const remote = await backend.readSnapshot(head.snapshotRef);
     assert.doesNotMatch(Buffer.from(remote.files[0]?.contentBase64 ?? "", "base64").toString(), /private|machine/);
   }));
+for (const localFields of [undefined, [], ["machine"]]) {
+  test(`matching first sync captures accepted policy and ancestor: ${JSON.stringify(localFields)}`, async () =>
+    withTempHome(async (root) => {
+      const ctx = await machine(root, { theme: "base" });
+      const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+      if (localFields === undefined) {
+        settings.version = 3;
+        delete settings.syncSetups.home.sync.localFields;
+      } else settings.syncSetups.home.sync.localFields = localFields;
+      await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+      const backend = new MemorySyncBackend();
+      const remote = portableSnapshot(image({ theme: "base" }), localFields);
+      await backend.publishSnapshot(remote, { kind: "missing" });
+      await syncBoth(ctx, options, () => backend);
+      const config = await loadConfig();
+      const state = await readStateForConfig(config);
+      assert.deepEqual(state.localFields, localFields);
+      assert.equal(
+        (await readMergeAncestor(config, state, "settings.json"))?.toString(),
+        Buffer.from(remote.files[0]?.contentBase64 ?? "", "base64").toString(),
+      );
+      await syncBoth(ctx, options, () => backend);
+    }));
+}
+
+test("RPC pull, rollback and diff preview effective images, not excluded or formatting-only differences", async () =>
+  withTempHome(async (root) => {
+    const ctx = await machine(root, { theme: "dark", machine: "keep-private" });
+    const original = await fs.readFile(path.join(root, "settings.json"), "utf8");
+    const remote = portableSnapshot(image({ theme: "dark", machine: "never-upload" }), ["machine"]);
+    const backend = new MemorySyncBackend();
+    await backend.publishSnapshot(remote, { kind: "missing" });
+    const notifications: string[] = [];
+    const confirmations: string[] = [];
+    const rpcContext = ctx as ExtensionContext;
+    Object.assign(rpcContext, { mode: "rpc" });
+    rpcContext.ui.notify = (message) => {
+      notifications.push(message);
+    };
+    rpcContext.ui.confirm = async (_title, message) => {
+      confirmations.push(message);
+      return true;
+    };
+    await pull(ctx, { ...options, yes: false }, () => backend);
+    await diff(ctx as Parameters<typeof diff>[0], options, () => backend);
+    await rollback(ctx as Parameters<typeof rollback>[0], { ...options, yes: false, args: [remote.id] }, () => backend);
+    assert.equal(await fs.readFile(path.join(root, "settings.json"), "utf8"), original);
+    assert.match(notifications.join("\n"), /No file differences/);
+    assert.doesNotMatch(confirmations.join("\n"), /Update locally: settings.json|keep-private|never-upload/);
+  }));
+
+test("unsupported settings recovery names supported versions without recommending a downgrade", () => {
+  assert.throws(
+    () => validateSettingsDocument({ ...v3S3Settings(), version: 999 }),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /version 3 or 4/);
+      assert.match(error.message, /do not downgrade/);
+      assert.doesNotMatch(error.message, /create a new version 3/);
+      return true;
+    },
+  );
+});
+
 test("migration cancellation and stale local review are mutation-free even with --yes", async () =>
   withTempHome(async (root) => {
     const backend = new MemorySyncBackend();

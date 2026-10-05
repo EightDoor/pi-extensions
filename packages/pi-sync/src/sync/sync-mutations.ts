@@ -268,6 +268,8 @@ export async function pull(
   if (!(await confirmFieldMigration(ctx, config, state, remote, options.force, options.signal)))
     return "cancelled" as const;
   const configIdentity = syncCheckConfigFingerprint(config);
+  const logical = portableSnapshot(remote, config.localFields);
+  const physical = overlayLocalFields(logical, local, config.localFields);
   const remoteChanged = hasRemoteChanges(remote, state, config, protectedSessionPaths(ctx));
   if (localChanged && remoteChanged && state.lastAppliedSnapshot && !options.force) {
     throw createSyncDecision({
@@ -287,7 +289,7 @@ export async function pull(
     !options.yes &&
     !(await ctx.ui.confirm(
       snapshotIncludesSessions(remote) ? "Pull pi settings and sessions?" : "Pull pi settings?",
-      formatPullSummary(config, backend.destination, local, remote, protectedSessionPaths(ctx).size),
+      formatPullSummary(config, backend.destination, local, physical, protectedSessionPaths(ctx).size),
     ))
   ) {
     setSyncStatus(ctx, undefined);
@@ -312,8 +314,6 @@ export async function pull(
   if (!sameRemoteHead(backend, head, await backend.readHead(options.signal)))
     throw new Error("Remote changed during pull review.");
   validateMutation();
-  const logical = portableSnapshot(remote, config.localFields);
-  const physical = overlayLocalFields(logical, refreshed, config.localFields);
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, physical);
   throwIfAborted(options.signal);
@@ -363,6 +363,7 @@ export async function syncBoth(
   options: CommandOptions,
   factory: SyncBackendFactory = createSyncBackend,
 ) {
+  const validateMutation = captureMutationOwner(ctx, options.signal);
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
   const backend = await factory(config);
@@ -388,8 +389,28 @@ export async function syncBoth(
   if (options.auto) throw new Error("Automatic transfer is not authorized by the current settings.");
   if (!firstSync || (await readMergeJournal(config))) return mergeSync(ctx, options, factory);
 
+  const portableLocal = portableSnapshot(local, config.localFields);
+  const acceptMatchingState = async (snapshot: Snapshot) => {
+    await writeStateForConfig(
+      config,
+      {
+        version: VERSION,
+        profile: config.snapshotIdentity,
+        lastAppliedSnapshot: snapshot.id,
+        lastRemoteRevision: head?.revision,
+        lastFileHashes: fileHashMap(snapshot),
+        include: [...config.include],
+        ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
+      },
+      snapshot,
+      validateMutation,
+    );
+    await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
+    validateMutation();
+  };
   if (firstSync && remote && remote.files.length > 0 && local.files.length > 0) {
-    if (!canPullRemoteSettingsOnFirstSync(local, remote)) {
+    requireCompatibleRemoteSelection(config, remote);
+    if (!canPullRemoteSettingsOnFirstSync(portableLocal, remote)) {
       throw createSyncDecision({
         kind: "first-sync-settings-diverged",
         config,
@@ -402,8 +423,8 @@ export async function syncBoth(
           "Remote settings exist and this machine has different local Pi settings. Run /sync diff, then manually choose /sync pull or /sync push.",
       });
     }
-    if (!sameHashes(fileHashMap(local), fileHashMap(remote))) {
-      if (!canPullRemoteSessionsOnFirstSync(local, remote)) {
+    if (!sameHashes(fileHashMap(portableLocal), fileHashMap(remote))) {
+      if (!canPullRemoteSessionsOnFirstSync(portableLocal, remote)) {
         throw createSyncDecision({
           kind: "first-sync-sessions-diverged",
           config,
@@ -419,26 +440,13 @@ export async function syncBoth(
       await pull(ctx, options, factory);
       return;
     }
-    await writeStateForConfig(config, {
-      version: VERSION,
-      profile: config.snapshotIdentity,
-      lastAppliedSnapshot: remote.id,
-      lastRemoteRevision: head?.revision,
-      lastFileHashes: fileHashMap(remote),
-      include: [...config.include],
-    });
+    await acceptMatchingState(remote);
     if (!options.silent) ctx.ui.notify("pi-sync state initialized; local settings already match remote.", "info");
     return;
   }
-  if (localChanged && remoteChanged && remote && snapshotsMatch(local, remote)) {
-    await writeStateForConfig(config, {
-      version: VERSION,
-      profile: config.snapshotIdentity,
-      lastAppliedSnapshot: remote.id,
-      lastRemoteRevision: head?.revision,
-      lastFileHashes: fileHashMap(remote),
-      include: [...config.include],
-    });
+  if (localChanged && remoteChanged && remote && snapshotsMatch(portableLocal, remote)) {
+    requireCompatibleRemoteSelection(config, remote);
+    await acceptMatchingState(remote);
     if (!options.silent) ctx.ui.notify("pi-sync is already up to date.", "info");
     return;
   }
@@ -463,14 +471,7 @@ export async function syncBoth(
     return;
   }
   if (shouldRefreshSyncedState(remote, head, state, config, (left, right) => backend.sameRevision(left, right))) {
-    await writeStateForConfig(config, {
-      version: VERSION,
-      profile: config.snapshotIdentity,
-      lastAppliedSnapshot: remote.id,
-      lastRemoteRevision: head?.revision,
-      lastFileHashes: fileHashMap(remote),
-      include: [...config.include],
-    });
+    await acceptMatchingState(remote);
   }
   if (!options.silent) ctx.ui.notify("pi-sync is already up to date.", "info");
 }
@@ -506,12 +507,13 @@ export async function rollback(
     return;
   const expectedHead = await backend.readHead(options.signal);
   throwIfAborted(options.signal);
+  const physical = overlayLocalFields(remote, local, config.localFields);
 
   if (
     !options.yes &&
     !(await ctx.ui.confirm(
       snapshotIncludesSessions(remote) ? "Rollback pi settings and sessions?" : "Rollback pi settings?",
-      formatRollbackSummary(config, backend.destination, local, remote, target, protectedSessionPaths(ctx).size),
+      formatRollbackSummary(config, backend.destination, local, physical, target, protectedSessionPaths(ctx).size),
     ))
   ) {
     ctx.ui.notify("Rollback cancelled.", "info");
@@ -532,16 +534,12 @@ export async function rollback(
   const applySessionDir = await sessionDirForApply(ctx, remote);
   throwIfAborted(options.signal);
   options.onCommit?.();
-  const lastFileHashes = await applySnapshot(
-    overlayLocalFields(remote, local, config.localFields),
-    protectedSessionPaths(ctx),
-    {
-      include: config.include,
-      sessionDir: applySessionDir,
-      signal: options.signal,
-      validateMutation,
-    },
-  );
+  const lastFileHashes = await applySnapshot(physical, protectedSessionPaths(ctx), {
+    include: config.include,
+    sessionDir: applySessionDir,
+    signal: options.signal,
+    validateMutation,
+  });
   validateMutation();
   let result: PublishSnapshotResult;
   try {

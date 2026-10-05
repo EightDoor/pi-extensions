@@ -1003,7 +1003,7 @@ test("unsupported settings pause startup automatic sync and remain unchanged", a
     await notified.promise;
     await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, ctx);
     const output = notifications.map((item) => item.message).join("\n");
-    assert.match(output, /startup check skipped|version 3 is required/u);
+    assert.match(output, /startup check skipped|version 3 or 4 is required/u);
     assert.doesNotMatch(output, /hidden/u);
     assert.deepEqual(readFileSync(localConfigPath()), bytes);
   });

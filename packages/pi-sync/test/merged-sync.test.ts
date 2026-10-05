@@ -14,8 +14,14 @@ import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { createSnapshot, regenerateSnapshotIdentity } from "../src/snapshot/snapshot.js";
 import type { Snapshot } from "../src/snapshot/snapshot-types.js";
-import { readStateForConfig, statePathForConfig } from "../src/state/sync-state-store.js";
-import { mergeJournalPath, readMergeJournal } from "../src/sync/merge-journal.js";
+import { readMergeAncestor, stageMergeBaseline } from "../src/state/merge-baseline-store.js";
+import { readStateForConfig, statePathForConfig, syncStateFingerprint } from "../src/state/sync-state-store.js";
+import {
+  mergeJournalIdentity,
+  mergeJournalPath,
+  readMergeJournal,
+  writeMergeJournal,
+} from "../src/sync/merge-journal.js";
 import { push, syncBoth } from "../src/sync/sync-mutations.js";
 import { fileHashMap } from "../src/sync/sync-state.js";
 import { snapshot, v3S3Settings, withTempHome } from "./helpers.js";
@@ -58,6 +64,55 @@ async function fixture(agentDir: string, backend = new MemorySyncBackend()) {
   }
   return { backend, ctx, notifications, base, baseHead, remoteEdit, config: await loadConfig() };
 }
+
+test("identical remote publications prune older ancestors while preserving accepted and unknown evidence", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const directory = `${statePathForConfig(f.config)}.ancestors`;
+    const unknown = `${"f".repeat(64)}.json`;
+    await fs.writeFile(path.join(directory, unknown), "unknown evidence");
+    for (let index = 0; index < 3; index++) {
+      const previous = await readStateForConfig(f.config);
+      await f.backend.publishSnapshot(
+        { ...f.base, id: `identical-${index}` },
+        { kind: "revision", revision: (await f.backend.readHead())?.revision ?? "" },
+      );
+      await syncBoth(f.ctx, options, () => f.backend);
+      const accepted = await readStateForConfig(f.config);
+      assert.equal(await readMergeAncestor(f.config, previous, "settings.json"), undefined);
+      assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+      assert.deepEqual(
+        (await fs.readdir(directory)).sort(),
+        [unknown, `${syncStateFingerprint(accepted)}.json`].sort(),
+      );
+    }
+  }));
+
+test("already accepted journal recovery prunes old ancestors without replaying local bytes", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const accepted = await readStateForConfig(f.config);
+    const old = { ...accepted, lastRemoteRevision: "old-revision" };
+    await stageMergeBaseline(f.config, f.base, old);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before: f.base,
+      after: f.base,
+      accepted: f.base,
+      upload: f.base,
+      expectedHead: f.baseHead,
+      committedHead: f.baseHead,
+      backup: "retained-backup",
+      stateIdentity: syncStateFingerprint(old),
+    });
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"newer"}\n');
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"newer"}\n');
+    assert.equal(await readMergeJournal(f.config), undefined);
+    assert.equal(await readMergeAncestor(f.config, old, "settings.json"), undefined);
+    assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+  }));
 
 test("settings conflicts merge against an accepted private ancestor", async () =>
   withTempHome(async (agentDir) => {
