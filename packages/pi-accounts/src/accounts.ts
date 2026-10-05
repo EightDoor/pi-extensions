@@ -109,6 +109,23 @@ type PersistSelection = (
   isCurrent: () => boolean,
 ) => boolean;
 
+// A replacement sync belongs to the session, not the requesting consumer. Stop waiting on
+// cancellation without aborting that shared work, and release the listener on settlement.
+async function waitForActivation<T>(task: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return undefined;
+  let onAbort!: () => void;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([task, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export default function accountsExtension(pi: ExtensionAPI, dependencies: AccountsDependencies = {}): void {
   const store = dependencies.store ?? new AccountStore();
   let migrationNotice = dependencies.store ? undefined : consumeMigrationNotice();
@@ -455,7 +472,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
         if (request.signal?.aborted) return error("cancelled");
         if (!isRequestCurrent()) return error("activation_superseded");
       };
-      await owner.ready;
+      const activationSignal = AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])]);
+      await waitForActivation(owner.ready, activationSignal);
       const staleAfterStartup = unavailable();
       if (staleAfterStartup) return staleAfterStartup;
       if (request.account !== null) {
@@ -479,15 +497,21 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       }
       selectionRevision = owner.selectionRevisions.get(providerId) ?? 0;
       let task = syncProvider(providerId, owner.context, owner, request.signal);
-      let result = await task;
-      // Routine model/turn syncs may replace this task without changing the selection.
-      while (true) {
-        const staleAfterSync = unavailable();
-        if (staleAfterSync) return staleAfterSync;
-        const latest = owner.syncTasks.get(providerId);
-        if (!latest || latest === task) break;
-        task = latest;
-        result = await task;
+      let result: EnsureActiveProviderAuthResult;
+      try {
+        // Routine model/turn syncs may replace this task without changing the selection.
+        while (true) {
+          const settled = await waitForActivation(task, activationSignal);
+          const staleAfterSync = unavailable();
+          if (staleAfterSync) return staleAfterSync;
+          if (!settled) return error("activation_failed");
+          result = settled;
+          const latest = owner.syncTasks.get(providerId);
+          if (!latest || latest === task) break;
+          task = latest;
+        }
+      } catch {
+        return unavailable() ?? error("activation_failed");
       }
 
       if (result.status === "error") return error(result.code ?? "activation_failed");

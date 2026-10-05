@@ -298,7 +298,15 @@ export class RuntimeAuthCoordinator {
       }
       const refreshedSelection = await this.selectedCredentialMatches(store, active, credential, refreshSignal);
       if (refreshedSelection.error !== undefined) {
-        throw refreshedSelection.error;
+        return this.failClosed(
+          ctx,
+          operation,
+          runtimeOverride,
+          active,
+          refreshedSelection.error,
+          credential,
+          "store_unavailable",
+        );
       }
       if (!refreshedSelection.matches) {
         if (!this.overlay.isCurrent(operation)) {

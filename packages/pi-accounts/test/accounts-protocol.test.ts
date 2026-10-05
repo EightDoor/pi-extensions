@@ -40,7 +40,7 @@ async function fixture(adapter = provider, backend: AccountStorageBackend = new 
     accounts: { alpha: credential, beta: { type: "api_key", key } },
   }));
   accountsExtension(mock.pi, { store, providers: [adapter] });
-  async function session() {
+  async function session(model?: object) {
     const runtime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(),
       modelsPath: null,
@@ -48,7 +48,7 @@ async function fixture(adapter = provider, backend: AccountStorageBackend = new 
     });
     const registry = new ModelRegistry(runtime);
     const manager = SessionManager.inMemory(process.cwd());
-    const { ctx } = createMockContext({ sessionManager: manager, modelRegistry: registry });
+    const { ctx } = createMockContext({ sessionManager: manager, modelRegistry: registry, model });
     await mock.events.get("session_start")?.[0]?.({}, ctx);
     return { registry, manager, ctx };
   }
@@ -382,6 +382,73 @@ test("routine model sync of the same selection completes the activation barrier"
   }
   assert.deepEqual(await pending, { status: "active", providerId: "openai", accountName: "alpha" });
   assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+});
+
+for (const event of ["model_select", "before_agent_start"] as const) {
+  test(`${event} replacement can finish after the requesting activation is cancelled`, async () => {
+    let enteredFirst!: () => void;
+    let enteredSecond!: () => void;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstStarted = new Promise<void>((resolve) => (enteredFirst = resolve));
+    const secondStarted = new Promise<void>((resolve) => (enteredSecond = resolve));
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const secondGate = new Promise<void>((resolve) => (releaseSecond = resolve));
+    let conversions = 0;
+    const { mock, session } = await fixture({
+      ...provider,
+      oauth: {
+        ...provider.oauth,
+        toAuth: async (value) => {
+          if (++conversions === 1) {
+            enteredFirst();
+            await firstGate;
+          } else {
+            enteredSecond();
+            await secondGate;
+          }
+          return { apiKey: value.access };
+        },
+      },
+    });
+    const model = { provider: "openai", id: "gpt-4o" };
+    const current = await session(model);
+    if (event === "before_agent_start") await mock.events.get(event)?.[0]?.({}, current.ctx);
+    const controller = new AbortController();
+    const pending = activate(mock, current.manager, "alpha", { signal: controller.signal });
+    await firstStarted;
+    const sync = Promise.resolve(mock.events.get(event)?.[0]?.(event === "model_select" ? { model } : {}, current.ctx));
+    try {
+      await secondStarted;
+      releaseFirst();
+      // Let the original sync settle while the replacement stays blocked on its own conversion.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      controller.abort();
+      assert.equal((await pending).code, "cancelled");
+    } finally {
+      releaseFirst();
+      releaseSecond();
+      await sync;
+    }
+    assert.equal(await current.registry.getApiKeyForProvider("openai"), access);
+  });
+}
+
+test("final credential reread failure is typed as store_unavailable and fails closed", async () => {
+  const { mock, store, session } = await fixture();
+  const current = await session();
+  await activate(mock, current.manager, "beta");
+  const read = store.readProviderAsync.bind(store);
+  let reads = 0;
+  store.readProviderAsync = async (providerId, signal) => {
+    if (++reads === 3) throw new Error(`unreadable ${refresh}`);
+    return read(providerId, signal);
+  };
+  const result = await activate(mock, current.manager, "alpha");
+  assert.equal(reads, 3);
+  assert.equal(result.code, "store_unavailable");
+  safe(result);
+  assert.notEqual(await current.registry.getApiKeyForProvider("openai"), access);
 });
 
 test("model unavailable result uses account capability, not a second catalog", async () => {
