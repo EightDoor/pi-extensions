@@ -121,8 +121,9 @@ Trusted extensions can use Pi's in-process `pi.events` API to discover named acc
 activate one for the current session, and request a verified active OAuth credential.
 Topology and activation replies contain account identifiers, never credential material;
 the separate OAuth credential offer **does** contain secrets. No package import or
-credential-file read is needed. See the [Pi events reference](./docs/pi-events.md) for
-all four channels, payloads, reply timing, outcomes, cancellation, and consumer safety.
+credential-file read is needed. See the repository's [Named Account Protocols v1](https://github.com/narumiruna/pi-extensions/blob/main/docs/api/accounts-v1.md)
+for topology and activation; it links to the separate OAuth readiness and credential-source
+specifications. These references describe payloads, reply timing, cancellation, and consumer safety.
 
 Activation does not change the user-wide default. It may persist a session selection even
 if authentication later fails or the requester cancels, leaving that provider fail-closed.
@@ -243,7 +244,6 @@ packages/pi-accounts/
 │   ├── index.ts                       # Thin Pi entrypoint
 │   └── accounts.ts                    # Account activation and session lifecycle
 ├── dist/                              # Generated Jiti runtime
-├── docs/pi-events.md                  # In-process extension protocol reference
 ├── scripts/build-runtime.mjs          # Runtime builder
 └── test/                              # Behavior and lifecycle coverage
 ```
