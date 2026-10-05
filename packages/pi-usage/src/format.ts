@@ -68,7 +68,9 @@ export function formatUsageStatusline(
           .filter((bucket) => bucket.groupId === group)
           .map((bucket) => {
             const reset = formatResetCountdown(bucket.resetsAt, now);
-            return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true)}`;
+            const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
+            if (group === "chatgpt-app") return window;
+            return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
           });
         return `${group === "chatgpt-plan" ? "plan" : "app"} ${windows.join(" ")}`;
       })
@@ -540,9 +542,13 @@ function formatOpenAICompanionReport(lines: string[], report: UsageReport): void
   for (const group of ["chatgpt-plan", "chatgpt-app"]) {
     lines.push(group === "chatgpt-plan" ? "Plan limits:" : "App limits:");
     for (const bucket of report.buckets.filter((bucket) => bucket.groupId === group)) {
-      lines.push(
-        `${formatWindowLabel(bucket.windowMinutes, "weekly", false).padEnd(VALUE_COLUMN)}${formatPercentBucket(bucket)}`,
-      );
+      const value =
+        group === "chatgpt-app"
+          ? bucket.resetsAt === undefined
+            ? "Reset time unavailable"
+            : `resets ${formatReset(bucket.resetsAt)}`
+          : formatPercentBucket(bucket);
+      lines.push(`${formatWindowLabel(bucket.windowMinutes, "weekly", false).padEnd(VALUE_COLUMN)}${value}`);
     }
   }
   for (const metric of report.metrics)

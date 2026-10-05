@@ -6,7 +6,7 @@ import { adapterForProvider, resolveUsageAuth } from "./query.js";
 import type { ResolvedUsageAuth } from "./types.js";
 
 // A native app registration is routing metadata, not cryptographic same-account proof.
-// Keep this opt-in boundary separate from legacy Codex querying and reset mutation policy.
+// Keep this read-only boundary separate from legacy Codex querying and reset mutation policy.
 export async function resolveOpenAICompanionAuth(
   ctx: ExtensionContext,
   native: ResolvedUsageAuth,
@@ -16,9 +16,8 @@ export async function resolveOpenAICompanionAuth(
 ): Promise<ResolvedUsageAuth> {
   const unavailable = () => ({
     ...native,
-    openaiCompanionEnabled: true,
     fingerprint: fingerprintResolvedAuth(
-      { apiKey: JSON.stringify([native.fingerprint, native.openaiClientId, true, null]) },
+      { apiKey: JSON.stringify([native.fingerprint, native.openaiClientId, null]) },
       salt,
     ),
   });
@@ -72,10 +71,9 @@ export async function resolveOpenAICompanionAuth(
   const headers = { Authorization: `Bearer ${access}`, "ChatGPT-Account-Id": accountId };
   return {
     ...native,
-    openaiCompanionEnabled: true,
     openaiCompanion: { headers },
     fingerprint: fingerprintResolvedAuth(
-      { apiKey: JSON.stringify([native.fingerprint, native.openaiClientId, true, companion.fingerprint, headers]) },
+      { apiKey: JSON.stringify([native.fingerprint, native.openaiClientId, companion.fingerprint, headers]) },
       salt,
     ),
     secrets: [

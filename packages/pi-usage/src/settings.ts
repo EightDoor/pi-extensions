@@ -12,8 +12,6 @@ export const MAX_USAGE_SETTINGS_BYTES = 64 * 1024;
 export type CodexStatusPercentage = "remaining" | "used";
 
 export interface UsageSettings {
-  /** Omitted values preserve default-off compatibility for injected settings runtimes. */
-  openaiCompanionUsage?: boolean;
   codexFastMode: boolean;
   codexStatusResetCountdown: boolean;
   codexStatusPercentage: CodexStatusPercentage;
@@ -21,7 +19,6 @@ export interface UsageSettings {
 }
 
 export const DEFAULT_USAGE_SETTINGS: Readonly<UsageSettings> = Object.freeze({
-  openaiCompanionUsage: false,
   codexFastMode: false,
   codexStatusResetCountdown: true,
   codexStatusPercentage: "remaining",
@@ -67,7 +64,6 @@ export function usageSettingsPath(): string {
 
 export function normalizeUsageSettings(value: unknown): UsageSettings | undefined {
   if (!isRecord(value)) return undefined;
-  if (Object.hasOwn(value, "openaiCompanionUsage") && typeof value.openaiCompanionUsage !== "boolean") return undefined;
   if (Object.hasOwn(value, "codexFastMode") && typeof value.codexFastMode !== "boolean") {
     return undefined;
   }
@@ -91,7 +87,6 @@ export function normalizeUsageSettings(value: unknown): UsageSettings | undefine
     effectiveTargets.fireworks = value.fireworksAccountId;
   }
   return {
-    openaiCompanionUsage: value.openaiCompanionUsage === true,
     codexFastMode:
       typeof value.codexFastMode === "boolean" ? value.codexFastMode : DEFAULT_USAGE_SETTINGS.codexFastMode,
     codexStatusResetCountdown:

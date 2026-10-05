@@ -89,15 +89,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
   const credentialCandidates = createOAuthCredentialCandidateReader(pi, credentialReader);
   const createRedemptionId = dependencies.createRedemptionId ?? randomUUID;
   const settingsRuntime = dependencies.settingsRuntime ?? createUsageSettingsRuntime();
-  const resolveUsageAuth: typeof resolveRuntimeUsageAuth = (ctx, adapter, salt, reader, candidates) =>
-    resolveRuntimeUsageAuth(
-      ctx,
-      adapter,
-      salt,
-      reader,
-      candidates,
-      settingsRuntime.get().settings.openaiCompanionUsage,
-    );
+  const resolveUsageAuth = resolveRuntimeUsageAuth;
   const cache = new UsageCache(CACHE_TTL_MS);
   const failureBackoff = new Map<string, { until: number; message: string }>();
   const latestQueries = new Map<string, number>();
@@ -248,7 +240,6 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     const expectedSessionId = ctx.sessionManager.getSessionId();
     const expectedModelIdentity = modelIdentity(ctx.model);
     const expectedTargetId = adapter.targets ? settingsRuntime.get().settings.selectedTargets[adapter.id] : undefined;
-    const expectedCompanionUsage = settingsRuntime.get().settings.openaiCompanionUsage;
     const providerName = providerDisplayName(ctx, adapter.id);
     let auth: ResolvedUsageAuth | undefined;
     try {
@@ -301,7 +292,6 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       expectedSessionGeneration !== sessionGeneration ||
       ctx.sessionManager.getSessionId() !== expectedSessionId ||
       modelIdentity(ctx.model) !== expectedModelIdentity ||
-      (adapter.id === "openai" && settingsRuntime.get().settings.openaiCompanionUsage !== expectedCompanionUsage) ||
       (adapter.targets !== undefined &&
         settingsRuntime.get().settings.selectedTargets[adapter.id] !== expectedTargetId);
     if (requiresRequestBoundaryGuard && requestContextChanged()) throw abortError();
@@ -1090,20 +1080,6 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
               controller.signal,
               () => statusGeneration === menuGeneration && !controller.signal.aborted,
               (id) => {
-                if (
-                  id === "openaiCompanionUsage" &&
-                  statusGeneration === menuGeneration &&
-                  !controller.signal.aborted
-                ) {
-                  for (const active of nativeQueryControllers) active.abort();
-                  invalidateProviderState("openai");
-                  if (ctx.model?.provider === "openai") {
-                    statusController?.abort();
-                    statusController = undefined;
-                    clearStatusTimers();
-                    safeSetStatus(ctx, undefined);
-                  }
-                }
                 if (
                   (id === "codexStatusResetCountdown" || id === "codexStatusPercentage") &&
                   stableCurrent &&

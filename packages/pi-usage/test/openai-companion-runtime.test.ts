@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
@@ -48,13 +48,15 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function setup(mode: "tui" | "rpc" = "rpc", selected = nativeModel) {
+async function setup(mode: "tui" | "rpc" = "rpc", selected = nativeModel, obsolete?: unknown) {
   const root = await mkdtemp(join(tmpdir(), "pi-openai-companion-"));
   roots.push(root);
   vi.stubEnv("PI_CODING_AGENT_DIR", root);
   const { default: extension } = await import("../src/usage.js");
   const runtime = createUsageSettingsRuntime(join(root, "pi-usage.json"));
-  await runtime.update({ openaiCompanionUsage: true });
+  if (obsolete !== undefined)
+    await writeFile(join(root, "pi-usage.json"), JSON.stringify({ openaiCompanionUsage: obsolete }));
+  await runtime.reload();
   const mock = createMockPi();
   let companion: typeof codex | undefined = codex;
   const registry = {
@@ -133,57 +135,21 @@ async function setup(mode: "tui" | "rpc" = "rpc", selected = nativeModel) {
     },
   };
 }
-test("Settings Off → On → Off updates native footer without reload", async () => {
-  const state = await setup("tui");
-  await state.runtime.update({ openaiCompanionUsage: false });
-  const calls = mockFetch();
-  let settingScreens = 0;
-  let openSettings = true;
-  Object.assign(state.context.ctx.ui, {
-    confirm: async () => true,
-    custom: async (factory: unknown) => {
-      const harness = createCustomSelectorHarness(factory, 100, undefined, 40);
-      try {
-        if (harness.isPiTuiKitScreen) {
-          if (openSettings) {
-            openSettings = false;
-            harness.handleInput("\u001b[B");
-            harness.handleInput("\r");
-          } else harness.handleInput("\u0003");
-        } else if (harness.render().join("\n").includes("pi-usage Settings")) {
-          settingScreens++;
-          if (settingScreens === 2) harness.handleInput("\u001b");
-          else {
-            for (let i = 0; i < 3; i++) harness.handleInput("\u001b[B");
-            harness.handleInput("\r");
-            if (settingScreens === 3) {
-              await vi.waitFor(() => assert.equal(state.runtime.get().settings.openaiCompanionUsage, false));
-              harness.handleInput("\u001b");
-            }
-          }
-        }
-        return await harness.resultPromise;
-      } finally {
-        harness.dispose();
-      }
-    },
+for (const obsolete of [undefined, true, false, "obsolete"] as const) {
+  test(`native usage automatically queries companion with obsolete preference ${obsolete}`, async () => {
+    const state = await setup("rpc", nativeModel, obsolete);
+    const calls = mockFetch();
+    try {
+      await state.emit("session_start");
+      await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
+      await state.run();
+      assert.equal(calls.length, 2);
+      assert.equal(state.runtime.get().settings.codexFastMode, false);
+    } finally {
+      await state.emit("session_shutdown");
+    }
   });
-  try {
-    await state.emit("session_start");
-    await vi.waitFor(() => assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only"));
-    await state.run();
-    assert.equal(settingScreens, 2);
-    assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*90%/);
-    assert.equal(calls.length, 2);
-    openSettings = true;
-    await state.run();
-    assert.equal(settingScreens, 3);
-    assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only");
-    assert.equal(calls.length, 2);
-  } finally {
-    await state.emit("session_shutdown");
-  }
-});
+}
 
 function mockFetch() {
   const calls: string[] = [];
@@ -195,14 +161,15 @@ function mockFetch() {
 }
 
 for (const mode of ["tui", "rpc"] as const) {
-  test(`enabled companion report is visible in ${mode} and never offers native mutations`, async () => {
+  test(`automatic companion report is visible in ${mode} and never offers native mutations`, async () => {
     const state = await setup(mode);
     const calls = mockFetch();
     try {
       await state.run();
-      assert.match(state.titles.join("\n"), /Plan limits[\s\S]*80%[\s\S]*App limits[\s\S]*90%/);
-      assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*90%/);
-      assert.doesNotMatch(state.titles.join("\n"), /native-access|account-test|oaiapp_test/);
+      assert.match(state.titles.join("\n"), /Plan limits[\s\S]*80%[\s\S]*App limits[\s\S]*resets/);
+      assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/);
+      assert.doesNotMatch(state.titles.join("\n"), /native-access|account-test|oaiapp_test|90%/);
+      assert.doesNotMatch(state.context.statuses.get("usage") ?? "", /app[^%]*%/);
       assert.ok(!state.actions.some((action) => /Turn Fast|Redeem usage/.test(action)));
       assert.equal(calls.length, 2);
       assert.deepEqual(state.mock.entries, []);
@@ -280,7 +247,7 @@ for (const action of ["another", "all"] as const) {
   });
 }
 
-test("removing the companion or disabling the setting drops numerical cache and restores web-only guidance", async () => {
+test("removing the companion drops numerical cache and restores web-only guidance", async () => {
   const state = await setup();
   const calls = mockFetch();
   try {
@@ -292,11 +259,6 @@ test("removing the companion or disabling the setting drops numerical cache and 
     assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only");
     assert.match(state.titles.at(-1) ?? "", /login openai-codex/);
     state.companion(codex);
-    await state.runtime.update({ openaiCompanionUsage: false });
-    await state.run();
-    assert.equal(calls.length, 2);
-    assert.equal(state.context.statuses.get("usage"), "chatgpt usage: web only");
-    await state.runtime.update({ openaiCompanionUsage: true });
     await state.run();
     assert.equal(calls.length, 4);
   } finally {
@@ -415,7 +377,7 @@ for (const boundary of ["session_shutdown", "session_start", "model_select", "ha
   });
 }
 
-for (const change of ["companion", "setting"] as const) {
+for (const change of ["rotation", "removal"] as const) {
   test(`${change} change while the app response is pending prevents a second request and stale publication`, async () => {
     const state = await setup();
     let ready!: () => void;
@@ -435,8 +397,7 @@ for (const change of ["companion", "setting"] as const) {
     const pending = state.run();
     try {
       await entered;
-      if (change === "companion") state.companion({ ...codex, access: access("other"), accountId: "other" });
-      else await state.runtime.update({ openaiCompanionUsage: false });
+      state.companion(change === "rotation" ? { ...codex, access: access("other"), accountId: "other" } : undefined);
       release();
       await pending;
       assert.equal(fetch.mock.calls.length, 1);
@@ -454,7 +415,7 @@ test("automatic refresh publishes both domains and releases its HTTP/timers on s
   const calls = mockFetch();
   try {
     await state.emit("session_start");
-    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*90%/));
+    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
     assert.equal(calls.length, 2);
     vi.useFakeTimers();
     await state.run();
