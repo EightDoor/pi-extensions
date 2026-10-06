@@ -27,6 +27,7 @@ type ToolSelectorAction = "toggle" | "enableAll" | "disableAll";
 interface ToolStatusSummary {
   availabilityStatus: ToolAvailabilityStatus;
   availableFirecrawlToolCount: number;
+  callableFirecrawlToolCount: number;
   loadedFirecrawlToolCount: number;
   activeNonFirecrawlToolCount: number;
 }
@@ -337,6 +338,19 @@ function getToolStatusSummary(pi: ExtensionAPI): ToolStatusSummary {
   const activeToolNames = new Set(pi.getActiveTools());
   const loadedFirecrawlToolCount = FIRECRAWL_TOOL_NAMES.filter((name) => activeToolNames.has(name)).length;
   const availableFirecrawlToolCount = availableFirecrawlTools(pi).length;
+  // getAllTools reflects host allowlists/exclusions; callability is distinct from declaration.
+  const callableFirecrawlToolCount = new Set(
+    pi
+      .getAllTools()
+      .filter(
+        (tool) =>
+          firecrawlToolNames.has(tool.name) &&
+          (tool.exposure === "codemode" ||
+            tool.exposure === "deferred" ||
+            ((tool.exposure ?? "direct") === "direct" && activeToolNames.has(tool.name))),
+      )
+      .map((tool) => tool.name),
+  ).size;
   const activeNonFirecrawlToolCount = Array.from(activeToolNames).filter(
     (name) => !firecrawlToolNames.has(name) && name !== FIRECRAWL_LOAD_TOOL_NAME,
   ).length;
@@ -350,6 +364,7 @@ function getToolStatusSummary(pi: ExtensionAPI): ToolStatusSummary {
   return {
     availabilityStatus,
     availableFirecrawlToolCount,
+    callableFirecrawlToolCount,
     loadedFirecrawlToolCount,
     activeNonFirecrawlToolCount,
   };
@@ -370,7 +385,7 @@ export async function buildStatusMessage(pi: ExtensionAPI) {
       `Saved tool mode: ${savedMode}${settings.kind === "loaded" ? "" : " (default; no valid override)"}`,
       ...(savedMode !== firecrawlToolMode(pi) ? ["Tool mode change pending: /reload required"] : []),
       `Tool exposure: ${firecrawlToolExposureMode(pi)}`,
-      `Callable capability tools: ${firecrawlToolMode(pi) === "codemode" ? summary.availableFirecrawlToolCount : summary.loadedFirecrawlToolCount}/${FIRECRAWL_TOOL_NAMES.length}`,
+      `Callable capability tools: ${summary.callableFirecrawlToolCount}/${FIRECRAWL_TOOL_NAMES.length}`,
       `Loaded capability tools this session: ${summary.loadedFirecrawlToolCount}/${FIRECRAWL_TOOL_NAMES.length}`,
       `Loader: ${pi.getActiveTools().includes(FIRECRAWL_LOAD_TOOL_NAME) ? "active" : "inactive"}`,
       `Persisted tool catalog: ${persistedSetting}`,
