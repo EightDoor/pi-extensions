@@ -177,7 +177,7 @@ for (const preimage of ["file", "directory"] as const)
         assert.equal(entries.length, 1);
         const journalFile = path.join(transactions, entries[0] ?? "", "journal.json");
         const journal = JSON.parse(await fs.readFile(journalFile, "utf8"));
-        assert.equal(journal.version, 3);
+        assert.equal(journal.version, 4);
         assert.ok(journal.entries.every((entry: { removalPending?: boolean }) => entry.removalPending));
         await assert.rejects(fs.access(target), { code: "ENOENT" });
         if (newer) {
@@ -192,7 +192,7 @@ for (const preimage of ["file", "directory"] as const)
         }
       }));
 
-test("directory-to-file apply failure immediately restores its complete preimage", async () =>
+test("directory-to-file rename failure retains ambiguous evidence for review", async () =>
   withTempHome(async (agentDir) => {
     const target = path.join(agentDir, "custom");
     const child = path.join(target, "old.md");
@@ -206,10 +206,14 @@ test("directory-to-file apply failure immediately restores its complete preimage
     try {
       await assert.rejects(
         applySnapshotTransaction({ deletes: [target, child], writes: [{ target, content: Buffer.from("after") }] }),
-        /injected directory replacement failure/,
+        /guarded recovery requires review/,
       );
-      assert.equal(await fs.readFile(child, "utf8"), "before");
-      assert.deepEqual(await fs.readdir(path.join(agentDir, "pi-sync/transactions")), []);
+      await assert.rejects(fs.access(target), { code: "ENOENT" });
+      const transactions = path.join(agentDir, "pi-sync/transactions");
+      const entries = await fs.readdir(transactions);
+      assert.equal(entries.length, 1);
+      assert.equal(await fs.readFile(path.join(transactions, entries[0] ?? "", "before/0/old.md"), "utf8"), "before");
+      await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
     } finally {
       spy.mockRestore();
     }
@@ -281,7 +285,11 @@ for (const failure of ["copy", "rename", "cancel", "newer"] as const)
         cpSpy.mockRestore();
         renameSpy.mockRestore();
       }
-      if (failure !== "newer") {
+      if (failure === "rename") {
+        await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
+        await assert.rejects(fs.access(f.target), { code: "ENOENT" });
+        await fs.access(f.directory);
+      } else if (failure !== "newer") {
         await recoverPendingSnapshotTransactions();
         assert.equal(await fs.readFile(path.join(f.target, "old.md"), "utf8"), "before");
         await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
