@@ -1,5 +1,12 @@
 import { type ExtensionAPI, type ExtensionCommandContext, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type SettingItem, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  Key,
+  matchesKey,
+  type SettingItem,
+  SettingsList,
+  type TuiMouseEvent,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { availableFirecrawlTools, firecrawlToolMode } from "./lazy-tools.js";
 import {
   DEFAULT_TOOL_MODE,
@@ -8,6 +15,7 @@ import {
   loadSettings,
   settingsFilePath,
 } from "./settings.js";
+import { settingsKeyHints } from "./settings-key-hints.js";
 import { FIRECRAWL_TOOL_NAMES, type FirecrawlToolName } from "./tool-names.js";
 import {
   currentFirecrawlSessionGeneration,
@@ -49,7 +57,7 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
   let drain = Promise.resolve();
   let disposeComponent = () => {};
   try {
-    await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+    await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
       if (!isCurrent()) {
         done(undefined);
         return { render: () => [], invalidate() {} };
@@ -57,6 +65,8 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
       const controller = new AbortController();
       let pending = 0;
       let queue = Promise.resolve();
+      let listOffset = 2;
+      let listHeight = 0;
       const live = () => isCurrent() && !controller.signal.aborted;
       const dispose = () => {
         controller.abort();
@@ -93,8 +103,8 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
         {
           ...getSettingsListTheme(),
           description: (text) => theme.fg("muted", text),
-          // SettingsList's stock hint hardcodes Enter/Escape; do not mislabel remapped bindings.
-          hint: (text) => theme.fg("muted", text.includes("Enter/Space") ? "  Changes save immediately." : text),
+          // Six fixed, non-searchable rows have only the stock control hint, not scroll/result hints.
+          hint: () => theme.fg("muted", settingsKeyHints(keybindings, tui)),
         },
         (id, value) => {
           if (!live()) return;
@@ -103,7 +113,7 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
             .then(async () => {
               if (!isCurrent()) return;
               if (id === "toolMode" && isFirecrawlToolMode(value)) {
-                if (await setFirecrawlToolMode(pi, ctx, value, controller.signal)) savedMode = value;
+                if (await setFirecrawlToolMode(pi, ctx, value, sessionSignal)) savedMode = value;
               } else if (FIRECRAWL_TOOL_NAMES.includes(id as FirecrawlToolName)) {
                 const tools = new Set(availableFirecrawlTools(pi));
                 if (value === "enabled") tools.add(id as FirecrawlToolName);
@@ -112,12 +122,12 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
                   pi,
                   ctx,
                   FIRECRAWL_TOOL_NAMES.filter((name) => tools.has(name)),
-                  controller.signal,
+                  sessionSignal,
                 );
               }
             })
             .catch((error: unknown) => {
-              if (live())
+              if (isCurrent())
                 ctx.ui.notify(sanitizeFirecrawlDisplay(`Firecrawl settings failed: ${String(error)}`), "warning");
             })
             .finally(() => {
@@ -143,11 +153,15 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
         render(width: number) {
           const heading = theme.fg("accent", theme.bold("Firecrawl Settings"));
           const mode = `Running: ${firecrawlToolMode(pi)}; saved: ${savedMode}${savedMode !== firecrawlToolMode(pi) ? " — /reload required" : ""}`;
+          const listLines = list.render(Math.max(width, 5));
+          // Mouse coordinates must follow the last rendered layout, not unpainted pending state.
+          listOffset = pending > 0 ? 3 : 2;
+          listHeight = listLines.length;
           return [
             heading,
             theme.fg("muted", mode),
             ...(pending > 0 ? [theme.fg("muted", "Saving changes…")] : []),
-            ...list.render(Math.max(width, 5)),
+            ...listLines,
           ].map((line) => truncateToWidth(line, width));
         },
         invalidate() {
@@ -158,6 +172,12 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
           if (matchesKey(data, Key.ctrl("c"))) close();
           else list.handleInput(data);
           if (live()) tui.requestRender();
+        },
+        handleMouse(event: TuiMouseEvent) {
+          if (!live() || event.y < listOffset || event.y >= listOffset + listHeight) return undefined;
+          const result = list.handleMouse({ ...event, y: event.y - listOffset, height: listHeight });
+          if (live() && result && result.render !== false) tui.requestRender();
+          return result;
         },
         dispose,
         waitForPending: () => queue,

@@ -125,7 +125,8 @@ Codemode mode does not explicitly activate capability tools; Pi's general tool c
 
 These modes require a Pi release with tool exposure support.
 Codemode must be active in Pi for the default workflow.
-Add `"defaultTools": ["+codemode"]` to Pi's `settings.json` and `/reload`, or start with `pi --tools read,bash,edit,write,codemode`.
+Add `"defaultTools": ["+codemode"]` to Pi's `settings.json` and `/reload`.
+Pi's `--tools` flag is an allowlist for extension tools too; a list that omits the Firecrawl capabilities prevents codemode from discovering or calling them.
 The extension warns when codemode is inactive and does not silently switch modes.
 Choose `lazy` or `direct` if you do not want to enable codemode.
 

@@ -305,7 +305,11 @@ for (const binding of [
           mode: "tui",
           hasUI: true,
           custom: async (factory: unknown) => {
-            const harness = createCustomSelectorHarness(factory);
+            const keys = getKeybindings();
+            const harness = createCustomSelectorHarness(factory, 100, {
+              matches: (data, action) => keys.matches(data, action as never),
+              getKeys: (action) => keys.getKeys(action as never),
+            });
             widthSafe = [0, 1, 4, 20, 80].every((width) =>
               harness.render(width).every((line) => visibleWidth(line) <= width),
             );
@@ -322,6 +326,9 @@ for (const binding of [
         await mock.events.get("session_start")?.[0]?.({}, ctx);
         await mock.commands.get("firecrawl")?.handler("settings", ctx);
         assert.equal(widthSafe, true);
+        assert.ok(lines.some((line) => line.includes(binding ? "ctrl+n down" : "↓ down")));
+        assert.ok(lines.some((line) => line.includes(binding ? "ctrl+x/space change" : "enter/space change")));
+        assert.ok(lines.some((line) => line.includes(binding ? "ctrl+q/ctrl+c close" : "esc/ctrl+c close")));
         assert.equal(document(root).toolMode, "lazy");
         assert.deepEqual(document(root).tools, capabilities.slice(1));
         assert.ok(lines.some((line) => line.includes("/reload required")));
@@ -364,7 +371,7 @@ test("settings UI failure restores displayed values and Ctrl+C/disposal release 
     await mock.commands.get("firecrawl")?.handler("settings", ctx);
     assert.ok(lines.some((line) => line.includes("Tool mode") && line.includes("codemode")));
     assert.equal(readFileSync(join(root, "pi-firecrawl.json"), "utf8"), "{");
-    assert.equal(notifications.filter((entry) => /save failed/.test(entry.message)).length, 1);
+    assert.equal(notifications.filter((entry) => /save failed/.test(entry.message)).length, 2);
   });
 });
 
