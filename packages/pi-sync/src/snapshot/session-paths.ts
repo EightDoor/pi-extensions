@@ -20,7 +20,7 @@ export function sessionDirFromContext(ctx: ExtensionCommandContext | ExtensionCo
 
 export async function configuredSessionDir() {
   const settings = await readJsonIfExists<{ sessionDir?: string }>(path.join(agentDir(), "settings.json"));
-  return settings?.sessionDir ? expandHome(settings.sessionDir) : undefined;
+  return settings?.sessionDir ? expandSessionDir(settings.sessionDir) : undefined;
 }
 
 export async function effectiveSessionRoot(ctx: ExtensionCommandContext | ExtensionContext) {
@@ -68,7 +68,7 @@ function sessionDirFromSnapshot(snapshot: Snapshot) {
   const sessionDir = (settings as { sessionDir?: unknown }).sessionDir;
   if (sessionDir !== undefined && typeof sessionDir !== "string")
     throw new Error("Merged sessionDir must be a string; review a directional recovery.");
-  return sessionDir ? expandHome(sessionDir) : undefined;
+  return sessionDir ? expandSessionDir(sessionDir) : undefined;
 }
 
 function decodeBase64Strict(value: string, filePath: string) {
@@ -82,7 +82,7 @@ export function agentDir() {
   return getAgentDir();
 }
 
-function expandHome(value: string) {
+export function expandSessionDir(value: string) {
   return value === "~" || value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
 }
 
