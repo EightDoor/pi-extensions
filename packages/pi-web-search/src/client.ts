@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { isObject, type Settings } from "./settings.js";
 
 class SearchError extends Error {}
@@ -45,7 +45,7 @@ function bounded(value: string, maxBytes: number): string {
   return result;
 }
 export function validateQuery(query: string, limit: number) {
-  if (typeof query !== "string" || !query.trim() || query.length > 1024)
+  if (typeof query !== "string" || !query.trim() || Array.from(query).length > 1024)
     throw new SearchError("Search query must contain 1–1024 characters and not be blank.");
   if (!Number.isInteger(limit) || limit < 1 || limit > 10)
     throw new SearchError("Search limit must be an integer from 1 to 10.");
@@ -192,13 +192,20 @@ export async function search(
 export function resultText(result: SearchResult): string {
   const lines = ["Cloudflare Web Search / Ceramic.ai", `Query: ${displayText(result.metadata.query)}`];
   result.items.forEach((item, index) => {
-    lines.push(
-      `${index + 1}. ${displayText(item.title ?? item.url)}`,
-      displayText(item.url),
-      displayText(item.description ?? ""),
-    );
+    lines.push(`${index + 1}. ${displayText(item.title ?? item.url)}`);
+    // A missing title already displays the URL; do not double its text budget.
+    if (item.title !== undefined) lines.push(displayText(item.url));
+    lines.push(displayText(item.description ?? ""));
   });
   if (!result.items.length) lines.push("No results.");
   if (result.truncated) lines.push("Result fields were truncated to fit output limits.");
-  return truncateHead(lines.join("\n")).content;
+  const text = lines.join("\n");
+  const output = truncateHead(text);
+  if (!output.truncated) return output.content;
+  const notice = "Rendered results were truncated to fit output limits; some text or results were omitted.";
+  const bounded = truncateHead(text, {
+    maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice) - 1,
+    maxLines: DEFAULT_MAX_LINES - 1,
+  });
+  return `${bounded.content}\n${notice}`;
 }

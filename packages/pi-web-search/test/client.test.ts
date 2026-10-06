@@ -50,11 +50,26 @@ test("explicit BYOK aliases are passed without retry or fallback on HTTP failure
   assert.equal(calls, 1);
 });
 
-test.each(["", " ", "a".repeat(1025)])("invalid queries fail before the network", async (query) => {
-  const request = vi.fn();
-  await assert.rejects(search(settings, query, 1, signal(), request));
-  assert.equal(request.mock.calls.length, 0);
-});
+test.each(["", " ", "a".repeat(1025), "😀".repeat(1025), `${"a".repeat(1024)}😀`])(
+  "invalid queries fail before the network",
+  async (query) => {
+    const request = vi.fn();
+    await assert.rejects(search(settings, query, 1, signal(), request));
+    assert.equal(request.mock.calls.length, 0);
+  },
+);
+
+test.each(["😀".repeat(600), "😀".repeat(1024), `${"漢".repeat(512)}${"😀".repeat(512)}`])(
+  "Unicode code-point queries up to 1024 dispatch unchanged",
+  async (query) => {
+    let sent: unknown;
+    await search(settings, query, 1, signal(), async (_url, options) => {
+      sent = JSON.parse(String(options?.body)).query;
+      return response({ items: [], metadata: {} });
+    });
+    assert.equal(sent, query);
+  },
+);
 
 test.each([0, 11, 1.5])("invalid limits fail before network: %s", async (limit) => {
   const request = vi.fn();
@@ -157,6 +172,38 @@ test("display keeps legitimate Unicode joining while raw search fields retain di
   assert.equal(result.items[0].description, raw);
   assert.equal(result.items[0].url, `https://example.com/${raw}`);
   assert.doesNotMatch(resultText(result), /\p{Bidi_Control}/u);
+});
+
+test("titleless long results render every URL once without silently losing the final item", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => ({
+    url: `https://example.com/${"x".repeat(1980)}/${i}`,
+    description: "d".repeat(1980),
+  }));
+  const result = await search(settings, "query", 10, signal(), async () => response({ items, metadata: {} }));
+  assert.equal(result.truncated, false);
+  const before = structuredClone(result);
+  const text = resultText(result);
+  assert.ok(Buffer.byteLength(text) <= 50 * 1024);
+  for (const item of items) assert.equal(text.split(item.url).length - 1, 1);
+  assert.deepEqual(result, before);
+});
+
+test.each(["bytes", "lines"])("rendered truncation reports %s limits within the reserved budget", (reason) => {
+  const result = {
+    provider: "ceramic" as const,
+    metadata: { query: "query" },
+    truncated: false,
+    items:
+      reason === "bytes"
+        ? [{ url: "https://example.com", description: "x".repeat(60000) }]
+        : Array.from({ length: 1100 }, (_, i) => ({ url: `https://example.com/${i}` })),
+  };
+  const before = structuredClone(result);
+  const text = resultText(result);
+  assert.match(text, /truncat/i);
+  assert.ok(Buffer.byteLength(text) <= 50 * 1024);
+  assert.ok(text.split("\n").length <= 2000);
+  assert.deepEqual(result, before);
 });
 
 test("credentials echoed by a successful provider response are redacted", async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { chmod, type FileHandle, lstat, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
@@ -92,6 +92,25 @@ async function readDocument(path: string): Promise<Record<string, unknown>> {
   }
 }
 
+async function ensurePrivateDirectory(path: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if (isObject(error) && error.code === "EEXIST") {
+      if (!(await stat(path)).isDirectory()) throw error;
+      return; // Existing directory permissions belong to the user.
+    }
+    if (!isObject(error) || error.code !== "ENOENT" || dirname(path) === path) throw error;
+    // Create and fix each ancestor before descending; recursive mkdir can strand
+    // an inaccessible ancestor under umasks that mask owner permissions.
+    await ensurePrivateDirectory(dirname(path), signal);
+    return ensurePrivateDirectory(path, signal);
+  }
+  // Finish making a directory we created usable even if cancellation just arrived.
+  if (process.platform !== "win32") await chmod(path, 0o700);
+}
+
 export class SettingsStore {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
@@ -124,7 +143,7 @@ export class SettingsStore {
       if (Buffer.byteLength(data) > MAX_FILE_BYTES) throw new Error("Settings exceed 64 KB.");
       const temporary = `${this.path}.${randomUUID()}.tmp`;
       try {
-        await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+        await ensurePrivateDirectory(dirname(this.path), signal);
         signal?.throwIfAborted();
         const handle = await open(temporary, "wx", 0o600);
         try {

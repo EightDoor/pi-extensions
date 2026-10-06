@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
@@ -61,6 +62,24 @@ test.each(["print", "json", "rpc"])(
     assert.doesNotMatch(reports, /TOP_SECRET/);
   },
 );
+
+test.each([600, 1024])("registered schema and runtime both accept %s astral code points", async (count) => {
+  const h = await setup();
+  const query = "😀".repeat(count);
+  const args = validateToolArguments(h.tool, {
+    type: "toolCall",
+    id: "unicode",
+    name: "web_search",
+    arguments: { query },
+  });
+  let sent: unknown;
+  vi.stubGlobal("fetch", async (_url: string, options: RequestInit) => {
+    sent = JSON.parse(String(options.body)).query;
+    return new Response(JSON.stringify({ items: [], metadata: {} }));
+  });
+  await h.tool.execute("unicode", args, undefined, undefined, h.ctx as unknown as ExtensionToolContext);
+  assert.equal(sent, query);
+});
 
 test.each(["print", "json", "rpc"])(
   "%s reports strip directional controls from the configured agent path",

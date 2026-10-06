@@ -222,6 +222,61 @@ test.each([0o277, 0o477, 0o777])("POSIX saves enforce 0600 despite restrictive u
   }
 });
 
+test.each([0o177, 0o277, 0o477, 0o777])(
+  "missing ancestors become private and usable despite umask %s",
+  async (mask) => {
+    const directories = [
+      join(root, "missing"),
+      join(root, "missing", "nested"),
+      join(root, "missing", "nested", "agent"),
+    ];
+    const target = join(directories[2], "pi-web-search.json");
+    const store = new SettingsStore(target);
+    assert.deepEqual(await store.load(), DEFAULTS);
+    await assert.rejects(lstat(directories[0]), { code: "ENOENT" });
+    const previous = process.umask(mask);
+    try {
+      await store.save({ limit: 3 });
+      for (const directory of directories)
+        if (process.platform !== "win32") assert.equal((await lstat(directory)).mode & 0o777, 0o700);
+      assert.equal((await store.load()).limit, 3);
+      await store.save({ exposure: "direct" });
+      assert.equal((await new SettingsStore(target).load()).exposure, "direct");
+    } finally {
+      process.umask(previous);
+      // A failing old implementation may leave a masked ancestor; release test-owned paths.
+      for (const directory of directories)
+        await chmod(directory, 0o700).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+    }
+  },
+);
+
+test("existing directory permissions are unchanged, including read-only blockers", async () => {
+  if (process.platform === "win32") return;
+  const directory = join(root, "agent");
+  await mkdir(directory, { mode: 0o750 });
+  const store = new SettingsStore(path);
+  await store.save({ limit: 2 });
+  assert.equal((await lstat(directory)).mode & 0o777, 0o750);
+  if (process.getuid?.() === 0) return;
+  await chmod(directory, 0o500);
+  try {
+    await assert.rejects(store.save({ limit: 3 }));
+    assert.equal((await lstat(directory)).mode & 0o777, 0o500);
+    assert.equal((await store.load()).limit, 2);
+  } finally {
+    await chmod(directory, 0o700);
+  }
+});
+
+test("non-directory ancestors block saves without modifying the blocker", async () => {
+  await writeFile(join(root, "agent"), "do not change", { mode: 0o600 });
+  await assert.rejects(new SettingsStore(path).save({ limit: 3 }));
+  assert.equal(await readFile(join(root, "agent"), "utf8"), "do not change");
+});
+
 test("cancelled saves do not publish or create defaults", async () => {
   const controller = new AbortController();
   controller.abort();

@@ -78,14 +78,16 @@ Text print mode rejects through Pi's extension-error channel with status and man
 
 ## 🛠️ Tools
 
-`web_search` takes a required nonblank `query` (maximum 1,024 characters) and an optional integer `limit` (1–10).
+`web_search` takes a required nonblank `query` (maximum 1,024 Unicode code points) and an optional integer `limit` (1–10).
 It uses the saved default limit when omitted.
 Results contain `provider: "ceramic"`, ordered `items` with URLs and optional titles/descriptions, `metadata` with the query and available request ID/latency, and a `truncated` flag.
 Codemode receives this object directly through Pi's structured result contract.
 
 Failures are tool errors, not success-shaped error messages.
 Cancellation, session replacement, shutdown, or the configured deadline stop unfinished network requests.
-Text output stays within Pi's 50 KB/2,000-line limits; structured title and description fields are bounded, and URLs must be HTTP(S).
+Text output stays within Pi's 50 KB/2,000-line limits and includes a notice if rendered text is omitted.
+Titleless results display their URL once; the structured `truncated` flag describes bounded structured fields/items independently of any rendered-text notice.
+Structured title and description fields are bounded, and URLs must be HTTP(S).
 The extension does not fetch result pages, synthesize answers, retry failed requests, switch providers, or fall back to another billing source.
 
 ## ⚙️ Settings
@@ -127,6 +129,7 @@ The extension does not automatically enable Codemode or `tool_search`.
 
 Missing-file reads do not create files or directories.
 An explicit preference save creates the file, patches only changed fields in the latest valid document, and preserves unknown fields.
+On POSIX, missing parent directories created by that save receive exact private `0700` permissions independently of umask; existing directory permissions are never changed.
 A malformed, invalid, oversized, symlinked, nonregular, or insecure file blocks saves and searches until repaired.
 Settings files are limited to 64 KB and require `0600` permissions on POSIX.
 Writes use a private same-directory temporary file followed by rename, with ordered in-process saves, failure rollback, and temporary-file cleanup.
