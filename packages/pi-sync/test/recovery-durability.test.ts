@@ -71,8 +71,8 @@ for (const mode of ["default-manager", "explicit-manager", "different-manager", 
       }
     }));
 
-for (const withSessionRoot of [false, true])
-  test(`startup restores invalid settings postimage without session targets (pinned root: ${withSessionRoot})`, async () =>
+for (const pinnedRoot of ["absent", "default", "custom"] as const)
+  test(`startup restores invalid settings postimage without session targets (pinned root: ${pinnedRoot})`, async () =>
     withTempHome(async (agentDir) => {
       const target = path.join(agentDir, "settings.json");
       const before = '{"theme":"safe"}';
@@ -86,7 +86,14 @@ for (const withSessionRoot of [false, true])
         JSON.stringify({
           version: 2,
           root: agentDir,
-          ...(withSessionRoot ? { sessionRoot: path.join(agentDir, "sessions") } : {}),
+          ...(pinnedRoot === "absent"
+            ? {}
+            : {
+                sessionRoot:
+                  pinnedRoot === "default"
+                    ? path.join(agentDir, "sessions")
+                    : path.join(path.dirname(agentDir), "custom-sessions"),
+              }),
           entries: [
             {
               target,
@@ -103,6 +110,42 @@ for (const withSessionRoot of [false, true])
       await startSession(context.ctx, new AbortController().signal);
       assert.equal(await fs.readFile(target, "utf8"), before);
       await assert.rejects(fs.access(directory), { code: "ENOENT" });
+    }));
+
+for (const storage of ["external", "nested-agent"] as const)
+  test(`startup with ${storage} session targets refuses invalid settings and retains all evidence`, async () =>
+    withTempHome(async (agentDir) => {
+      const sessionRoot = path.join(storage === "external" ? path.dirname(agentDir) : agentDir, "custom-sessions");
+      const target = path.join(sessionRoot, "conversation.jsonl");
+      const directory = path.join(agentDir, "pi-sync/transactions/interrupted");
+      await fs.mkdir(path.join(directory, "before"), { recursive: true });
+      await fs.mkdir(sessionRoot, { recursive: true });
+      await fs.writeFile(path.join(agentDir, "settings.json"), '{"sessionDir":true}');
+      await fs.writeFile(path.join(directory, "before/0"), "before");
+      await fs.writeFile(target, "after");
+      await fs.writeFile(
+        path.join(directory, "journal.json"),
+        JSON.stringify({
+          version: 2,
+          root: agentDir,
+          sessionRoot,
+          entries: [
+            {
+              target,
+              backupName: "0",
+              kind: "file",
+              beforeImage: fileImage("before"),
+              afterImage: fileImage("after"),
+              postFiles: [],
+            },
+          ],
+        }),
+      );
+      const context = createMockContext({ hasUI: false });
+      await assert.rejects(startSession(context.ctx, new AbortController().signal), { name: "TypeError" });
+      assert.equal(await fs.readFile(target, "utf8"), "after");
+      assert.equal(await fs.readFile(path.join(directory, "before/0"), "utf8"), "before");
+      await fs.access(path.join(directory, "journal.json"));
     }));
 
 test("startup without recovery does not parse unrelated Pi settings", async () =>

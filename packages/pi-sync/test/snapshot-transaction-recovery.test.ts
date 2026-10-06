@@ -72,7 +72,14 @@ test("unowned roots, missing backups and malformed private journals fail without
     const f = await journalFixture(agentDir);
     const file = path.join(f.directory, "journal.json");
     const original = JSON.parse(await fs.readFile(file, "utf8"));
-    await fs.writeFile(file, JSON.stringify({ ...original, sessionRoot: path.dirname(agentDir) }));
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        ...original,
+        sessionRoot: path.dirname(agentDir),
+        entries: [{ ...original.entries[0], target: path.join(path.dirname(agentDir), "unowned-session.jsonl") }],
+      }),
+    );
     await assert.rejects(recoverPendingSnapshotTransactions(), /not owned/);
     await fs.writeFile(file, JSON.stringify(original));
     await fs.rm(path.join(f.directory, "before/0"));

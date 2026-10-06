@@ -450,7 +450,8 @@ export async function rollback(
   ) {
     throw new Error("Sync setup or storage location changed while history was open; reopen history and retry.");
   }
-  await requireNoMergeJournal(config, options);
+  // --force is only a rollback compatibility flag, not a reviewed merge-recovery direction.
+  await requireNoMergeJournal(config);
   const decoded = await backend.readSnapshot(target, options.signal);
   const selected = filterSnapshotForConfigPolicy(
     config.include.includes("sessions") ? decoded : snapshotWithoutSessions(decoded),

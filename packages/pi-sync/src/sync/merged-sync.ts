@@ -35,9 +35,14 @@ import {
   readMergeJournal,
   writeMergeJournal,
 } from "./merge-journal.js";
-import { readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
+import {
+  formatRemoteSelectionStatus,
+  readSnapshotForHead,
+  requireCompatibleRemoteSelection,
+} from "./remote-snapshot.js";
 import { createSyncDecision } from "./sync-decision.js";
 import { backupLocal, captureMutationOwner, protectedSessionPaths } from "./sync-local.js";
+import { inspectRemoteSelection } from "./sync-policy.js";
 import { fileHashMap, hasLocalChanges, hasRemoteChanges, sameHashes, syncPolicyChanged } from "./sync-state.js";
 
 const MAX_ATTEMPTS = 3;
@@ -155,17 +160,25 @@ export async function mergeSync(
       throw review("Included content changed; review the selection before merging.", "remote-or-policy-changed");
     if (!head || !remote || !rawRemote)
       throw review("The established remote is missing; choose an explicit recovery direction.", "remote-empty");
+    const selectionState = inspectRemoteSelection(config.include, rawRemote);
+    const selectionCompatible = selectionState.kind === "same";
     const plan = planFileMerge({
       baseline: state.lastFileHashes,
       local: local.files,
       remote: remote.files,
-      selectionCompatible: true,
+      selectionCompatible,
       protectedPaths: protectedSessionPaths(ctx, sessionRoot),
     });
     if (plan.kind !== "planned" || plan.conflicts.length) {
-      throw review(
-        "Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.",
+      const decision = review(
+        selectionCompatible
+          ? "Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction."
+          : "Remote selection metadata is unavailable; review the included content and choose an explicit direction before merging.",
+        selectionCompatible ? "both-changed" : "remote-or-policy-changed",
       );
+      if (!selectionCompatible)
+        decision.decision.review += `\n\n${formatRemoteSelectionStatus(selectionState)}\nAn explicit direction adopts this setup's included-content policy; no automatic merge was performed.`;
+      throw decision;
     }
     const after = regenerateSnapshotIdentity({
       ...local,
@@ -388,6 +401,10 @@ async function completeJournal(
   if (syncStateFingerprint(state) !== journal.stateIdentity) {
     throw new Error("Sync baseline changed after the interrupted merge; preserve its journal and review recovery.");
   }
+  if (inspectRemoteSelection(config.include, observed).kind !== "same")
+    throw new Error(
+      "Pending merge has unavailable remote selection metadata; preserve its journal and choose a reviewed explicit direction before applying or accepting it.",
+    );
   if (config.include.includes("sessions")) requireStableMergeSessionRoot(journal.before, journal.after);
   await validate();
   const validateOwner = captureMutationOwner(ctx, signal);

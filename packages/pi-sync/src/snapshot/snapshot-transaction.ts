@@ -10,6 +10,7 @@ import { syncMutationParents } from "../state/mutation-directory-sync.js";
 import { stateDir } from "../state/state-directory.js";
 import { mergePathIdentity } from "../sync/file-merge-planner.js";
 import { agentDir, configuredSessionDir } from "./session-paths.js";
+import { caseReplacementSpelling, coalesceCaseReplacements, isCaseReplacement } from "./snapshot-case-replacement.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
 import { fileImage, indexTransactionPlan } from "./snapshot-transaction-plan.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
@@ -17,6 +18,8 @@ import type { SnapshotApplyPlan } from "./snapshot-types.js";
 const JOURNAL_VERSION = 4;
 interface TransactionEntry {
   target: string;
+  /** Version 5: one physical file, original target spelling and intended installed spelling. */
+  afterTarget?: string;
   backupName: string;
   kind: "missing" | "file" | "directory" | "symlink";
   linkTarget?: string;
@@ -45,7 +48,10 @@ interface TransactionOptions {
 export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options: TransactionOptions = {}) {
   options.validateMutation?.();
   await recoverPendingSnapshotTransactions(options);
-  const targets = [...new Set([...plan.deletes, ...plan.writes.map((item) => item.target)])].sort();
+  const coalesced = await coalesceCaseReplacements(path.resolve(agentDir()), plan);
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+  const targets = [...new Set([...coalesced.plan.deletes, ...coalesced.plan.writes.map((item) => item.target)])].sort();
   if (targets.length > 16_384)
     throw new Error("Snapshot transaction exceeds its target bound; review a smaller transfer.");
   return withTargetQueues(targets, async () => {
@@ -60,8 +66,19 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       )
     )
       throw new Error("Snapshot transaction targets the current session; review is required.");
-    const transaction = await prepareTransaction(plan, targets, options);
-    const entriesByTarget = new Map(transaction.journal.entries.map((entry) => [entry.target, entry]));
+    for (const [before, after] of coalesced.replacements) {
+      if ((await caseReplacementSpelling(before, after)) !== before)
+        throw new Error("Case replacement changed before preparation; review is required.");
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+    }
+    const transaction = await prepareTransaction(coalesced.plan, targets, options, coalesced.replacements);
+    const entriesByTarget = new Map(
+      transaction.journal.entries.flatMap((entry) => [
+        [entry.target, entry] as const,
+        ...(entry.afterTarget ? [[entry.afterTarget, entry] as const] : []),
+      ]),
+    );
     try {
       for (const target of transaction.deletes.sort((a, b) => a.length - b.length)) {
         options.signal?.throwIfAborted();
@@ -84,7 +101,7 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         options.signal?.throwIfAborted();
         const entry = entriesByTarget.get(item.target);
         if (!entry) throw new Error("Unowned transaction target.");
-        const deletedByThisCall = uninstalledWrites.delete(item.target);
+        const deletedByThisCall = uninstalledWrites.delete(entry.target);
         await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
         options.validateMutation?.();
         options.signal?.throwIfAborted();
@@ -174,28 +191,8 @@ export async function recoverPendingSnapshotTransactions(options: TransactionOpt
       throw new Error("Cannot recover malformed pi-sync transaction; preserve private evidence for review.");
     }
     let sessionDir = options.sessionDir;
-    if (
-      sessionDir === undefined &&
-      options.resolveConfiguredSessionDir &&
-      (transactionHasSessionTargets(journal) || journal.sessionRoot !== undefined)
-    ) {
-      try {
-        sessionDir = await configuredSessionDir();
-      } catch (error) {
-        // Only a transaction owning settings.json may bypass a malformed postimage,
-        // and only when no session target can be authorized by its pinned root.
-        if (
-          !(error instanceof SyntaxError || error instanceof TypeError) ||
-          transactionHasSessionTargets(journal) ||
-          !Array.isArray(journal.entries) ||
-          !journal.entries.some((entry) => entry?.target === path.join(agentDir(), "settings.json"))
-        )
-          throw error;
-        // Without a parseable setting, only the fixed default root is provable.
-        // A custom pinned root must await reviewed recovery.
-        if (journal.sessionRoot !== undefined && journal.sessionRoot !== path.join(agentDir(), "sessions")) throw error;
-        sessionDir = undefined;
-      }
+    if (sessionDir === undefined && options.resolveConfiguredSessionDir && transactionHasSessionTargets(journal)) {
+      sessionDir = await configuredSessionDir();
     }
     options.validateMutation?.();
     options.signal?.throwIfAborted();
@@ -215,7 +212,12 @@ async function pendingTransactionEntries() {
   }
 }
 
-async function prepareTransaction(plan: SnapshotApplyPlan, targets: string[], options: TransactionOptions) {
+async function prepareTransaction(
+  plan: SnapshotApplyPlan,
+  targets: string[],
+  options: TransactionOptions,
+  replacements = new Map<string, string>(),
+) {
   const { sessionDir } = options;
   const root = path.resolve(agentDir());
   const sessionRoot = sessionDir ? path.resolve(sessionStorageRoot(root, sessionDir)) : undefined;
@@ -230,6 +232,7 @@ async function prepareTransaction(plan: SnapshotApplyPlan, targets: string[], op
     assertAllowedTarget(root, sessionRoot, target);
     await assertSafeParents(root, sessionRoot, target);
     const entry: TransactionEntry = { target, backupName: `${index}`, kind: "missing" };
+    if (replacements.has(target)) entry.afterTarget = replacements.get(target);
     const backup = path.join(backupDirectory, entry.backupName);
     try {
       const stat = await fs.lstat(target);
@@ -264,13 +267,19 @@ async function prepareTransaction(plan: SnapshotApplyPlan, targets: string[], op
         : entry.kind === "missing"
           ? "missing"
           : await image(backup, true);
+    if (entry.afterTarget) {
+      if (entry.kind !== "file" || (await caseReplacementSpelling(target, entry.afterTarget)) !== target)
+        throw new Error("Case replacement preimage changed during backup; evidence retained for review.");
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+    }
     entry.afterImage = indexed.writeImages.get(target) ?? "missing";
     entry.postFiles = indexed.postFiles.get(target) ?? [];
     entries.push(entry);
   }
   // File fsync does not persist the name linking each backup into this directory.
   await syncDirectory(backupDirectory);
-  const journal: TransactionJournal = { version: JOURNAL_VERSION, root, sessionRoot, entries };
+  const journal: TransactionJournal = { version: replacements.size ? 5 : JOURNAL_VERSION, root, sessionRoot, entries };
   options.signal?.throwIfAborted();
   options.validateMutation?.();
   await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
@@ -301,7 +310,9 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
   for (const entry of [...journal.entries].sort((a, b) => a.target.length - b.target.length)) {
     const current = await verifyTarget(directory, entry, journal);
     const before = await beforeImage(directory, entry);
-    if (current === before) continue;
+    const spellingMatches = async () =>
+      !entry.afterTarget || (await caseReplacementSpelling(entry.target, entry.afterTarget)) === entry.target;
+    if (current === before && (await spellingMatches())) continue;
     options.signal?.throwIfAborted();
     options.validateMutation?.();
     if (entry.kind === "file") {
@@ -318,18 +329,25 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
         const verified = await verifyTarget(directory, entry, journal);
         options.validateMutation?.();
         options.signal?.throwIfAborted();
-        if (verified === before) continue;
-        if (verified.startsWith("directory:") && !(await removeOwnedTarget(directory, entry, journal, options, before)))
+        if (verified === before && (await spellingMatches())) continue;
+        if (entry.afterTarget) {
+          // Remove the installed spelling before restoring, even when its bytes equal the backup.
+          // One entry owns both spellings; absence is still subject to version-4 retirement rules.
+          await removeOwnedTarget(directory, entry, journal, options);
+        } else if (
+          verified.startsWith("directory:") &&
+          !(await removeOwnedTarget(directory, entry, journal, options, before))
+        )
           continue;
         const atRename = await verifyTarget(directory, entry, journal);
         options.validateMutation?.();
         options.signal?.throwIfAborted();
-        if (atRename === before) continue;
+        if (atRename === before && (await spellingMatches())) continue;
         await retireRestorationIntent(directory, journal, entry, options);
         const atInstall = await verifyTarget(directory, entry, journal, atRename === "missing");
         options.validateMutation?.();
         options.signal?.throwIfAborted();
-        if (atInstall === before) continue;
+        if (atInstall === before && (await spellingMatches())) continue;
         await fs.rename(temporary, entry.target);
         await syncDirectory(path.dirname(entry.target));
       } finally {
@@ -399,10 +417,11 @@ async function verifyTarget(
   const before = await beforeImage(directory, entry);
   if (journal.version >= 2 && before !== entry.beforeImage)
     throw new Error("Transaction backup changed; preserve evidence for review.");
+  if (entry.afterTarget) await caseReplacementSpelling(entry.target, entry.afterTarget);
   const current = await image(entry.target);
   if (current === before) return current;
   if (current === "missing") {
-    if (deletedByThisCall || (journal.version === 4 && entry.removalPending && !entry.replacementStarted))
+    if (deletedByThisCall || (journal.version >= 4 && entry.removalPending && !entry.replacementStarted))
       return current;
   } else if (
     journal.version >= 2 &&
@@ -410,7 +429,7 @@ async function verifyTarget(
       (await ownedPostTree(
         entry.target,
         entry.postFiles ?? [],
-        journal.version !== 4 || entry.replacementStarted === true || !entry.removalPending,
+        journal.version < 4 || entry.replacementStarted === true || !entry.removalPending,
       )))
   )
     return current;
@@ -558,7 +577,7 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
 }
 
 function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
-  if (![1, 2, 3, 4].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
+  if (![1, 2, 3, 4, 5].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
@@ -568,7 +587,10 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     : path.join(root, "sessions");
   if (
     journal.sessionRoot !== undefined &&
-    (typeof journal.sessionRoot !== "string" || path.resolve(journal.sessionRoot) !== trustedSessionRoot)
+    (typeof journal.sessionRoot !== "string" ||
+      !path.isAbsolute(journal.sessionRoot) ||
+      path.resolve(journal.sessionRoot) !== journal.sessionRoot ||
+      (transactionHasSessionTargets(journal) && journal.sessionRoot !== trustedSessionRoot))
   )
     throw new Error("Transaction session root is not owned by this context; preserve evidence for review.");
   for (const entry of journal.entries) {
@@ -585,6 +607,16 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     assertWithinRoot(directory, path.join(directory, "before", entry.backupName));
     assertAllowedTarget(root, journal.sessionRoot, entry.target);
     if (
+      entry.afterTarget !== undefined &&
+      (journal.version !== 5 ||
+        typeof entry.afterTarget !== "string" ||
+        !isCaseReplacement(root, entry.target, entry.afterTarget) ||
+        path.resolve(entry.afterTarget) !== entry.afterTarget ||
+        entry.kind !== "file")
+    )
+      throw new Error("Invalid transaction case replacement evidence.");
+    if (entry.afterTarget) assertAllowedTarget(root, journal.sessionRoot, entry.afterTarget);
+    if (
       journal.version >= 2 &&
       (typeof entry.beforeImage !== "string" || typeof entry.afterImage !== "string" || !Array.isArray(entry.postFiles))
     )
@@ -593,7 +625,7 @@ function validateJournal(directory: string, journal: TransactionJournal, session
       throw new Error("Invalid transaction removal evidence.");
     if (
       entry.replacementStarted !== undefined &&
-      (journal.version !== 4 || typeof entry.replacementStarted !== "boolean")
+      (journal.version < 4 || typeof entry.replacementStarted !== "boolean")
     )
       throw new Error("Invalid transaction replacement evidence.");
     if (entry.removalPending && entry.replacementStarted)
@@ -615,7 +647,9 @@ function transactionHasSessionTargets(journal: TransactionJournal) {
     journal.entries.some(
       (entry) =>
         typeof entry?.target === "string" &&
-        (!isPathInside(root, entry.target) || isPathInside(path.join(root, "sessions"), entry.target)),
+        (!isPathInside(root, entry.target) ||
+          isPathInside(path.join(root, "sessions"), entry.target) ||
+          (typeof journal.sessionRoot === "string" && isPathInside(journal.sessionRoot, entry.target))),
     )
   );
 }
