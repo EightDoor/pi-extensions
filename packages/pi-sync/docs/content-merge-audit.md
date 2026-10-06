@@ -32,6 +32,35 @@ Preview indexes each version once, enforces cumulative raw display bytes before 
 
 The manager conflicts action dispatches direction/selection decisions through the existing sync-origin reviewer and propagates cancellation/closure. Targeted tests reproduced 13 failures on the preceding reviewed source; fixed fixtures remain under the existing 5,000 ms timeout. No defaults, model-visible prefix or activation behavior changes.
 
+## PR #1459 feedback ledger
+
+Every inline item was classified against the current branch and the installed Pi implementation; review-summary and conversation comments contain no additional requests. The first eleven items are **already addressed by current code** and their threads were replied to and resolved before this follow-up:
+
+| Inline comment | Evidence |
+| --- | --- |
+| 4187925529 valid v3 records | `45fbff77`, `content-merge.test.ts` Pi writer/system/compaction fixtures |
+| 4187925535 cancelled artifact writes | `45fbff77`, `partial-sync.test.ts` repeated cancellation |
+| 4187925541 startup conflict barrier | `45fbff77`, automatic partial-conflict regression |
+| 4188176574 effective session root | `45fbff77`, external loaded-session protection |
+| 4188176583 unmanaged collisions | `45fbff77`, unmanaged/cross-policy collision regressions |
+| 4188176594 setup completions | `45fbff77`, `sync.test.ts` route completions |
+| 4190474935 dotted IDs | `8f6f2aa5`, public session-ID grammar fixtures |
+| 4190474942 absent recovery paths | `8f6f2aa5`, pinned baseline-only deletion recovery |
+| 4190474952 grouping complexity | `8f6f2aa5`, 16,384-conflict grouping fixture |
+| 4190474960 preview materialization | `8f6f2aa5`, bounded preview/decoder fixtures |
+| 4190474965 conflict-route dispatch | `8f6f2aa5`, RPC manager route/review tests |
+
+Four later findings were **actionable and not yet addressed** at the preceding head; this follow-up implements them:
+
+| Inline comment | Change and verification |
+| --- | --- |
+| 4190830248 transactional `sessionDir` | Journal v4 pins the settings postimage; recovery authorizes the root from hash-checked reviewed/backup settings before reading a mutable live value, while preserving explicit-manager and current-session barriers. `snapshot-transaction-recovery.test.ts` covers old-root and malformed-postimage interruption; `recovery-durability.test.ts` covers manager mismatch and newer bytes. Unsupported old evidence remains manual rather than guessed. |
+| 4190830255 reused artifact group | New artifacts contain only newly assigned groups and their version/ancestor files; unchanged groups keep their original token. `partial-sync.test.ts` verifies both tokens, membership and file subsets after a changed-group transfer. |
+| 4190830258 content lookup complexity | Indexed local, remote, ancestor, protected and decision paths once per plan, without changing merge eligibility; existing content/partial fixtures and full package suite exercise both text and session paths. |
+| 4190830261 reviewed collisions | Distinguish mutually exclusive case aliases from simultaneous physical aliases, check protected preimages and selected final layout, reject unknown directory contents, delete reviewed preimages before replacing them and recreate parent directories after removal. `partial-sync.test.ts` exercises remote case rename and both file/directory transitions; `merge-target-safety.test.ts` retains active-session and cross-root alias refusals. |
+
+No new question, superseded finding, or conflicting/incorrect request was identified. Semantic audit: all four changes preserve owner/cancellation checks at publication and destructive boundaries, keep newer/unrecognized bytes and journals rather than overwriting them, and do not change extension settings reads/writes, model-visible prefixes, UI keybindings or activation. Arbitrary concurrent external writer CAS, live providers, Windows and compiled startup remain unverified.
+
 ## Concurrent stack integration
 
 Phase 3 includes the latest Phase 2 portability fixes and the latest Phase 1 target-identity/session-root/recovery hardening, without rewriting either other feature branch. Physical pre-publication/recovery guards compare raw local images, while accepted cache/state remains a portable projection. Version-5 setup/connection CRUD and menus preserve the new schema; all transport validators, including Git manifests, accept the deliberate snapshot-v3 barrier. Shared backend-contract fixtures now exercise both v2 and v3 round trips on Git (both publication paths), S3 and WebDAV, and settings-manager fixtures exercise versions 3, 4 and 5.

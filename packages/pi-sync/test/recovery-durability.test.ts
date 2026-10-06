@@ -177,7 +177,7 @@ for (const preimage of ["file", "directory"] as const)
         assert.equal(entries.length, 1);
         const journalFile = path.join(transactions, entries[0] ?? "", "journal.json");
         const journal = JSON.parse(await fs.readFile(journalFile, "utf8"));
-        assert.equal(journal.version, 3);
+        assert.equal(journal.version, 4);
         assert.ok(journal.entries.every((entry: { removalPending?: boolean }) => entry.removalPending));
         await assert.rejects(fs.access(target), { code: "ENOENT" });
         if (newer) {

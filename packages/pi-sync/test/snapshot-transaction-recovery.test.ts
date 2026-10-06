@@ -243,6 +243,72 @@ test("recovery observes the live target after hashing a large directory backup",
     }
   }));
 
+test("startup recovery trusts a pinned new session root even while settings still contain the old root", async () =>
+  withTempHome(async (agentDir) => {
+    await fs.mkdir(agentDir, { recursive: true });
+    const oldRoot = path.join(agentDir, "sessions");
+    const newRoot = path.join(path.dirname(agentDir), "reviewed-sessions");
+    const settings = path.join(agentDir, "settings.json");
+    const session = path.join(newRoot, "active.jsonl");
+    await fs.writeFile(settings, JSON.stringify({ sessionDir: oldRoot }));
+    await fs.mkdir(newRoot, { recursive: true });
+    const controller = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(to).endsWith("journal.json")) controller.abort();
+    });
+    try {
+      await assert.rejects(
+        applySnapshotTransaction(
+          {
+            deletes: [],
+            writes: [
+              { target: settings, content: Buffer.from(JSON.stringify({ sessionDir: newRoot })) },
+              { target: session, content: Buffer.from("new session") },
+            ],
+          },
+          { sessionDir: newRoot, signal: controller.signal },
+        ),
+        /cancelled|aborted/i,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    await recoverPendingSnapshotTransactions();
+    assert.equal(JSON.parse(await fs.readFile(settings, "utf8")).sessionDir, oldRoot);
+    await assert.rejects(fs.access(session), { code: "ENOENT" });
+    assert.deepEqual(await fs.readdir(path.join(agentDir, "pi-sync/transactions")), []);
+  }));
+
+test("startup recovery uses a pinned settings backup when the transactional postimage is malformed", async () =>
+  withTempHome(async (agentDir) => {
+    await fs.mkdir(agentDir, { recursive: true });
+    const settings = path.join(agentDir, "settings.json");
+    const sessionRoot = path.join(path.dirname(agentDir), "external-sessions");
+    await fs.writeFile(settings, JSON.stringify({ sessionDir: sessionRoot }));
+    const controller = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from).endsWith(".apply") && to === settings) controller.abort();
+    });
+    try {
+      await assert.rejects(
+        applySnapshotTransaction(
+          { deletes: [], writes: [{ target: settings, content: Buffer.from("{invalid") }] },
+          { sessionDir: sessionRoot, signal: controller.signal },
+        ),
+        /cancelled/,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    assert.equal(await fs.readFile(settings, "utf8"), "{invalid");
+    await recoverPendingSnapshotTransactions();
+    assert.equal(JSON.parse(await fs.readFile(settings, "utf8")).sessionDir, sessionRoot);
+  }));
+
 test("directional directory-to-file replacement does not re-delete descendants", async () =>
   withTempHome(async (agentDir) => {
     const root = path.join(agentDir, "custom");

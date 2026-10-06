@@ -276,16 +276,18 @@ export async function mergeSync(
           : { group };
       });
       let artifact: string | undefined;
-      if (pending.some((item) => !item.artifact))
+      const newGroups = pending.filter((item) => !item.artifact).map((item) => item.group);
+      const newPaths = new Set(newGroups.flatMap((group) => group.paths));
+      if (newGroups.length)
         artifact = await saveConflictArtifact(
           config,
           backend.identity,
           {
             state,
-            local,
-            remote,
-            ancestors,
-            groups,
+            local: { ...local, files: local.files.filter((file) => newPaths.has(file.path)) },
+            remote: { ...remote, files: remote.files.filter((file) => newPaths.has(file.path)) },
+            ancestors: ancestors.filter((file) => newPaths.has(file.path)),
+            groups: newGroups,
             observed: { snapshotId: head.snapshotId, revision: head.revision },
           },
           captureMutationOwner(ctx, options.signal),

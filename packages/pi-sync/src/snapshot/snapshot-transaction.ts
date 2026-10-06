@@ -9,11 +9,11 @@ import { withLock } from "../state/lock.js";
 import { syncMutationParents } from "../state/mutation-directory-sync.js";
 import { stateDir } from "../state/state-directory.js";
 import { mergePathIdentity } from "../sync/file-merge-planner.js";
-import { agentDir, configuredSessionDir } from "./session-paths.js";
+import { agentDir } from "./session-paths.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
 
-const JOURNAL_VERSION = 3;
+const JOURNAL_VERSION = 4;
 interface TransactionEntry {
   target: string;
   backupName: string;
@@ -29,6 +29,8 @@ interface TransactionJournal {
   version: number;
   root: string;
   sessionRoot?: string;
+  /** Reviewed settings postimage, pinned to the settings entry's hash. */
+  sessionSettingsAfter?: string;
   entries: TransactionEntry[];
 }
 interface TransactionOptions {
@@ -129,11 +131,10 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
 
 export async function recoverSnapshotTransactionsOnStartup(options: TransactionOptions = {}) {
   if (!(await pendingTransactionEntries()).some((entry) => entry.isDirectory())) return;
-  // Resolve settings only when recovery exists, preserving side-effect-free/no-work startup.
-  const sessionDir = options.sessionDir ?? (await configuredSessionDir());
+  // Current settings may be an intermediate transaction image; authorize from pinned evidence.
   options.validateMutation?.();
   options.signal?.throwIfAborted();
-  await withLock("recovery", () => recoverPendingSnapshotTransactions({ ...options, sessionDir }), {
+  await withLock("recovery", () => recoverPendingSnapshotTransactions(options), {
     reclaimStale: true,
   });
 }
@@ -153,7 +154,14 @@ export async function recoverPendingSnapshotTransactions(options: TransactionOpt
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw new Error("Cannot recover malformed pi-sync transaction; preserve private evidence for review.");
     }
-    validateJournal(directory, journal, options.sessionDir);
+    validateJournal(directory, journal);
+    if (
+      options.sessionDir &&
+      journal.sessionRoot &&
+      path.resolve(sessionStorageRoot(agentDir(), options.sessionDir)) !== journal.sessionRoot
+    )
+      throw new Error("Transaction session root is not owned by this context; preserve evidence for review.");
+    await authorizeSessionRoot(directory, journal);
     await withTargetQueues(journal.entries.map((entry) => entry.target).sort(), () =>
       restoreTransaction(directory, journal, options),
     );
@@ -229,7 +237,14 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
   }
   // File fsync does not persist the name linking each backup into this directory.
   await syncDirectory(backupDirectory);
-  const journal: TransactionJournal = { version: JOURNAL_VERSION, root, sessionRoot, entries };
+  const settingsWrite = plan.writes.find((item) => item.target === path.join(root, "settings.json"));
+  const journal: TransactionJournal = {
+    version: JOURNAL_VERSION,
+    root,
+    sessionRoot,
+    ...(settingsWrite ? { sessionSettingsAfter: settingsWrite.content.toString("base64") } : {}),
+    entries,
+  };
   options.signal?.throwIfAborted();
   options.validateMutation?.();
   await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
@@ -240,7 +255,14 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
 }
 
 async function restoreTransaction(directory: string, journal: TransactionJournal, options: TransactionOptions) {
-  validateJournal(directory, journal, options.sessionDir);
+  validateJournal(directory, journal);
+  if (
+    options.sessionDir &&
+    journal.sessionRoot &&
+    path.resolve(sessionStorageRoot(agentDir(), options.sessionDir)) !== journal.sessionRoot
+  )
+    throw new Error("Transaction session root is not owned by this context; preserve evidence for review.");
+  await authorizeSessionRoot(directory, journal);
   options.validateMutation?.();
   options.signal?.throwIfAborted();
   for (const entry of journal.entries) {
@@ -351,7 +373,7 @@ async function verifyTarget(
   const current = await image(entry.target);
   if (
     current === before ||
-    (current === "missing" && (deletedByThisCall || (journal.version === 3 && entry.removalPending)))
+    (current === "missing" && (deletedByThisCall || (journal.version >= 3 && entry.removalPending)))
   )
     return current;
   if (
@@ -456,20 +478,24 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
   return visit(target);
 }
 
-function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
-  if (![1, 2, 3].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
+function validateJournal(directory: string, journal: TransactionJournal) {
+  if (![1, 2, 3, 4].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
     throw new Error("Transaction root no longer matches the Pi agent directory.");
-  const trustedSessionRoot = sessionDir
-    ? path.resolve(sessionStorageRoot(root, sessionDir))
-    : path.join(root, "sessions");
   if (
     journal.sessionRoot !== undefined &&
-    (typeof journal.sessionRoot !== "string" || path.resolve(journal.sessionRoot) !== trustedSessionRoot)
+    (typeof journal.sessionRoot !== "string" ||
+      !path.isAbsolute(journal.sessionRoot) ||
+      path.resolve(journal.sessionRoot) !== journal.sessionRoot)
   )
     throw new Error("Transaction session root is not owned by this context; preserve evidence for review.");
+  if (
+    journal.sessionSettingsAfter !== undefined &&
+    (journal.version !== 4 || typeof journal.sessionSettingsAfter !== "string")
+  )
+    throw new Error("Invalid transaction session settings evidence.");
   for (const entry of journal.entries) {
     if (
       !entry ||
@@ -488,7 +514,7 @@ function validateJournal(directory: string, journal: TransactionJournal, session
       (typeof entry.beforeImage !== "string" || typeof entry.afterImage !== "string" || !Array.isArray(entry.postFiles))
     )
       throw new Error("Invalid transaction postimage evidence.");
-    if (entry.removalPending !== undefined && (journal.version !== 3 || typeof entry.removalPending !== "boolean"))
+    if (entry.removalPending !== undefined && (journal.version < 3 || typeof entry.removalPending !== "boolean"))
       throw new Error("Invalid transaction removal evidence.");
     for (const file of entry.postFiles ?? []) {
       if (
@@ -500,6 +526,54 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     }
   }
 }
+async function authorizeSessionRoot(directory: string, journal: TransactionJournal) {
+  if (!journal.sessionRoot) return;
+  const root = path.resolve(agentDir());
+  const settingsTarget = path.join(root, "settings.json");
+  const settingsEntry = journal.entries.find((entry) => entry.target === settingsTarget);
+  const candidates: Buffer[] = [];
+  if (journal.sessionSettingsAfter !== undefined) {
+    const raw = journal.sessionSettingsAfter;
+    if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(raw) || raw.length % 4 !== 0 || !settingsEntry)
+      throw new Error("Invalid transaction session settings evidence.");
+    const bytes = Buffer.from(raw, "base64");
+    if (bytes.toString("base64") !== raw || settingsEntry.afterImage !== fileImage(bytes))
+      throw new Error("Transaction session settings postimage changed; preserve evidence for review.");
+    candidates.push(bytes);
+  }
+  if (settingsEntry?.kind === "file") {
+    const backup = path.join(directory, "before", settingsEntry.backupName);
+    if ((await image(backup)) !== settingsEntry.beforeImage)
+      throw new Error("Transaction settings backup changed; preserve evidence for review.");
+    candidates.push(await fs.readFile(backup));
+  }
+  // For old journals or transactions that did not write settings, the live settings
+  // must itself authorize the root. Never parse a mid-transaction value before pinned evidence.
+  if (!candidates.length) {
+    try {
+      candidates.push(await fs.readFile(settingsTarget));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      candidates.push(Buffer.from("{}"));
+    }
+  }
+  const owned = candidates.some((bytes) => {
+    try {
+      const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      const value = (parsed as { sessionDir?: unknown }).sessionDir;
+      return (
+        (value === undefined || typeof value === "string") &&
+        path.resolve(sessionStorageRoot(root, value || undefined)) === journal.sessionRoot
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (!owned)
+    throw new Error("Transaction session root is not owned by pinned settings evidence; preserve evidence for review.");
+}
+
 function isStrictlyInside(root: string, target: string) {
   return path.relative(path.resolve(root), path.resolve(target)) !== "" && isPathInside(root, target);
 }

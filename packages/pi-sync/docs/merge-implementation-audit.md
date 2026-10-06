@@ -73,11 +73,11 @@ Disabling the opt-in cancels pending work but does not undo completed transfers 
 
 ## Directional snapshot recovery
 
-`snapshot/snapshot-transaction.ts` now writes private version-3 journals with verified before/after hashes, bounded planned subtree evidence, and durable removal intent. It holds exact Pi target queues and installs files through synced temporary-file renames. Backup files, nested directories, and the top-level `before` directory are synced before journal publication.
+`snapshot/snapshot-transaction.ts` now writes private version-4 journals with verified before/after hashes, bounded planned subtree evidence, and durable removal intent. It holds exact Pi target queues and installs files through synced temporary-file renames. Backup files, nested directories, and the top-level `before` directory are synced before journal publication.
 
 Before each recursive apply/recovery deletion, removal intent is published durably for the target and affected descendants; only absence gains recognition, never unknown content. Directory and symlink restoration are staged beside the target, checked against the backup, synced, revalidated, and renamed into place. Copy failure/cancellation leaves the live postimage unchanged; a rename interruption after deletion remains recoverable from the retained backup and intent.
 
-A complete group is checked before recovery mutates any path. Each destructive boundary checks ownership and bytes again; backup hashing precedes the live-target observation, and both file and non-file restoration recheck immediately before removal. Current-session paths and unowned session roots are refused.
+A complete group is checked before recovery mutates any path. Each destructive boundary checks ownership and bytes again; backup hashing precedes the live-target observation, and both file and non-file restoration recheck immediately before removal. Current-session paths and unowned session roots are refused. Version-4 journals pin the reviewed settings postimage to the entry hash: startup recovery accepts the backed-up or reviewed settings root rather than trusting the possibly mid-transaction live `settings.json`. Explicit session-manager roots must still match; older journals without corroborating settings evidence remain blocked for manual recovery.
 
 Startup recovery resolves an explicit context root first, then the configured fallback, and rejects mismatched roots and active-session targets. It does not read unrelated Pi settings when no recovery exists.
 

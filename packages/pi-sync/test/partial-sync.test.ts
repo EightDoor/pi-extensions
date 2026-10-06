@@ -107,6 +107,35 @@ test("partial sync preserves both withheld versions, old base, durable artifact 
     assert.equal(restarted.lastFileHashes["AGENTS.md"], f.state.lastFileHashes["AGENTS.md"]);
     assert.equal(restarted.unresolved?.length, 1);
   }));
+test("a newly saved artifact contains only groups assigned its token", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "LOCAL\nb\nc\n");
+    await fs.writeFile(path.join(root, "prompts/safe.md"), "local prompt\n");
+    await publish(f, { "AGENTS.md": "REMOTE\nb\nc\n", "prompts/safe.md": "remote prompt\n" });
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const old = await readStateForConfig(f.config);
+    assert.equal(old.unresolved?.length, 2);
+    const unchanged = old.unresolved.find((group) => group.paths.includes("AGENTS.md"));
+    assert.ok(unchanged);
+    await fs.writeFile(path.join(root, "prompts/safe.md"), "new local prompt\n");
+    await publish(f, { "settings.json": '{"theme":"dark"}\n' });
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const next = await readStateForConfig(f.config);
+    const changed = next.unresolved?.find((group) => group.paths.includes("prompts/safe.md"));
+    assert.ok(changed);
+    assert.notEqual(changed.artifact, unchanged.artifact);
+    assert.equal(next.unresolved?.find((group) => group.paths.includes("AGENTS.md"))?.artifact, unchanged.artifact);
+    const artifact = await readConflictArtifact(f.config, f.backend.identity, changed.artifact);
+    assert.deepEqual(
+      artifact.groups.map((group) => group.paths),
+      [changed.paths],
+    );
+    assert.ok(artifact.ancestors?.every((file) => changed.paths.includes(file.path)));
+    assert.ok(artifact.local.files.every((file) => changed.paths.includes(file.path)));
+    assert.ok(artifact.remote.files.every((file) => changed.paths.includes(file.path)));
+  }));
+
 test("group resolution revalidates current bytes and never applies stale artifacts", async () =>
   withTempHome(async (root) => {
     const f = await fixture(root);
@@ -281,6 +310,116 @@ test("remote collision dependency group is retained while an independent path pr
       snapshotFile("prompts/a.md", Buffer.from("lower\n")).sha256,
     );
   }));
+test("reviewed remote case rename deletes its preimage before applying the selected path", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    const upper = path.join(root, "prompts/Foo.md");
+    await fs.writeFile(upper, "base\n");
+    await push(f.context.ctx, options, undefined, () => f.backend);
+    await fs.writeFile(upper, "local\n");
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const remote = await f.backend.readSnapshot(head.snapshotRef);
+    await f.backend.publishSnapshot(
+      {
+        ...remote,
+        id: "case-rename",
+        files: [
+          ...remote.files.filter((file) => file.path !== "prompts/Foo.md"),
+          snapshotFile("prompts/foo.md", Buffer.from("remote\n")),
+        ],
+      },
+      expectedRemoteHead(head),
+    );
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const state = await readStateForConfig(f.config);
+    const group = state.unresolved?.find((item) => item.paths.includes("prompts/Foo.md"));
+    assert.ok(group);
+    const artifact = await readConflictArtifact(f.config, f.backend.identity, group.artifact);
+    await mergeSync(f.context.ctx, options, () => f.backend, {
+      token: group.artifact,
+      group: artifact.groups.findIndex((item) => item.paths.includes("prompts/Foo.md")),
+      source: "remote",
+      stateIdentity: syncStateFingerprint(state),
+      artifactIdentity: conflictArtifactFingerprint(artifact),
+    });
+    await assert.rejects(fs.access(upper), { code: "ENOENT" });
+    assert.equal(await fs.readFile(path.join(root, "prompts/foo.md"), "utf8"), "remote\n");
+  }));
+
+test("reviewed file-to-directory transition installs its child after deleting the file", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    const parent = path.join(root, "prompts/parent");
+    await fs.writeFile(parent, "base\n");
+    await push(f.context.ctx, options, undefined, () => f.backend);
+    await fs.writeFile(parent, "local\n");
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const remote = await f.backend.readSnapshot(head.snapshotRef);
+    await f.backend.publishSnapshot(
+      {
+        ...remote,
+        id: "file-to-directory",
+        files: [
+          ...remote.files.filter((file) => file.path !== "prompts/parent"),
+          snapshotFile("prompts/parent/child.md", Buffer.from("remote\n")),
+        ],
+      },
+      expectedRemoteHead(head),
+    );
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const state = await readStateForConfig(f.config);
+    const group = state.unresolved?.find((item) => item.paths.includes("prompts/parent"));
+    assert.ok(group);
+    const artifact = await readConflictArtifact(f.config, f.backend.identity, group.artifact);
+    await mergeSync(f.context.ctx, options, () => f.backend, {
+      token: group.artifact,
+      group: artifact.groups.findIndex((item) => item.paths.includes("prompts/parent")),
+      source: "remote",
+      stateIdentity: syncStateFingerprint(state),
+      artifactIdentity: conflictArtifactFingerprint(artifact),
+    });
+    assert.equal(await fs.readFile(path.join(parent, "child.md"), "utf8"), "remote\n");
+  }));
+
+test("reviewed directory-to-file transition removes its old child before installing the file", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    const parent = path.join(root, "prompts/parent");
+    await fs.mkdir(parent);
+    await fs.writeFile(path.join(parent, "child.md"), "base\n");
+    await push(f.context.ctx, options, undefined, () => f.backend);
+    await fs.writeFile(path.join(parent, "child.md"), "local\n");
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const remote = await f.backend.readSnapshot(head.snapshotRef);
+    await f.backend.publishSnapshot(
+      {
+        ...remote,
+        id: "directory-to-file",
+        files: [
+          ...remote.files.filter((file) => file.path !== "prompts/parent/child.md"),
+          snapshotFile("prompts/parent", Buffer.from("remote\n")),
+        ],
+      },
+      expectedRemoteHead(head),
+    );
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const state = await readStateForConfig(f.config);
+    const group = state.unresolved?.find((item) => item.paths.includes("prompts/parent/child.md"));
+    assert.ok(group);
+    const artifact = await readConflictArtifact(f.config, f.backend.identity, group.artifact);
+    await mergeSync(f.context.ctx, options, () => f.backend, {
+      token: group.artifact,
+      group: artifact.groups.findIndex((item) => item.paths.includes("prompts/parent/child.md")),
+      source: "remote",
+      stateIdentity: syncStateFingerprint(state),
+      artifactIdentity: conflictArtifactFingerprint(artifact),
+    });
+    assert.equal(await fs.readFile(parent, "utf8"), "remote\n");
+  }));
+
 test("three machines retain one conflict identity across unrelated publication and converge after resolution", async () =>
   withTempHome(async (root) => {
     const a = path.join(root, "a");

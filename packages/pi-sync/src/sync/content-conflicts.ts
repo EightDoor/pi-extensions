@@ -29,18 +29,19 @@ export async function resolveContentConflicts(
   } catch {
     return plan;
   }
+  const oursByPath = new Map(local.files.map((file) => [file.path, file]));
+  const theirsByPath = new Map(remote.files.map((file) => [file.path, file]));
+  const ancestorsByPath = new Map(ancestors.map((file) => [file.path, file]));
+  const decisionIndex = new Map(decisions.map((decision, index) => [decision.path, index]));
+  const protectedKeys = new Set([...protectedPaths].map(mergePathIdentity));
   for (const conflict of plan.conflicts) {
-    if (
-      conflict.reason !== "both-changed" ||
-      [...protectedPaths].some((value) => mergePathIdentity(value) === mergePathIdentity(conflict.path))
-    )
-      continue;
+    if (conflict.reason !== "both-changed" || protectedKeys.has(mergePathIdentity(conflict.path))) continue;
     const session = conflict.path.startsWith("sessions/") && conflict.path.endsWith(".jsonl");
     if (!session && !isMergeTextPath(conflict.path)) continue;
-    const ours = local.files.find((file) => file.path === conflict.path);
-    const theirs = remote.files.find((file) => file.path === conflict.path);
+    const ours = oursByPath.get(conflict.path);
+    const theirs = theirsByPath.get(conflict.path);
     if (!ours || !theirs) continue;
-    const ancestor = ancestors.find((file) => file.path === conflict.path);
+    const ancestor = ancestorsByPath.get(conflict.path);
     const base = ancestor ? Buffer.from(ancestor.contentBase64, "base64") : undefined;
     if (!base) continue;
     const bytes = (session ? mergeSession : mergeText)(
@@ -49,7 +50,9 @@ export async function resolveContentConflicts(
       Buffer.from(theirs.contentBase64, "base64"),
     );
     if (!bytes) continue;
-    decisions[decisions.indexOf(conflict)] = {
+    const index = decisionIndex.get(conflict.path);
+    if (index === undefined) continue;
+    decisions[index] = {
       kind: "accepted",
       path: conflict.path,
       source: "merged",
