@@ -146,8 +146,10 @@ export async function push(
 
   if (!remoteForUpload && head && config.localFields !== undefined)
     remoteForUpload = await readSnapshotForHead(backend, head, options.signal);
-  if (!(await confirmFieldMigration(ctx, config, state, remoteForUpload, options.force, options.signal)))
+  if (!(await confirmFieldMigration(ctx, config, state, remoteForUpload, options.force, options.signal))) {
+    setSyncStatus(ctx, undefined);
     return "cancelled" as const;
+  }
   const configIdentity = syncCheckConfigFingerprint(config);
   let upload = await snapshotForUpload(backend, config, local, head, remoteForUpload, options.signal);
   if (!config.skipSecretScan) {
@@ -165,7 +167,13 @@ export async function push(
     const refreshedHead = await backend.readHead(options.signal);
     if (!sameRemoteHead(backend, head, refreshedHead)) {
       head = refreshedHead;
-      remoteForUpload = head ? await backend.readSnapshot(head.snapshotRef, options.signal) : undefined;
+      remoteForUpload = head ? await readSnapshotForHead(backend, head, options.signal) : undefined;
+      validateMutation();
+      if (!(await confirmFieldMigration(ctx, config, state, remoteForUpload, options.force, options.signal))) {
+        setSyncStatus(ctx, undefined);
+        return "cancelled" as const;
+      }
+      validateMutation();
       upload = await snapshotForUpload(backend, config, local, head, remoteForUpload, options.signal);
       if (
         !(await confirmPush(
@@ -265,8 +273,10 @@ export async function pull(
     });
   }
 
-  if (!(await confirmFieldMigration(ctx, config, state, remote, options.force, options.signal)))
+  if (!(await confirmFieldMigration(ctx, config, state, remote, options.force, options.signal))) {
+    setSyncStatus(ctx, undefined);
     return "cancelled" as const;
+  }
   const configIdentity = syncCheckConfigFingerprint(config);
   const logical = portableSnapshot(remote, config.localFields);
   const physical = overlayLocalFields(logical, local, config.localFields);

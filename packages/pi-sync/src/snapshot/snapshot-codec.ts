@@ -40,7 +40,8 @@ export async function decodeSnapshot(
     throw new Error("Unsupported snapshot format.");
   }
   if (parsed.version === 2) {
-    const { normalizeLocalFields } = await import("../sync/local-fields.js");
+    const { normalizeLocalFields, validateSnapshotFieldPolicy } = await import("../sync/local-fields.js");
+    validateSnapshotFieldPolicy(parsed);
     parsed.localFields = normalizeLocalFields(parsed.localFields);
   } else if (parsed.localFields !== undefined) throw new Error("Portable field policy requires snapshot version 2.");
   snapshotSelectionInclude(parsed);

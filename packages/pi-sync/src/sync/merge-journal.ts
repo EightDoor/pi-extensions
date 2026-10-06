@@ -7,7 +7,7 @@ import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
 import { statePathForConfig } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
-import { portableSnapshot } from "./local-fields.js";
+import { portableSnapshot, validateSnapshotFieldPolicy } from "./local-fields.js";
 import { fileHashMap, sameHashes } from "./sync-state.js";
 
 export interface MergeJournal {
@@ -85,6 +85,7 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       journal.upload,
       ...(journal.accepted ? [journal.accepted] : []),
     ]) {
+      validateSnapshotFieldPolicy(snapshot);
       if (
         (snapshot.version !== 1 && snapshot.version !== 2) ||
         typeof snapshot.id !== "string" ||

@@ -42,9 +42,13 @@ export function validateSnapshotFieldPolicy(snapshot: Pick<Snapshot, "version" |
   if (snapshot.version !== 1 && snapshot.version !== 2) throw new Error("Unsupported snapshot format.");
   if (snapshot.version === 1 && snapshot.localFields !== undefined)
     throw new Error("Portable field policy requires snapshot version 2.");
-  if (snapshot.version === 2) normalizeLocalFields(snapshot.localFields);
+  if (snapshot.version === 2) {
+    if (snapshot.localFields === undefined) throw new Error("Snapshot version 2 requires explicit localFields rules.");
+    normalizeLocalFields(snapshot.localFields);
+  }
 }
 export function sameLocalFields(left: unknown, right: unknown) {
+  if (left === undefined || right === undefined) return left === right;
   return JSON.stringify(normalizeLocalFields(left)) === JSON.stringify(normalizeLocalFields(right));
 }
 function file(content: Buffer): SnapshotFile {
@@ -82,11 +86,15 @@ export function overlayLocalFields(portable: Snapshot, local: Snapshot, fields: 
   const target = portable.files.find((entry) => entry.path === "settings.json");
   const current = local.files.find((entry) => entry.path === "settings.json");
   if (!target && !current) return portable;
-  if (!target) throw new Error("Portable settings deletion requires manual review; local-only fields were preserved.");
-  const incoming = parseSettingsDocument(Buffer.from(target.contentBase64, "base64"));
   const original = current
     ? parseSettingsDocument(Buffer.from(current.contentBase64, "base64"))
     : parseSettingsDocument(Buffer.from("{}"));
+  if (!target) {
+    if (fields.some((field) => original.root.members.has(field)))
+      throw new Error("Portable settings deletion requires manual review; local-only fields were preserved.");
+    return portable;
+  }
+  const incoming = parseSettingsDocument(Buffer.from(target.contentBase64, "base64"));
   const selected = new Map<string, { document: JsonDocument; node: JsonNode }>();
   const excluded = new Set(fields);
   for (const [key, member] of incoming.root.members) {

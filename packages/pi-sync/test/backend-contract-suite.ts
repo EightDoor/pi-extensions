@@ -78,6 +78,10 @@ export function registerSyncBackendContractSuite(name: string, create: BackendFa
           /localFields/,
         );
         await assert.rejects(
+          backend.publishSnapshot({ ...portable, localFields: undefined }, expectedRemoteHead(next.head)),
+          /explicit localFields/,
+        );
+        await assert.rejects(
           backend.publishSnapshot({ ...portable, version: 999 }, expectedRemoteHead(next.head)),
           /snapshot/i,
         );
