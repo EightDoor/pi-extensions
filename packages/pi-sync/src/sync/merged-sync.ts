@@ -343,8 +343,13 @@ async function completeJournal(
   signal?: AbortSignal,
   auto = false,
 ) {
-  if (journal.identity !== mergeJournalIdentity(config, backend.identity))
-    throw new Error("Merge journal belongs to a different setup or selection; preserve it for reviewed recovery.");
+  if (
+    journal.identity !== mergeJournalIdentity(config, backend.identity) ||
+    !sameLocalFields(journal.upload.localFields, config.localFields)
+  )
+    throw new Error(
+      "Merge journal belongs to a different setup, selection or local-field policy; preserve it for reviewed recovery.",
+    );
   await validate();
   const sessionRoot = config.include.includes("sessions") ? await effectiveSessionRoot(ctx) : undefined;
   await validate();

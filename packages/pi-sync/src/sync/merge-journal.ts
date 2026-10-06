@@ -29,7 +29,7 @@ export interface MergeJournal {
 }
 
 export function mergeJournalIdentity(config: AnySyncConfig, backendIdentity: string) {
-  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort(), config.localFields ?? []]);
+  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort(), config.localFields ?? null]);
 }
 
 export function mergeJournalPath(config: AnySyncConfig) {

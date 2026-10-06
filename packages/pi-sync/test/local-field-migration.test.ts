@@ -44,6 +44,12 @@ for (const route of ["push", "pull"] as const) {
       const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
       settings.syncSetups.home.sync.localFields = ["machine"];
       await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+      if (route === "pull") {
+        const current = await f.backend.readHead();
+        assert.ok(current);
+        const matching = portableSnapshot(await f.backend.readSnapshot(current.snapshotRef), ["machine"]);
+        await f.backend.publishSnapshot(matching, { kind: "revision", revision: current.revision });
+      }
       const head = await f.backend.readHead();
       f.ctx.ui.confirm = async () => false;
       const result =

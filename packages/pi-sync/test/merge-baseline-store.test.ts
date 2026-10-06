@@ -70,6 +70,57 @@ test("old ancestor survives staged next acceptance and pruning preserves unknown
     assert.equal(await readMergeAncestor(f.config, f.state, "settings.json"), undefined);
     assert.equal(await fs.readFile(unknown, "utf8"), "unknown evidence");
   }));
+for (const corruption of [
+  "permissions",
+  "symlink",
+  "directory",
+  "oversize",
+  "identity",
+  "version",
+  "accepted-state",
+  "paths",
+  "base64",
+  "hash",
+  "json",
+] as const) {
+  test.skipIf(process.platform === "win32" && (corruption === "permissions" || corruption === "symlink"))(
+    `pruning preserves reader-refused ${corruption} ancestor evidence`,
+    async () =>
+      withTempHome(async (root) => {
+        const f = await fixture(root);
+        await stageMergeBaseline(f.config, f.image, f.state);
+        const next = snapshot([{ path: "settings.json", content: Buffer.from('{"theme":"next"}') }]);
+        const accepted = { ...f.state, lastFileHashes: fileHashMap(next) };
+        await stageMergeBaseline(f.config, next, accepted);
+        if (corruption === "permissions") await fs.chmod(f.target, 0o644);
+        else if (corruption === "symlink") {
+          const evidence = `${f.target}.evidence`;
+          await fs.rename(f.target, evidence);
+          await fs.symlink(evidence, f.target);
+        } else if (corruption === "directory") {
+          await fs.rm(f.target);
+          await fs.mkdir(f.target);
+        } else if (corruption === "oversize") await fs.writeFile(f.target, Buffer.alloc(2 * 1024 * 1024 + 1));
+        else {
+          const record = JSON.parse(await fs.readFile(f.target, "utf8"));
+          if (corruption === "identity") record.identity = "another-setup";
+          if (corruption === "version") record.version = 999;
+          if (corruption === "accepted-state") record.acceptedState = "0".repeat(64);
+          if (corruption === "paths") record.files[0].path = "../auth.json";
+          if (corruption === "base64") record.files[0].contentBase64 = "not-canonical-base64";
+          if (corruption === "hash") record.files[0].sha256 = "0".repeat(64);
+          await fs.writeFile(f.target, corruption === "json" ? '{"secret":"DO_NOT_DISCLOSE"' : JSON.stringify(record));
+        }
+        await assert.rejects(readMergeAncestor(f.config, f.state, "settings.json"), /ancestor is invalid/);
+        const before = await fs.readFile(f.target).catch(() => undefined);
+        await pruneMergeBaselines(f.config, accepted, () => {});
+        assert.ok(await fs.lstat(f.target));
+        assert.deepEqual(await fs.readFile(f.target).catch(() => undefined), before);
+        assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+      }),
+  );
+}
+
 test("pruning respects cancellation and unsupported formats never become ancestors", async () =>
   withTempHome(async (root) => {
     const f = await fixture(root);

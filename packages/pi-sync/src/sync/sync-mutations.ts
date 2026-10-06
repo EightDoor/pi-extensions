@@ -32,7 +32,7 @@ import {
 } from "../ui/sync-format.js";
 import { setSyncStatus } from "../ui/sync-status.js";
 import { confirmFieldMigration } from "./field-migration.js";
-import { overlayLocalFields, portableSnapshot } from "./local-fields.js";
+import { overlayLocalFields, portableSnapshot, sameLocalFields } from "./local-fields.js";
 import { readMergeJournal, requireNoMergeJournal, retireMergeJournal } from "./merge-journal.js";
 import { mergeSync } from "./merged-sync.js";
 import { readRemoteSnapshot, readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
@@ -273,6 +273,12 @@ export async function pull(
     });
   }
 
+  if (!sameLocalFields(config.localFields, remote.localFields)) {
+    setSyncStatus(ctx, undefined);
+    throw new Error(
+      "Pull requires the configured local-field policy to match the remote. To change the remote policy, review push --force from the authoritative machine first, then pull using matching rules; old history is not erased.",
+    );
+  }
   if (!(await confirmFieldMigration(ctx, config, state, remote, options.force, options.signal))) {
     setSyncStatus(ctx, undefined);
     return "cancelled" as const;
