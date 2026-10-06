@@ -39,6 +39,7 @@ interface TransactionOptions {
   signal?: AbortSignal;
   validateMutation?: () => void;
   protectedTargets?: readonly string[];
+  resolveConfiguredSessionDir?: boolean;
 }
 
 export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options: TransactionOptions = {}) {
@@ -144,13 +145,17 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
 
 export async function recoverSnapshotTransactionsOnStartup(options: TransactionOptions = {}) {
   if (!(await pendingTransactionEntries()).some((entry) => entry.isDirectory())) return;
-  // Resolve settings only when recovery exists, preserving side-effect-free/no-work startup.
-  const sessionDir = options.sessionDir ?? (await configuredSessionDir());
+  // A pending settings.json may itself be the interrupted postimage. Read each journal
+  // before consulting that file, and only consult it when a session target needs it.
   options.validateMutation?.();
   options.signal?.throwIfAborted();
-  await withLock("recovery", () => recoverPendingSnapshotTransactions({ ...options, sessionDir }), {
-    reclaimStale: true,
-  });
+  await withLock(
+    "recovery",
+    () => recoverPendingSnapshotTransactions({ ...options, resolveConfiguredSessionDir: true }),
+    {
+      reclaimStale: true,
+    },
+  );
 }
 
 export async function recoverPendingSnapshotTransactions(options: TransactionOptions = {}) {
@@ -168,9 +173,35 @@ export async function recoverPendingSnapshotTransactions(options: TransactionOpt
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw new Error("Cannot recover malformed pi-sync transaction; preserve private evidence for review.");
     }
-    validateJournal(directory, journal, options.sessionDir);
+    let sessionDir = options.sessionDir;
+    if (
+      sessionDir === undefined &&
+      options.resolveConfiguredSessionDir &&
+      (transactionHasSessionTargets(journal) || journal.sessionRoot !== undefined)
+    ) {
+      try {
+        sessionDir = await configuredSessionDir();
+      } catch (error) {
+        // Only a transaction owning settings.json may bypass a malformed postimage,
+        // and only when no session target can be authorized by its pinned root.
+        if (
+          !(error instanceof SyntaxError || error instanceof TypeError) ||
+          transactionHasSessionTargets(journal) ||
+          !Array.isArray(journal.entries) ||
+          !journal.entries.some((entry) => entry?.target === path.join(agentDir(), "settings.json"))
+        )
+          throw error;
+        // Without a parseable setting, only the fixed default root is provable.
+        // A custom pinned root must await reviewed recovery.
+        if (journal.sessionRoot !== undefined && journal.sessionRoot !== path.join(agentDir(), "sessions")) throw error;
+        sessionDir = undefined;
+      }
+    }
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    validateJournal(directory, journal, sessionDir);
     await withTargetQueues(journal.entries.map((entry) => entry.target).sort(), () =>
-      restoreTransaction(directory, journal, options),
+      restoreTransaction(directory, journal, { ...options, sessionDir }),
     );
   }
 }
@@ -576,6 +607,17 @@ function validateJournal(directory: string, journal: TransactionJournal, session
         throw new Error("Invalid transaction subtree evidence.");
     }
   }
+}
+function transactionHasSessionTargets(journal: TransactionJournal) {
+  const root = path.resolve(agentDir());
+  return (
+    Array.isArray(journal.entries) &&
+    journal.entries.some(
+      (entry) =>
+        typeof entry?.target === "string" &&
+        (!isPathInside(root, entry.target) || isPathInside(path.join(root, "sessions"), entry.target)),
+    )
+  );
 }
 function isStrictlyInside(root: string, target: string) {
   return path.relative(path.resolve(root), path.resolve(target)) !== "" && isPathInside(root, target);

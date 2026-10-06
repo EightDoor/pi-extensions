@@ -14,7 +14,12 @@ import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { createSnapshot, regenerateSnapshotIdentity } from "../src/snapshot/snapshot.js";
 import type { Snapshot } from "../src/snapshot/snapshot-types.js";
-import { readStateForConfig, statePathForConfig, syncStateFingerprint } from "../src/state/sync-state-store.js";
+import {
+  readStateForConfig,
+  statePathForConfig,
+  syncStateFingerprint,
+  writeStateForConfig,
+} from "../src/state/sync-state-store.js";
 import {
   mergeJournalIdentity,
   mergeJournalPath,
@@ -409,6 +414,79 @@ test("remote advance after apply retains an apply-only journal instead of accept
       /Apply-only remote head advanced/,
     );
     assert.ok(await readMergeJournal(f.config));
+  }));
+
+for (const applyOnly of [false, true])
+  test(`accepted ${applyOnly ? "apply-only" : "published"} merge retires its journal after a newer remote revision`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      const originalState = await readStateForConfig(f.config);
+      const before = await createSnapshot(f.config.snapshotIdentity, { include: f.config.include });
+      const committed = await f.remoteEdit("AGENTS.md", "accepted remote\n");
+      const after = await f.backend.readSnapshot(committed.head.snapshotRef);
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "accepted remote\n");
+      await writeMergeJournal(f.config, {
+        version: 1,
+        identity: mergeJournalIdentity(f.config, f.backend.identity),
+        before,
+        after,
+        upload: after,
+        expectedHead: applyOnly ? committed.head : f.baseHead,
+        committedHead: committed.head,
+        ...(applyOnly ? { applyOnly: true } : {}),
+        backup: "retained-private-backup",
+        stateIdentity: syncStateFingerprint(originalState),
+      });
+      const accepted = {
+        version: 1 as const,
+        profile: f.config.snapshotIdentity,
+        lastAppliedSnapshot: committed.head.snapshotId,
+        lastRemoteRevision: committed.head.revision,
+        lastFileHashes: fileHashMap(after),
+        include: [...f.config.include],
+      };
+      await writeStateForConfig(f.config, accepted);
+      await f.remoteEdit("AGENTS.md", "newer remote\n");
+      const currentHead = await f.backend.readHead();
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        assert.equal(await syncBoth(f.ctx, options, () => f.backend), "applied");
+        assert.equal(await readMergeJournal(f.config), undefined);
+        assert.deepEqual(await readStateForConfig(f.config), accepted);
+        assert.deepEqual(await f.backend.readHead(), currentHead);
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "accepted remote\n");
+        assert.equal(publish.mock.calls.length, 0);
+      } finally {
+        publish.mockRestore();
+      }
+    }));
+
+test("newer remote revision retains an unaccepted published journal", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const originalState = await readStateForConfig(f.config);
+    const before = await createSnapshot(f.config.snapshotIdentity, { include: f.config.include });
+    const committed = await f.remoteEdit("AGENTS.md", "committed remote\n");
+    const after = await f.backend.readSnapshot(committed.head.snapshotRef);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before,
+      after,
+      upload: after,
+      expectedHead: f.baseHead,
+      committedHead: committed.head,
+      backup: "retained-private-backup",
+      stateIdentity: syncStateFingerprint(originalState),
+    });
+    await f.remoteEdit("AGENTS.md", "newer remote\n");
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Publication outcome cannot be reconciled/,
+    );
+    assert.ok(await readMergeJournal(f.config));
+    assert.deepEqual(await readStateForConfig(f.config), originalState);
+    assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
   }));
 
 test("merged sync publishes both independent edits and applies remote bytes without reload", async () =>

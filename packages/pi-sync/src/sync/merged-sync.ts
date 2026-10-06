@@ -338,6 +338,18 @@ async function completeJournal(
     return false;
   }
   await validate();
+  // Baseline publication is the durable completion boundary. A later remote revision
+  // cannot undo that acceptance; retire only the journal for the recorded commit.
+  if (journal.committedHead && (!head || !backend.sameRevision(head.revision, journal.committedHead.revision))) {
+    const state = await readStateForConfig(config);
+    await validate();
+    if (
+      syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, journal.committedHead, journal.after))
+    ) {
+      await clearMergeJournal(config);
+      return true;
+    }
+  }
   if (journal.applyOnly && (!head || !backend.sameRevision(head.revision, journal.expectedHead.revision))) {
     const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     const state = await readStateForConfig(config);

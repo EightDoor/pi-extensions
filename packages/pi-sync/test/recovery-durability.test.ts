@@ -71,6 +71,40 @@ for (const mode of ["default-manager", "explicit-manager", "different-manager", 
       }
     }));
 
+for (const withSessionRoot of [false, true])
+  test(`startup restores invalid settings postimage without session targets (pinned root: ${withSessionRoot})`, async () =>
+    withTempHome(async (agentDir) => {
+      const target = path.join(agentDir, "settings.json");
+      const before = '{"theme":"safe"}';
+      const after = '{"sessionDir":true}';
+      const directory = path.join(agentDir, "pi-sync/transactions/interrupted");
+      await fs.mkdir(path.join(directory, "before"), { recursive: true });
+      await fs.writeFile(path.join(directory, "before/0"), before);
+      await fs.writeFile(target, after);
+      await fs.writeFile(
+        path.join(directory, "journal.json"),
+        JSON.stringify({
+          version: 2,
+          root: agentDir,
+          ...(withSessionRoot ? { sessionRoot: path.join(agentDir, "sessions") } : {}),
+          entries: [
+            {
+              target,
+              backupName: "0",
+              kind: "file",
+              beforeImage: fileImage(before),
+              afterImage: fileImage(after),
+              postFiles: [],
+            },
+          ],
+        }),
+      );
+      const context = createMockContext({ hasUI: false });
+      await startSession(context.ctx, new AbortController().signal);
+      assert.equal(await fs.readFile(target, "utf8"), before);
+      await assert.rejects(fs.access(directory), { code: "ENOENT" });
+    }));
+
 test("startup without recovery does not parse unrelated Pi settings", async () =>
   withTempHome(async (agentDir) => {
     await fs.mkdir(agentDir, { recursive: true });
