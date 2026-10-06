@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AnySyncConfig } from "../settings/settings-types.js";
@@ -40,11 +40,20 @@ function tokenPath(config: AnySyncConfig, token: string) {
   if (!/^[a-f0-9-]{36}$/u.test(token)) throw new Error("Invalid conflict token.");
   return path.join(conflictDirectory(config), `${token}.json`);
 }
+export interface CreatedConflictArtifact {
+  token: string;
+  target: string;
+  dev: number;
+  ino: number;
+  size: number;
+  fingerprint: string;
+}
 export async function saveConflictArtifact(
   config: AnySyncConfig,
   backend: string,
   artifact: Omit<ConflictArtifact, "version" | "identity">,
   validate: () => void,
+  onCreated?: (created: CreatedConflictArtifact) => void,
 ) {
   validate();
   const identity = mergeJournalIdentity(config, backend);
@@ -69,9 +78,7 @@ export async function saveConflictArtifact(
   const token = `${fingerprint.slice(0, 8)}-${fingerprint.slice(8, 12)}-${fingerprint.slice(12, 16)}-${fingerprint.slice(16, 20)}-${fingerprint.slice(20)}`;
   await directory(config, true);
   validate();
-  try {
-    await fs.lstat(tokenPath(config, token));
-    validate();
+  const reuse = async () => {
     const existing = await readConflictArtifact(config, backend, token);
     validate();
     const oldLocal = Object.fromEntries(existing.local.files.map((file) => [file.path, file.sha256]));
@@ -90,19 +97,48 @@ export async function saveConflictArtifact(
     )
       throw new Error("Conflict identity does not match retained immutable evidence.");
     return token;
+  };
+  const target = tokenPath(config, token);
+  try {
+    await fs.lstat(target);
+    validate();
+    return await reuse();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-
-  await writeJson(
-    tokenPath(config, token),
-    { version: 1, identity: mergeJournalIdentity(config, backend), ...artifact },
-    { maxBytes: LIMIT },
-  );
-  validate();
-  await syncDirectory(path.dirname(conflictDirectory(config)));
-  validate();
-  return token;
+  const temporary = `${target}.${randomUUID()}.pending`;
+  const candidate: ConflictArtifact = { version: 1, identity, ...artifact };
+  try {
+    await writeJson(temporary, candidate, { maxBytes: LIMIT });
+    validate();
+    const stat = await fs.lstat(temporary);
+    validate();
+    try {
+      // Publish immutable evidence without replacing a concurrent/pre-existing owner.
+      await fs.link(temporary, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      validate();
+      return await reuse();
+    }
+    // Register ownership before any cancellation or durability await can fail.
+    onCreated?.({
+      token,
+      target,
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      fingerprint: conflictArtifactFingerprint(candidate),
+    });
+    validate();
+    await syncDirectory(path.dirname(target));
+    validate();
+    await syncDirectory(path.dirname(conflictDirectory(config)));
+    validate();
+    return token;
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
 }
 export async function readConflictArtifact(config: AnySyncConfig, backend: string, token: string) {
   try {
