@@ -126,6 +126,7 @@ export function createStartupCheck(loaders: SyncLoaders, attention: SyncAttentio
                     reload: false,
                     auto: true,
                     signal,
+                    onCommit: () => attention.clearObservation(),
                   }),
                 ),
               );

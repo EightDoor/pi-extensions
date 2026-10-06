@@ -33,6 +33,8 @@ interface TransactionEntry {
 }
 interface TransactionJournal {
   version: number;
+  /** Version 6: durable files are accepted; surviving evidence permits cleanup only. */
+  completed?: boolean;
   root: string;
   sessionRoot?: string;
   entries: TransactionEntry[];
@@ -142,7 +144,6 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       );
       options.validateMutation?.();
       options.signal?.throwIfAborted();
-      await removeTransaction(transaction.directory);
     } catch (error) {
       // Aborted owners cannot roll back files after another session has replaced them.
       if (options.signal?.aborted)
@@ -157,6 +158,8 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       }
       throw error;
     }
+    // Files are durably installed. Cleanup cannot roll back once it starts deleting evidence.
+    await completeTransaction(transaction.directory, transaction.journal);
   });
 }
 
@@ -191,12 +194,21 @@ export async function recoverPendingSnapshotTransactions(options: TransactionOpt
       throw new Error("Cannot recover malformed pi-sync transaction; preserve private evidence for review.");
     }
     let sessionDir = options.sessionDir;
-    if (sessionDir === undefined && options.resolveConfiguredSessionDir && transactionHasSessionTargets(journal)) {
+    if (
+      sessionDir === undefined &&
+      options.resolveConfiguredSessionDir &&
+      !journal.completed &&
+      transactionHasSessionTargets(journal)
+    ) {
       sessionDir = await configuredSessionDir();
     }
     options.validateMutation?.();
     options.signal?.throwIfAborted();
     validateJournal(directory, journal, sessionDir);
+    if (journal.completed) {
+      await removeTransaction(directory);
+      continue;
+    }
     await withTargetQueues(journal.entries.map((entry) => entry.target).sort(), () =>
       restoreTransaction(directory, journal, { ...options, sessionDir }),
     );
@@ -403,7 +415,7 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
   );
   options.validateMutation?.();
   options.signal?.throwIfAborted();
-  await removeTransaction(directory);
+  await completeTransaction(directory, journal);
 }
 
 async function verifyTarget(
@@ -550,6 +562,15 @@ async function image(target: string, durable = false): Promise<string> {
 async function ownedPostTree(target: string, files: { relative: string; image: string }[], requireComplete: boolean) {
   if (!files.length) return false;
   const expected = new Map(files.map((file) => [mergePathIdentity(file.relative), file.image]));
+  const prefixes = new Set<string>();
+  for (const relative of expected.keys()) {
+    for (
+      let parent = path.dirname(relative);
+      parent !== "." && parent !== path.dirname(parent);
+      parent = path.dirname(parent)
+    )
+      prefixes.add(parent);
+  }
   const seen = new Set<string>();
   async function visit(directory: string): Promise<boolean> {
     let stat: Stats;
@@ -562,12 +583,11 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
     for (const name of await fs.readdir(directory)) {
       const child = path.join(directory, name);
       const relative = mergePathIdentity(path.relative(target, child));
-      const value = await image(child);
-      if (value.startsWith("directory:")) {
-        if (![...expected.keys()].some((key) => key.startsWith(relative + path.sep)) || !(await visit(child)))
-          return false;
+      const stat = await fs.lstat(child);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        if (!prefixes.has(relative) || !(await visit(child))) return false;
       } else {
-        if (expected.get(relative) !== value) return false;
+        if (expected.get(relative) !== (await image(child))) return false;
         seen.add(relative);
       }
     }
@@ -577,8 +597,14 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
 }
 
 function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
-  if (![1, 2, 3, 4, 5].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
+  if (
+    ![1, 2, 3, 4, 5, 6].includes(journal.version) ||
+    !Array.isArray(journal.entries) ||
+    journal.entries.length > 16_384
+  )
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
+  if (journal.completed !== undefined && (journal.version !== 6 || journal.completed !== true))
+    throw new Error("Invalid transaction completion evidence.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
     throw new Error("Transaction root no longer matches the Pi agent directory.");
@@ -590,7 +616,7 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     (typeof journal.sessionRoot !== "string" ||
       !path.isAbsolute(journal.sessionRoot) ||
       path.resolve(journal.sessionRoot) !== journal.sessionRoot ||
-      (transactionHasSessionTargets(journal) && journal.sessionRoot !== trustedSessionRoot))
+      (!journal.completed && transactionHasSessionTargets(journal) && journal.sessionRoot !== trustedSessionRoot))
   )
     throw new Error("Transaction session root is not owned by this context; preserve evidence for review.");
   for (const entry of journal.entries) {
@@ -608,7 +634,7 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     assertAllowedTarget(root, journal.sessionRoot, entry.target);
     if (
       entry.afterTarget !== undefined &&
-      (journal.version !== 5 ||
+      (![5, 6].includes(journal.version) ||
         typeof entry.afterTarget !== "string" ||
         !isCaseReplacement(root, entry.target, entry.afterTarget) ||
         path.resolve(entry.afterTarget) !== entry.afterTarget ||
@@ -710,9 +736,24 @@ async function withTargetQueues<T>(targets: string[], action: () => Promise<T>) 
   }
   return acquire(0);
 }
+async function completeTransaction(directory: string, journal: TransactionJournal) {
+  // Publish completion before deleting any backup. A surviving journal after power loss
+  // may only retry cleanup, never roll back already accepted files.
+  await writeJson(
+    path.join(directory, "journal.json"),
+    { ...journal, version: 6, completed: true },
+    {
+      maxBytes: 32 * 1024 * 1024,
+    },
+  );
+  await removeTransaction(directory);
+}
 async function removeTransaction(directory: string) {
   await fs.rm(directory, { recursive: true, force: true });
-  await syncDirectory(transactionRoot());
+  // After evidence deletion, failure cannot safely trigger rollback or withhold acceptance.
+  // A failed cleanup fsync may leave obsolete evidence after power loss; live file durability
+  // was established before cleanup; a surviving completed journal allows only cleanup.
+  await syncDirectory(transactionRoot()).catch(() => {});
 }
 function transactionRoot() {
   return path.join(stateDir(), "transactions");

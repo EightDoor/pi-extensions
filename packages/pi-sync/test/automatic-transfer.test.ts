@@ -173,6 +173,42 @@ test("cancelled automatic transfer does not publish its stale observation", asyn
     assert.equal(context.widgets.get("sync:attention"), undefined);
   }));
 
+for (const committed of [false, true])
+  test(`automatic transfer failure ${committed ? "after" : "before"} commit preserves only current attention`, async () =>
+    withTempHome(async (agentDir) => {
+      await configure(agentDir);
+      const { createStartupCheck } = await import("../src/sync/startup-check.js");
+      const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
+      const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
+      const attention = createSyncAttentionController();
+      const clear = vi.spyOn(attention, "clearObservation");
+      const completed = deferred();
+      const publish = vi.spyOn(attention, "publish").mockImplementation(async () => {
+        completed.resolve();
+      });
+      const controller = createStartupCheck(
+        createSyncLoaders({
+          loadSyncInspection: async () => ({ inspectSync: (config) => inspectionFixture(config) }),
+          loadSyncOperations: async () => ({
+            ...(await import("../src/sync/sync-operations.js")),
+            syncBoth: async (_ctx, options) => {
+              if (committed) options.onCommit?.();
+              throw new Error("injected transfer failure");
+            },
+          }),
+        }),
+        attention,
+      );
+      const context = createMockContext({ mode: "rpc" });
+      controller.start(context.ctx, new AbortController().signal, await loadConfig());
+      await completed.promise;
+      await controller.stop();
+      assert.equal(clear.mock.calls.length, committed ? 1 : 0);
+      assert.equal(attention.observation() === undefined, committed);
+      assert.equal(publish.mock.calls.length, 1);
+      assert.ok(context.notifications.some((item) => /injected transfer failure/.test(item.message)));
+    }));
+
 test("turning off a queued policy before idle performs no transfer", async () =>
   withTempHome(async (agentDir) => {
     await configure(agentDir);
