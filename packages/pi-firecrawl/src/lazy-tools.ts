@@ -105,6 +105,7 @@ export function configureFirecrawlToolExposure(
   model?: ExtensionContext["model"],
   mode: FirecrawlToolMode = DEFAULT_TOOL_MODE,
 ) {
+  const previouslyActive = new Set(pi.getActiveTools());
   modeByApi.set(pi, mode);
   registerExposure(pi, availableTools, mode);
   const available = setAvailableTools(pi, availableTools, sessionOwner);
@@ -117,11 +118,16 @@ export function configureFirecrawlToolExposure(
       : lazyExposure
         ? FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name) && loaded.has(name))
         : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
-  const nonCapabilityTools = pi
+  const preservedTools = pi
     .getActiveTools()
-    .filter((name) => name !== FIRECRAWL_LOAD_TOOL_NAME && !FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName));
+    .filter(
+      (name) =>
+        name !== FIRECRAWL_LOAD_TOOL_NAME &&
+        (!FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) ||
+          (mode === "codemode" && previouslyActive.has(name) && available.has(name as FirecrawlToolName))),
+    );
   pi.setActiveTools(
-    unique([...nonCapabilityTools, ...(mode === "lazy" ? [FIRECRAWL_LOAD_TOOL_NAME] : []), ...exposedTools]),
+    unique([...preservedTools, ...(mode === "lazy" ? [FIRECRAWL_LOAD_TOOL_NAME] : []), ...exposedTools]),
   );
 }
 

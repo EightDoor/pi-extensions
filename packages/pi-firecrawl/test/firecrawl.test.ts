@@ -395,7 +395,7 @@ test("firecrawl defaults to five callable codemode capabilities without a loader
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", SEARCH_TOOL]);
     assert.equal(mock.tools.filter((tool) => tool.exposure === "codemode").length, 5);
     assert.match(notifications[0]?.message ?? "", /codemode is not active/);
   });
@@ -507,7 +507,7 @@ test("firecrawl ignores invalid legacy settings without creating the new file", 
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", MAP_TOOL]);
     assert.equal(existsSync(path.join(agentDir, NEW_SETTINGS_FILE)), false);
     assert.match(notifications[0]?.message ?? "", /settings ignored/i);
     assert.match(notifications[0]?.message ?? "", /pi-firecrawl-settings\.json/);
@@ -525,7 +525,7 @@ test("firecrawl does not fall back to legacy settings when the new file is inval
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", MAP_TOOL]);
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), true);
     assert.match(notifications[0]?.message ?? "", /legacy settings ignored/i);
     assert.match(notifications[1]?.message ?? "", /settings ignored/i);

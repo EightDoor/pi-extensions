@@ -131,7 +131,11 @@ for (const fixture of [
       const names = session.getActiveToolNames().filter((name) => name.startsWith("firecrawl_"));
       assert.deepEqual(
         names,
-        toolMode === "lazy" ? ["firecrawl_load", ...(native ? [] : capabilities)] : codemode ? [] : capabilities,
+        toolMode === "lazy"
+          ? ["firecrawl_load", ...(native ? [] : capabilities)]
+          : codemode && !allowlist
+            ? []
+            : capabilities,
       );
       assert.deepEqual(
         session.getCallableToolNames().filter((name) => capabilities.includes(name)),
@@ -177,7 +181,10 @@ for (const fixture of [
         // A registration refresh activates every allowlisted declarable tool, not just the changed one.
         // Native mode must retain the loaded scrape while removing those collateral activations.
         if (codemode) {
-          session.setActiveToolsByName([...session.getActiveToolNames(), "firecrawl_scrape"]);
+          session.setActiveToolsByName([
+            ...session.getActiveToolNames().filter((name) => !capabilities.includes(name)),
+            "firecrawl_scrape",
+          ]);
           assert.ok(session.getActiveToolNames().includes("firecrawl_scrape"));
         }
         const prior = session.getActiveToolNames();

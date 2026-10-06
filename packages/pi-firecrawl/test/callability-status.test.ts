@@ -62,14 +62,28 @@ for (const exposure of ["direct", "model-only", "codemode", "deferred", "hidden"
 }
 
 for (const toolMode of ["codemode", "direct", "lazy"] as const) {
-  for (const host of ["unrestricted", "filtered-all", "allow-one", "exclude-one"] as const) {
+  for (const host of [
+    "unrestricted",
+    "filtered-all",
+    "allow-one",
+    "exclude-one",
+    "only-capability",
+    "disabled-capability",
+    "default-capability",
+  ] as const) {
     test(`real Jiti ${toolMode} status matches effective callability under ${host}`, async () => {
       await fixture(async (root) => {
         let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
         try {
-          const original = JSON.stringify({ tools: capabilities, toolMode, updatedAt: 1 });
+          const original = JSON.stringify({
+            tools: host === "disabled-capability" ? capabilities.slice(1) : capabilities,
+            toolMode,
+            updatedAt: 1,
+          });
           await writeFile(join(root, "pi-firecrawl.json"), original);
-          const settingsManager = SettingsManager.inMemory({ defaultTools: ["+codemode"] });
+          const settingsManager = SettingsManager.inMemory({
+            defaultTools: host === "default-capability" ? [capabilities[0]] : ["+codemode"],
+          });
           const builtinsSpecifier = new URL(
             "extensions/index.js",
             import.meta.resolve("@earendil-works/pi-coding-agent"),
@@ -101,6 +115,7 @@ for (const toolMode of ["codemode", "direct", "lazy"] as const) {
             ...(host === "filtered-all" ? { tools: ["read", "bash", "codemode"] } : {}),
             ...(host === "allow-one" ? { tools: ["read", "bash", "codemode", capabilities[0], "firecrawl_load"] } : {}),
             ...(host === "exclude-one" ? { excludeTools: [capabilities[0]] } : {}),
+            ...(["only-capability", "disabled-capability"].includes(host) ? { tools: [capabilities[0]] } : {}),
           });
           session = created.session;
           const { ctx, notifications } = createMockContext({ mode: "rpc", hasUI: true });
@@ -110,7 +125,30 @@ for (const toolMode of ["codemode", "direct", "lazy"] as const) {
             uiContext: (ctx as ExtensionContext).ui,
             onError: (error) => errors.push(error),
           });
-          const expected = { unrestricted: 5, "filtered-all": 0, "allow-one": 1, "exclude-one": 4 }[host];
+          const expected = {
+            unrestricted: 5,
+            "filtered-all": 0,
+            "allow-one": 1,
+            "exclude-one": 4,
+            "only-capability": 1,
+            "disabled-capability": 0,
+            "default-capability": 5,
+          }[host];
+          if (host === "default-capability") {
+            assert.deepEqual(
+              session.getActiveToolNames(),
+              toolMode === "codemode"
+                ? [capabilities[0]]
+                : toolMode === "lazy"
+                  ? ["firecrawl_load", ...capabilities]
+                  : capabilities,
+            );
+            assert.ok(!session.getActiveToolNames().includes("codemode"));
+          }
+          if (host === "only-capability" || host === "disabled-capability") {
+            assert.deepEqual(session.getActiveToolNames(), host === "only-capability" ? [capabilities[0]] : []);
+            assert.ok(!session.getActiveToolNames().includes("codemode"));
+          }
           const callable = session.getCallableToolNames().filter((name) => capabilities.includes(name as never));
           assert.equal(callable.length, expected);
           const activeBefore = session.getActiveToolNames();
@@ -122,7 +160,11 @@ for (const toolMode of ["codemode", "direct", "lazy"] as const) {
           const statuses = notifications.filter((entry) => entry.message.startsWith("Firecrawl tools available:"));
           assert.equal(statuses.length, 2);
           for (const status of statuses) {
-            assert.match(status.message, /enabled \(5\/5 available\)/);
+            assert.ok(
+              status.message.includes(
+                host === "disabled-capability" ? "partial (4/5 available)" : "enabled (5/5 available)",
+              ),
+            );
             assert.ok(status.message.includes(`Callable capability tools: ${expected}/5`), status.message);
           }
           assert.deepEqual(session.getActiveToolNames(), activeBefore);
