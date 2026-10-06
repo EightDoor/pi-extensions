@@ -7,18 +7,23 @@ import {
   type SettingItem,
   SettingsList,
   Text,
+  type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { displayText } from "./client.js";
 import { EXPOSURES, type Settings } from "./settings.js";
 
-// Pi Input wraps raw paste content. Invalid drafts use a sanitized, cursor-free
-// preview before wrapping; the underlying draft stays intact for editing and validation.
+// Pi Input wraps raw paste content. Invalid drafts use a sanitized, cursor-free,
+// mouse-inert preview; the underlying draft stays intact for keyboard editing and validation.
 class SettingsInput extends Input {
   override render(width: number): string[] {
     const raw = this.getValue();
     const safe = displayText(raw);
     return safe === raw ? super.render(width) : new Text(`Invalid characters: ${safe}`, 0, 0).render(width);
+  }
+  override handleMouse(event: TuiMouseEvent) {
+    if (displayText(this.getValue()) !== this.getValue()) return undefined;
+    return super.handleMouse(event);
   }
 }
 
@@ -131,7 +136,6 @@ export async function showSettings(
     sessionSignal.addEventListener("abort", close, { once: true });
     if (sessionSignal.aborted) close();
     const container = new Container();
-    container.addChild(list);
     return {
       get focused() {
         return focused;
@@ -150,9 +154,12 @@ export async function showSettings(
           0,
           0,
         );
-        return [...heading.render(width), ...token.render(width), ...container.render(width)].map((line) =>
-          truncateToWidth(line, Math.max(0, width)),
-        );
+        // Let Pi own rendered child bounds, mouse retargeting and nested focus.
+        container.clear();
+        container.addChild(heading);
+        container.addChild(token);
+        container.addChild(list);
+        return container.render(width).map((line) => truncateToWidth(line, Math.max(0, width)));
       },
       invalidate() {
         container.invalidate();
@@ -175,7 +182,10 @@ export async function showSettings(
         list.handleInput(data);
         tui.requestRender();
       },
-      handleMouse: (event) => list.handleMouse(event),
+      handleMouse(event) {
+        if (disposed) return undefined;
+        return container.handleMouse(event);
+      },
       dispose,
     };
   });

@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { type ExtensionCommandContext, initTheme } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
+  Container,
   getKeybindings,
   KeybindingsManager,
   setKeybindings,
   TUI_KEYBINDINGS,
+  type TuiMouseEvent,
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import { test } from "vitest";
@@ -354,4 +356,196 @@ test.each(["dispose", "session"])("owned pending saves are cancelled on %s", asy
   await running;
   assert.ok(observed?.aborted);
   assert.equal(harness.notifications.length, 0);
+});
+
+function mouseEvent(type: TuiMouseEvent["type"], width: number, height: number, y: number, x = 3): TuiMouseEvent {
+  return {
+    type,
+    button: "left",
+    x,
+    y,
+    screenX: x + 10,
+    screenY: y + 20,
+    width,
+    height,
+    shift: false,
+    alt: false,
+    ctrl: false,
+  };
+}
+function mouseHarness() {
+  initTheme("dark", false);
+  let settings: Settings = { ...DEFAULTS };
+  const patches: Partial<Settings>[] = [];
+  let saved!: () => void;
+  const changed = new Promise<void>((resolve) => {
+    saved = resolve;
+  });
+  const h = screenHarness(new KeybindingsManager(TUI_KEYBINDINGS), () => {
+    if (patches.length) saved();
+  });
+  const running = showSettings(
+    h.ctx,
+    () => settings,
+    async (patch) => {
+      patches.push(patch);
+      settings = { ...settings, ...patch };
+    },
+    new AbortController().signal,
+  );
+  const host = new Container();
+  return {
+    ...h,
+    get screen() {
+      return h.screen;
+    },
+    host,
+    patches,
+    changed,
+    running,
+    async mount() {
+      await h.ready;
+      host.addChild(h.screen);
+    },
+    async close() {
+      h.screen.handleInput?.("\u0003");
+      await running;
+    },
+  };
+}
+const mouseRows = [
+  { label: "Cloudflare account ID", draft: "b".repeat(32), patch: { accountId: "b".repeat(32) } },
+  { label: "AI Gateway", draft: "-mouse", patch: { gatewayId: "-mousedefault" } },
+  { label: "BYOK alias", draft: "mouse-key", patch: { byokAlias: "mouse-key" } },
+  { label: "Tool exposure", draft: undefined, patch: { exposure: "direct" } },
+  { label: "Default result limit", draft: undefined, patch: { limit: 6 } },
+  { label: "Request timeout (ms)", draft: undefined, patch: { timeoutMs: 60000 } },
+];
+test.each([40, 80, 120].flatMap((width) => mouseRows.map((row) => ({ ...row, width }))))(
+  "mouse activates only $label at width $width",
+  async ({ label, draft, patch, width }) => {
+    const h = mouseHarness();
+    await h.mount();
+    try {
+      const lines = h.host.render(width);
+      const y = lines.findIndex((line) => line.includes(label));
+      assert.ok(y >= 0);
+      const press = h.host.handleMouse(mouseEvent("press", width, lines.length, y));
+      assert.equal(press?.handled, true);
+      assert.equal(press?.focusTarget, h.screen); // Keep root hard-cancel and paste handling.
+      h.host.handleMouse(mouseEvent("click", width, lines.length, y));
+      if (draft !== undefined) {
+        h.screen.handleInput?.(draft);
+        h.screen.handleInput?.("\r");
+      }
+      await h.changed;
+      assert.deepEqual(h.patches, [patch]);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+test("mouse ignores unrendered, read-only, out-of-bounds and disposed surfaces", async () => {
+  const h = mouseHarness();
+  await h.mount();
+  try {
+    assert.equal(h.screen.handleMouse?.(mouseEvent("click", 80, 100, 0)), undefined);
+    const width = 40;
+    const lines = h.host.render(width);
+    const first = lines.findIndex((line) => line.includes("Cloudflare account ID"));
+    for (let y = 0; y < first; y++) {
+      assert.equal(h.host.handleMouse(mouseEvent("press", width, lines.length, y)), undefined);
+      assert.equal(h.host.handleMouse(mouseEvent("click", width, lines.length, y)), undefined);
+    }
+    for (const y of [-1, lines.length])
+      assert.equal(h.host.handleMouse(mouseEvent("click", width, lines.length, y)), undefined);
+    for (const type of ["move", "drag", "release"] as const)
+      assert.equal(h.host.handleMouse(mouseEvent(type, width, lines.length, first)), undefined);
+    assert.equal(
+      h.host.handleMouse({ ...mouseEvent("press", width, lines.length, first), button: "right" }),
+      undefined,
+    );
+    const footer = lines.findIndex((line) => line.includes("Enter/Space"));
+    assert.ok(footer >= 0);
+    assert.equal(h.host.handleMouse(mouseEvent("click", width, lines.length, footer)), undefined);
+    h.screen.dispose?.();
+    assert.equal(h.host.handleMouse(mouseEvent("click", width, lines.length, first + 3)), undefined);
+    assert.deepEqual(h.patches, []);
+  } finally {
+    h.finish();
+    await h.running;
+  }
+});
+
+test("mouse uses resized wrapped geometry and native wheel navigation", async () => {
+  const h = mouseHarness();
+  await h.mount();
+  try {
+    h.host.render(120);
+    const width = 40;
+    const lines = h.host.render(width);
+    const first = lines.findIndex((line) => line.includes("Cloudflare account ID"));
+    const wheel = h.host.handleMouse({
+      ...mouseEvent("wheel", width, lines.length, first),
+      button: "none",
+      wheelDelta: 1,
+    });
+    assert.equal(wheel?.handled, true);
+    assert.equal(wheel?.render, true);
+    assert.deepEqual(h.patches, []);
+    const updated = h.host.render(width);
+    const last = updated.findIndex((line) => line.includes("Request timeout (ms)"));
+    h.host.handleMouse(mouseEvent("press", width, updated.length, last));
+    h.host.handleMouse(mouseEvent("click", width, updated.length, last));
+    await h.changed;
+    assert.deepEqual(h.patches, [{ timeoutMs: 60000 }]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("submenu mouse coordinates preserve native Input cursor placement and root focus", async () => {
+  const h = mouseHarness();
+  await h.mount();
+  try {
+    const width = 80;
+    const lines = h.host.render(width);
+    const row = lines.findIndex((line) => line.includes("AI Gateway"));
+    h.host.handleMouse(mouseEvent("press", width, lines.length, row));
+    h.host.handleMouse(mouseEvent("click", width, lines.length, row));
+    h.screen.handleInput?.("\u0005"); // Move to end first, then mouse back to the start.
+    const editor = h.host.render(width);
+    const y = editor.findIndex((line) => line.includes("default"));
+    assert.ok(y >= 0);
+    const result = h.host.handleMouse(mouseEvent("press", width, editor.length, y, 2));
+    assert.equal(result?.handled, true);
+    assert.equal(result?.focusTarget, h.screen);
+    h.screen.handleInput?.("z");
+    h.screen.handleInput?.("\r");
+    await h.changed;
+    assert.deepEqual(h.patches, [{ gatewayId: "zdefault" }]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("sanitized cursor-free draft preview does not move the hidden Input cursor", async () => {
+  const h = mouseHarness();
+  await h.mount();
+  try {
+    h.screen.handleInput?.("\r");
+    h.screen.handleInput?.("\u001b[200~\u0003a\u001b[201~");
+    const width = 80;
+    const lines = h.host.render(width);
+    const y = lines.findIndex((line) => line.includes("Invalid characters:"));
+    assert.ok(y >= 0);
+    assert.equal(h.host.handleMouse(mouseEvent("press", width, lines.length, y, 0)), undefined);
+    h.screen.handleInput?.("\u007f");
+    h.screen.handleInput?.("\r");
+    await h.changed;
+    assert.deepEqual(h.patches, [{ accountId: "\u0003" }]);
+  } finally {
+    await h.close();
+  }
 });
