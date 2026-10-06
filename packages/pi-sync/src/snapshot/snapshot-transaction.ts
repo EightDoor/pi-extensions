@@ -89,65 +89,73 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         await removeOwnedTarget(transaction.directory, entry, transaction.journal, options);
         await syncDirectory(path.dirname(target));
       }
-      await retireRemovalIntent(
-        transaction.directory,
-        transaction.journal,
-        transaction.journal.entries.filter(
-          (entry) => entry.removalPending && (entry.afterImage !== "missing" || (entry.postFiles?.length ?? 0) > 0),
-        ),
-        options,
-      );
-      // Only this uninterrupted call knows which deleted writes have not attempted installation yet.
-      const uninstalledWrites = new Set(transaction.deletedWrites);
-      for (const item of plan.writes) {
-        options.signal?.throwIfAborted();
-        const entry = entriesByTarget.get(item.target);
-        if (!entry) throw new Error("Unowned transaction target.");
-        const deletedByThisCall = uninstalledWrites.delete(entry.target);
-        await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
-        options.validateMutation?.();
-        options.signal?.throwIfAborted();
-        await fs.mkdir(path.dirname(item.target), { recursive: true });
-        options.validateMutation?.();
-        options.signal?.throwIfAborted();
-        const temp = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
-        try {
-          let mode = 0o600;
-          try {
-            const stat = await fs.lstat(item.target);
-            if (stat.isFile()) mode = stat.mode & 0o777;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-          const handle = await fs.open(temp, "wx", mode);
-          try {
-            await handle.writeFile(item.content);
-            await handle.sync();
-          } finally {
-            await handle.close();
-          }
-          await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
+      await withCaseDestinationQueues([...coalesced.replacements], options, async () => {
+        await retireRemovalIntent(
+          transaction.directory,
+          transaction.journal,
+          transaction.journal.entries.filter(
+            (entry) => entry.removalPending && (entry.afterImage !== "missing" || (entry.postFiles?.length ?? 0) > 0),
+          ),
+          options,
+        );
+        // Only this uninterrupted call knows which deleted writes have not attempted installation yet.
+        const uninstalledWrites = new Set(transaction.deletedWrites);
+        for (const item of plan.writes) {
           options.signal?.throwIfAborted();
+          const entry = entriesByTarget.get(item.target);
+          if (!entry) throw new Error("Unowned transaction target.");
+          const deletedByThisCall = uninstalledWrites.delete(entry.target);
+          await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
           options.validateMutation?.();
-          await fs.rename(temp, item.target);
-          await syncDirectory(path.dirname(item.target));
-        } finally {
-          await fs.rm(temp, { force: true });
+          options.signal?.throwIfAborted();
+          await fs.mkdir(path.dirname(item.target), { recursive: true });
+          options.validateMutation?.();
+          options.signal?.throwIfAborted();
+          const temp = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
+          try {
+            let mode = 0o600;
+            try {
+              const stat = await fs.lstat(item.target);
+              if (stat.isFile()) mode = stat.mode & 0o777;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+            const handle = await fs.open(temp, "wx", mode);
+            try {
+              await handle.writeFile(item.content);
+              await handle.sync();
+            } finally {
+              await handle.close();
+            }
+            await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
+            options.signal?.throwIfAborted();
+            options.validateMutation?.();
+            await fs.rename(temp, item.target);
+            await syncDirectory(path.dirname(item.target));
+          } finally {
+            await fs.rm(temp, { force: true });
+          }
         }
-      }
-      options.validateMutation?.();
-      options.signal?.throwIfAborted();
-      await syncMutationParents(
-        targets,
-        [transaction.journal.root, ...(transaction.journal.sessionRoot ? [transaction.journal.sessionRoot] : [])],
-        options,
-      );
-      options.validateMutation?.();
-      options.signal?.throwIfAborted();
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
+        await syncMutationParents(
+          targets,
+          [transaction.journal.root, ...(transaction.journal.sessionRoot ? [transaction.journal.sessionRoot] : [])],
+          options,
+        );
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
+      });
     } catch (error) {
       // Aborted owners cannot roll back files after another session has replaced them.
       if (options.signal?.aborted)
         throw new Error("Snapshot apply cancelled; guarded transaction evidence retained for review.");
+      // Additional spelling queues have been released: do not start a case rollback
+      // under only the original key. Startup recovery reserves its own destination key.
+      if (coalesced.replacements.size)
+        throw new Error("Case replacement apply failed; guarded transaction evidence retained for review.", {
+          cause: error,
+        });
       try {
         await restoreTransaction(transaction.directory, transaction.journal, options);
       } catch (recoveryError) {
@@ -342,26 +350,34 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
         options.validateMutation?.();
         options.signal?.throwIfAborted();
         if (verified === before && (await spellingMatches())) continue;
-        if (entry.afterTarget) {
-          // Remove the installed spelling before restoring, even when its bytes equal the backup.
-          // One entry owns both spellings; absence is still subject to version-4 retirement rules.
+        const needsCaseQueue =
+          entry.afterTarget !== undefined &&
+          (await caseReplacementSpelling(entry.target, entry.afterTarget)) === entry.afterTarget;
+        if (needsCaseQueue) {
+          // Keep the installed-spelling queue while reserving the now-missing original spelling.
           await removeOwnedTarget(directory, entry, journal, options);
         } else if (
           verified.startsWith("directory:") &&
           !(await removeOwnedTarget(directory, entry, journal, options, before))
         )
           continue;
-        const atRename = await verifyTarget(directory, entry, journal);
-        options.validateMutation?.();
-        options.signal?.throwIfAborted();
-        if (atRename === before && (await spellingMatches())) continue;
-        await retireRestorationIntent(directory, journal, entry, options);
-        const atInstall = await verifyTarget(directory, entry, journal, atRename === "missing");
-        options.validateMutation?.();
-        options.signal?.throwIfAborted();
-        if (atInstall === before && (await spellingMatches())) continue;
-        await fs.rename(temporary, entry.target);
-        await syncDirectory(path.dirname(entry.target));
+        await withCaseDestinationQueues(
+          needsCaseQueue && entry.afterTarget ? [[entry.afterTarget, entry.target]] : [],
+          options,
+          async () => {
+            const atRename = await verifyTarget(directory, entry, journal);
+            options.validateMutation?.();
+            options.signal?.throwIfAborted();
+            if (atRename === before && (await spellingMatches())) return;
+            await retireRestorationIntent(directory, journal, entry, options);
+            const atInstall = await verifyTarget(directory, entry, journal, atRename === "missing");
+            options.validateMutation?.();
+            options.signal?.throwIfAborted();
+            if (atInstall === before && (await spellingMatches())) return;
+            await fs.rename(temporary, entry.target);
+            await syncDirectory(path.dirname(entry.target));
+          },
+        );
       } finally {
         await fs.rm(temporary, { force: true });
       }
@@ -644,7 +660,9 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     if (entry.afterTarget) assertAllowedTarget(root, journal.sessionRoot, entry.afterTarget);
     if (
       journal.version >= 2 &&
-      (typeof entry.beforeImage !== "string" || typeof entry.afterImage !== "string" || !Array.isArray(entry.postFiles))
+      ((entry.beforeImage === undefined ? !journal.completed : typeof entry.beforeImage !== "string") ||
+        (entry.afterImage === undefined ? !journal.completed : typeof entry.afterImage !== "string") ||
+        (entry.postFiles === undefined ? !journal.completed : !Array.isArray(entry.postFiles)))
     )
       throw new Error("Invalid transaction postimage evidence.");
     if (entry.removalPending !== undefined && (journal.version < 3 || typeof entry.removalPending !== "boolean"))
@@ -735,6 +753,36 @@ async function withTargetQueues<T>(targets: string[], action: () => Promise<T>) 
     return target ? withFileMutationQueue(target, () => acquire(index + 1)) : action();
   }
   return acquire(0);
+}
+async function withCaseDestinationQueues<T>(
+  spellings: readonly (readonly [string, string])[],
+  options: TransactionOptions,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (!spellings.length) return action();
+  const requireAbsent = async () => {
+    for (const [before, after] of spellings) {
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      const spelling = await caseReplacementSpelling(before, after);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      if (spelling !== undefined)
+        throw new Error("Case replacement changed before destination queue reservation; evidence retained.");
+    }
+  };
+  // Existing aliases share one non-reentrant realpath queue. Only after removal can
+  // we reserve the distinct missing spelling while retaining the original queue.
+  // Pi writers that registered in the gap finish before this callback; refuse their
+  // bytes, including recognizable pre/postimages, rather than treating them as ours.
+  await requireAbsent();
+  return withTargetQueues(
+    spellings.map(([, after]) => after),
+    async () => {
+      await requireAbsent();
+      return action();
+    },
+  );
 }
 async function completeTransaction(directory: string, journal: TransactionJournal) {
   // Publish completion before deleting any backup. A surviving journal after power loss

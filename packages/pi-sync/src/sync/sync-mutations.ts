@@ -270,16 +270,22 @@ export async function pull(
   }
 
   throwIfAborted(options.signal);
-  if (await readMergeJournal(config)) {
-    const current = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+  const recoveringMerge = Boolean(await readMergeJournal(config));
+  const requireFreshRecovery = async () => {
+    validateMutation();
     const currentHead = await backend.readHead(options.signal);
+    validateMutation();
+    const current = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    validateMutation();
     if (!sameHashes(fileHashMap(current), fileHashMap(local)) || !sameRemoteHead(backend, head, currentHead)) {
       throw new Error("Local or remote content changed during recovery review; retry from a fresh diff.");
     }
-  }
+  };
+  if (recoveringMerge) await requireFreshRecovery();
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, remote);
-  throwIfAborted(options.signal);
+  if (recoveringMerge) await requireFreshRecovery();
+  validateMutation();
   options.onCommit?.();
   const lastFileHashes = await applySnapshot(remote, protectedSessionPaths(ctx), {
     include: config.include,

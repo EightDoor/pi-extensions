@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { coalesceCaseReplacements } from "../src/snapshot/snapshot-case-replacement.js";
 import { applySnapshotTransaction, recoverPendingSnapshotTransactions } from "../src/snapshot/snapshot-transaction.js";
 import { withTempHome } from "./helpers.js";
+import { deferred } from "./startup-check-helpers.js";
 
 const image = (value: string) => `file:${createHash("sha256").update(value).digest("hex")}`;
 
@@ -18,7 +21,7 @@ function caseInsensitiveLookup(root: string) {
     const name = (await readdir(root)).find((item) => item.toLowerCase() === path.basename(target).toLowerCase());
     return name ? path.join(root, name) : target;
   }
-  for (const method of ["lstat", "realpath", "readFile", "copyFile", "chmod", "open", "rm"] as const) {
+  for (const method of ["lstat", "realpath", "readFile", "writeFile", "copyFile", "chmod", "open", "rm"] as const) {
     const original = fs[method];
     const spy = vi.spyOn(fs, method);
     const implementation = async (...args: unknown[]) => {
@@ -37,8 +40,11 @@ function caseInsensitiveLookup(root: string) {
         rename((await resolve(source)) as string, (await resolve(destination)) as string),
       ),
   );
+  // Pi imports named built-in functions; keep its actual queue lookup on this fixture.
+  syncBuiltinESMExports();
   return () => {
     for (const spy of spies.reverse()) spy.mockRestore();
+    syncBuiltinESMExports();
   };
 }
 
@@ -257,6 +263,205 @@ for (const malformed of ["old-version", "non-file", "other-name", "other-root"] 
       assert.equal(await fs.readFile(target, "utf8"), "before");
       await fs.access(directory);
     }));
+
+async function caseQueueFixture(root: string, recovery: boolean) {
+  const before = path.join(root, "append_system.md");
+  const after = path.join(root, "APPEND_SYSTEM.md");
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(recovery ? after : before, recovery ? "after" : "before");
+  if (recovery) {
+    const directory = path.join(root, "pi-sync/transactions/interrupted");
+    await fs.mkdir(path.join(directory, "before"), { recursive: true });
+    await fs.writeFile(path.join(directory, "before/0"), "before");
+    await fs.writeFile(
+      path.join(directory, "journal.json"),
+      JSON.stringify({
+        version: 5,
+        root,
+        entries: [
+          {
+            target: before,
+            afterTarget: after,
+            backupName: "0",
+            kind: "file",
+            beforeImage: image("before"),
+            afterImage: image("after"),
+            postFiles: [],
+            replacementStarted: true,
+          },
+        ],
+      }),
+    );
+  }
+  return {
+    before,
+    after,
+    run: (options: { signal?: AbortSignal; validateMutation?: () => void } = {}) =>
+      recovery
+        ? recoverPendingSnapshotTransactions(options)
+        : applySnapshotTransaction(
+            { deletes: [before], writes: [{ target: after, content: Buffer.from("after") }] },
+            options,
+          ),
+  };
+}
+
+for (const recovery of [false, true])
+  test(`case ${recovery ? "recovery" : "apply"} holds both spelling queues through installation`, async () =>
+    withTempHome(async (root) => {
+      const f = await caseQueueFixture(root, recovery);
+      const restore = caseInsensitiveLookup(root);
+      const entered = deferred();
+      const release = deferred();
+      const registered = deferred();
+      const events: string[] = [];
+      const rename = vi.mocked(fs.rename).getMockImplementation();
+      const realpath = vi.mocked(fs.realpath).getMockImplementation();
+      assert.ok(rename && realpath);
+      const installer = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+        if (String(source).endsWith(recovery ? ".restore" : ".apply")) {
+          entered.resolve();
+          await release.promise;
+          await rename(source, destination);
+          events.push("installed");
+          return;
+        }
+        return rename(source, destination);
+      });
+      let registrationCount = 0;
+      const observer = vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        try {
+          return await realpath(...args);
+        } finally {
+          if (events.includes("registering") && [f.before, f.after].includes(String(args[0]))) {
+            if (++registrationCount === 2) registered.resolve();
+          }
+        }
+      });
+      syncBuiltinESMExports();
+      let task: Promise<unknown> | undefined;
+      let writers: Promise<unknown>[] = [];
+      try {
+        task = f.run();
+        await entered.promise;
+        events.push("registering");
+        writers = [f.before, f.after].map((target) =>
+          withFileMutationQueue(target, async () => {
+            events.push(`writer:${target}`);
+            await fs.writeFile(target, "queued Pi bytes");
+          }),
+        );
+        await registered.promise;
+        release.resolve();
+        await task;
+        await Promise.all(writers);
+        assert.equal(events.filter((event) => event.startsWith("writer:")).length, 2);
+        for (const target of [f.before, f.after])
+          assert.ok(events.indexOf(`writer:${target}`) > events.indexOf("installed"));
+        assert.equal(await fs.readFile(recovery ? f.before : f.after, "utf8"), "queued Pi bytes");
+      } finally {
+        release.resolve();
+        await Promise.allSettled([...(task ? [task] : []), ...writers]);
+        installer.mockRestore();
+        observer.mockRestore();
+        restore();
+      }
+    }));
+
+for (const recovery of [false, true])
+  for (const content of ["late Pi bytes", "before", "after"])
+    test(`case ${recovery ? "recovery" : "apply"} preserves pre-reservation writer content: ${content}`, async () =>
+      withTempHome(async (root) => {
+        const f = await caseQueueFixture(root, recovery);
+        const restore = caseInsensitiveLookup(root);
+        const rm = vi.mocked(fs.rm).getMockImplementation();
+        assert.ok(rm);
+        const destination = recovery ? f.before : f.after;
+        let injected = false;
+        const removal = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+          await rm(target, options);
+          if (!injected && target === f.before) {
+            injected = true;
+            await withFileMutationQueue(destination, () => fs.writeFile(destination, content));
+          }
+        });
+        syncBuiltinESMExports();
+        try {
+          await assert.rejects(f.run(), recovery ? /changed before destination queue/ : /evidence retained/);
+          assert.equal(await fs.readFile(destination, "utf8"), content);
+          const entries = await fs.readdir(path.join(root, "pi-sync/transactions"));
+          assert.equal(entries.length, 1);
+          const directory = path.join(root, "pi-sync/transactions", entries[0] as string);
+          await fs.access(path.join(directory, "journal.json"));
+          assert.equal(await fs.readFile(path.join(directory, "before/0"), "utf8"), "before");
+        } finally {
+          removal.mockRestore();
+          restore();
+        }
+      }));
+
+for (const recovery of [false, true])
+  for (const invalidation of ["abort", "owner"] as const)
+    test(`case ${recovery ? "recovery" : "apply"} releases destination reservation after ${invalidation}`, async () =>
+      withTempHome(async (root) => {
+        const f = await caseQueueFixture(root, recovery);
+        const restore = caseInsensitiveLookup(root);
+        const destination = recovery ? f.before : f.after;
+        const rm = vi.mocked(fs.rm).getMockImplementation();
+        const realpath = vi.mocked(fs.realpath).getMockImplementation();
+        assert.ok(rm && realpath);
+        const controller = new AbortController();
+        let valid = true;
+        let injected = false;
+        let entered = false;
+        let lookups = 0;
+        const waiting = deferred();
+        const release = deferred();
+        let writer: Promise<unknown> | undefined;
+        const removal = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+          await rm(target, options);
+          if (!injected && target === f.before) {
+            injected = true;
+            writer = withFileMutationQueue(destination, async () => {
+              entered = true;
+              await release.promise;
+              await fs.writeFile(destination, "late queued bytes");
+            });
+          }
+        });
+        const observer = vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+          try {
+            return await realpath(...args);
+          } finally {
+            if (entered && String(args[0]) === destination && ++lookups === 2) waiting.resolve();
+          }
+        });
+        syncBuiltinESMExports();
+        const task = f.run({
+          signal: controller.signal,
+          validateMutation: () => {
+            if (!valid) throw new Error("owner replaced");
+          },
+        });
+        const rejected = assert.rejects(task, recovery ? /aborted|owner replaced/i : /cancelled|evidence retained/i);
+        try {
+          await waiting.promise;
+          if (invalidation === "abort") controller.abort();
+          else valid = false;
+          release.resolve();
+          await rejected;
+          await writer;
+          assert.equal(await fs.readFile(destination, "utf8"), "late queued bytes");
+          for (const spelling of [f.before, f.after]) await withFileMutationQueue(spelling, async () => {});
+          assert.equal((await fs.readdir(path.join(root, "pi-sync/transactions"))).length, 1);
+        } finally {
+          release.resolve();
+          await Promise.allSettled([task, rejected, ...(writer ? [writer] : [])]);
+          removal.mockRestore();
+          observer.mockRestore();
+          restore();
+        }
+      }));
 
 test("case-sensitive independent spellings keep separate targets", async () =>
   withTempHome(async (root) => {
