@@ -12,6 +12,7 @@ import {
 import { localConfigPath } from "../src/settings/config-file.js";
 import { createSnapshot, regenerateSnapshotIdentity } from "../src/snapshot/snapshot.js";
 import type { Snapshot } from "../src/snapshot/snapshot-types.js";
+import { readMergeAncestor, stageMergeBaseline } from "../src/state/merge-baseline-store.js";
 import {
   readStateForConfig,
   statePathForConfig,
@@ -571,6 +572,99 @@ test("newer remote revision retains an unaccepted published journal", async () =
     assert.ok(await readMergeJournal(f.config));
     assert.deepEqual(await readStateForConfig(f.config), originalState);
     assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
+  }));
+
+test("identical remote publications prune older ancestors while preserving accepted and unknown evidence", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const directory = `${statePathForConfig(f.config)}.ancestors`;
+    const unknown = `${"f".repeat(64)}.json`;
+    await fs.writeFile(path.join(directory, unknown), "unknown evidence");
+    for (let index = 0; index < 3; index++) {
+      const previous = await readStateForConfig(f.config);
+      await f.backend.publishSnapshot(
+        { ...f.base, id: `identical-${index}` },
+        { kind: "revision", revision: (await f.backend.readHead())?.revision ?? "" },
+      );
+      await syncBoth(f.ctx, options, () => f.backend);
+      const accepted = await readStateForConfig(f.config);
+      assert.equal(await readMergeAncestor(f.config, previous, "settings.json"), undefined);
+      assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+      assert.deepEqual(
+        (await fs.readdir(directory)).sort(),
+        [unknown, `${syncStateFingerprint(accepted)}.json`].sort(),
+      );
+    }
+  }));
+
+test("already accepted journal recovery prunes old ancestors without replaying local bytes", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const accepted = await readStateForConfig(f.config);
+    const old = { ...accepted, lastRemoteRevision: "old-revision" };
+    await stageMergeBaseline(f.config, f.base, old);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before: f.base,
+      after: f.base,
+      accepted: f.base,
+      upload: f.base,
+      expectedHead: f.baseHead,
+      committedHead: f.baseHead,
+      backup: "retained-backup",
+      stateIdentity: syncStateFingerprint(old),
+    });
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"newer"}\n');
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"newer"}\n');
+    assert.equal(await readMergeJournal(f.config), undefined);
+    assert.equal(await readMergeAncestor(f.config, old, "settings.json"), undefined);
+    assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+  }));
+
+test("settings conflicts merge against an accepted private ancestor", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await syncBoth(f.ctx, options, () => f.backend); // Accepted equality captures the ancestor.
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local"}\n');
+    await f.remoteEdit("settings.json", '{"theme":"original","defaultModel":"remote-model"}\n');
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(agentDir, "settings.json"), "utf8")), {
+      theme: "local",
+      defaultModel: "remote-model",
+    });
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const remote = await f.backend.readSnapshot(head.snapshotRef);
+    assert.deepEqual(
+      JSON.parse(
+        Buffer.from(
+          remote.files.find((file) => file.path === "settings.json")?.contentBase64 ?? "",
+          "base64",
+        ).toString(),
+      ),
+      { theme: "local", defaultModel: "remote-model" },
+    );
+  }));
+
+test("divergent settings field retains whole-transfer review and names no credential values", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await syncBoth(f.ctx, options, () => f.backend);
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local-private-value"}\n');
+    await f.remoteEdit("settings.json", '{"theme":"remote-private-value"}\n');
+    const publication = vi.spyOn(f.backend, "publishSnapshot");
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Settings fields: theme/);
+        assert.doesNotMatch(error.message, /local-private-value|remote-private-value/);
+        return true;
+      },
+    );
+    assert.equal(publication.mock.calls.length, 0);
   }));
 
 test("merged sync publishes both independent edits and applies remote bytes without reload", async () =>

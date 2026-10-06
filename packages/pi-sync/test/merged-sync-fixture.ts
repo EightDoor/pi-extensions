@@ -23,6 +23,7 @@ export const mergeOptions: CommandOptions = {
 export async function createMergeFixture(agentDir: string, backend = new MemorySyncBackend(), sessions = false) {
   await fs.mkdir(agentDir, { recursive: true });
   const settings = v3S3Settings({ include: ["settings.json", "AGENTS.md", "prompts"] });
+  Object.assign(settings.syncSetups.home.sync, { mergeSettings: true });
   if (sessions) {
     settings.syncSetups.home.sync.include.push("sessions");
     Object.assign(settings.syncSetups.home.sync, { automaticTransfer: true });

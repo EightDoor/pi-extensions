@@ -52,6 +52,8 @@ interface TransactionOptions {
   signal?: AbortSignal;
   validateMutation?: () => void;
   protectedTargets?: readonly string[];
+  /** Fresh apply authorization only; recovery remains bound to durable journal images. */
+  expectedPreimages?: ReadonlyMap<string, string>;
   resolveConfiguredSessionDir?: boolean;
 }
 
@@ -82,7 +84,47 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       options.validateMutation?.();
       options.signal?.throwIfAborted();
     }
-    const transaction = await prepareTransaction(coalesced.plan, targets, options, coalesced.replacements);
+    const originalTargets = new Map([...coalesced.replacements].map(([before, after]) => [after, before]));
+    const expectedPreimages = new Map(
+      [...(options.expectedPreimages ?? [])].map(([target, expected]) => [
+        originalTargets.get(target) ?? target,
+        expected,
+      ]),
+    );
+    // A case-sensitive spelling replacement has two targets, unlike a coalesced physical alias.
+    // Bind both the source bytes and destination absence/bytes before capturing their backups.
+    for (const [target, expected] of options.expectedPreimages ?? []) {
+      if (originalTargets.has(target)) continue;
+      const variants = coalesced.plan.deletes.filter(
+        (candidate) =>
+          candidate !== target &&
+          path.dirname(candidate) === path.dirname(target) &&
+          mergePathIdentity(candidate) === mergePathIdentity(target),
+      );
+      if (variants.length > 1) throw new Error("Ambiguous reviewed file preimage spellings; review required.");
+      const original = variants[0];
+      if (!original) continue;
+      const destination = await image(target);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      if (destination !== "missing" && destination !== expected)
+        throw new Error("Reviewed destination preimage changed before apply.");
+      expectedPreimages.set(original, expected);
+      expectedPreimages.set(target, destination);
+    }
+    for (const [target, expected] of expectedPreimages) {
+      const current = await image(target);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      if (current !== expected)
+        throw new Error("Reviewed file preimage changed before apply; snapshot installation refused.");
+    }
+    const transaction = await prepareTransaction(
+      coalesced.plan,
+      targets,
+      { ...options, expectedPreimages },
+      coalesced.replacements,
+    );
     const entriesByTarget = new Map(
       transaction.journal.entries.flatMap((entry) => [
         [entry.target, entry] as const,
@@ -310,6 +352,11 @@ async function prepareTransaction(
         : entry.kind === "missing"
           ? "missing"
           : await image(backup, true);
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    const expected = options.expectedPreimages?.get(target);
+    if (expected !== undefined && entry.beforeImage !== expected)
+      throw new Error("Reviewed file preimage changed during backup; private preparation evidence retained.");
     if (entry.afterTarget) {
       if (entry.kind !== "file" || (await caseReplacementSpelling(target, entry.afterTarget)) !== target)
         throw new Error("Case replacement preimage changed during backup; evidence retained for review.");

@@ -81,6 +81,9 @@ export interface SyncPolicySettings {
   automatic: boolean;
   /** Explicit opt-in, separate from the legacy observe/shutdown policy. */
   automaticTransfer?: boolean;
+  /** Version 4: settings.json root fields never uploaded. */
+  localFields?: string[];
+  mergeSettings?: boolean;
   [key: string]: unknown;
 }
 
@@ -91,7 +94,7 @@ export interface SyncSetupSettings {
 }
 
 export interface PiSyncSettingsV3 {
-  version: 3;
+  version: 3 | 4;
   activeSyncSetup?: string;
   onSwitch: OnSwitchAction;
   skipSecretScan?: boolean;
@@ -110,6 +113,8 @@ export interface SyncConfig<Backend extends ResolvedSyncBackend = ResolvedS3Back
   include: string[];
   automatic: boolean;
   automaticTransfer?: boolean;
+  localFields?: string[];
+  mergeSettings?: boolean;
   onSwitch: OnSwitchAction;
   skipSecretScan: boolean;
   showStatus: boolean;
