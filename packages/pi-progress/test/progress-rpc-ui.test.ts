@@ -5,7 +5,7 @@ import { createContext, createHarness, identityTheme, setProgress } from "./prog
 
 test("renders and clears progress widgets in UI-capable RPC sessions", async () => {
   const harness = createHarness();
-  const current = createContext({ mode: "rpc" });
+  const current = createContext({ mode: "rpc", hasUI: true });
 
   await harness.emit("session_start", current.ctx);
   await setProgress(harness, current.ctx, [{ text: "web progress", status: "in_progress" }]);
