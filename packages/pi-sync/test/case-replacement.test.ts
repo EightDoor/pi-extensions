@@ -463,12 +463,21 @@ for (const recovery of [false, true])
         }
       }));
 
-test("case-sensitive independent spellings keep separate targets", async () =>
+test("case-sensitive independent spellings keep separate targets", async ({ skip }) =>
   withTempHome(async (root) => {
     await fs.mkdir(root, { recursive: true });
     const before = path.join(root, "append_system.md");
     const after = path.join(root, "APPEND_SYSTEM.md");
     await fs.writeFile(before, "before");
+    // This control requires distinct physical targets; the native alias test covers the other branch.
+    const aliases = await fs.realpath(after).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      },
+    );
+    if (aliases) skip();
     const plan = { deletes: [before], writes: [{ target: after, content: Buffer.from("after") }] };
     assert.equal((await coalesceCaseReplacements(root, plan)).replacements.size, 0);
     await applySnapshotTransaction(plan);
