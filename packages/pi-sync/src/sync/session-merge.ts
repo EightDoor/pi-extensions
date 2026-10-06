@@ -2,6 +2,9 @@ import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
 import { parseJsonObjectDocument } from "./json-document.js";
 import { text } from "./text-merge.js";
 
+// Public header IDs use Pi assertValidSessionId; generated entry IDs have a separate grammar.
+const sessionId = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/u.test(value);
 const id = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/u.test(value);
 const content = (value: unknown, types = ["text", "image", "thinking", "toolCall"]): boolean =>
   typeof value === "string" ||
@@ -106,7 +109,7 @@ export function validateSession(bytes: Buffer) {
     !object(header) ||
     header.type !== "session" ||
     header.version !== CURRENT_SESSION_VERSION ||
-    !id(header.id) ||
+    !sessionId(header.id) ||
     typeof header.cwd !== "string" ||
     typeof header.timestamp !== "string" ||
     !Number.isFinite(Date.parse(header.timestamp)) ||

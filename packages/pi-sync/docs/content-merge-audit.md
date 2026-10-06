@@ -12,13 +12,25 @@ Text allowlist: `AGENTS.md`, and Markdown/text below `prompts/` or `skills/`. UT
 
 ## Review regression audit
 
-The review follow-up rechecked all six findings against the installed Pi runtime and the current PR head, not their severity badges. Session fixtures enumerate every builtin message/entry discriminant, system/tool transitions, pending/deferred assistant records and provider-scoped tool IDs. Public `SessionManager` fixtures verify retain-none compaction self-references, re-edit root entries and branch-summary root sentinels; forward references, damaged payloads and divergent byte histories still remain withheld.
+The first review follow-up rechecked its six findings against the installed Pi runtime and the current PR head, not their severity badges. Session fixtures enumerate every builtin message/entry discriminant, system/tool transitions, pending/deferred assistant records and provider-scoped tool IDs. Public `SessionManager` fixtures verify retain-none compaction self-references, re-edit root entries and branch-summary root sentinels; forward references, damaged payloads and divergent byte histories still remain withheld.
 
 Partial artifact persistence now follows approved review and fresh local, baseline, owner/config and remote-head checks. Cancelled or stale transfer reviews do not create new conflict artifacts and preserve existing evidence. A manual no-transfer inspection may still persist referenced conflict state; uncertain failures after approved persistence retain evidence rather than pruning unproven records. Automatic new-transfer plans stop at unresolved conflicts even when partial sync is enabled. All content and reviewed-resolution protection checks use the already resolved session root.
 
 Raw collision participants must all be represented in the managed plan (including accepted-baseline paths now absent on both sides) before partial withholding is allowed. Unmanaged case aliases, unmanaged ancestor/descendant paths and cross-policy collisions remain barriers. Managed collision groups still preserve both sides, including explicit absence. The conflicts route now completes `--setup` and known setup values, but does not offer unsupported bypass flags.
 
 Verification: `content-merge.test.ts`, `partial-sync.test.ts` and `sync.test.ts`; the new regressions produced 23 failures on the reviewed source and pass with the fixes. Semantic audits cover cancellation, after-await ownership/freshness, immutable prefix/reference handling, the full collision path set, portable acceptance ordering and retained evidence. No default, model-visible prefix, resource activation or automatic session-resume behavior changes.
+
+### Subsequent review evidence
+
+The next five findings are independently verified and covered by public session-ID grammar fixtures, committed partial-recovery fault injection, connected-closure equivalence/scale tests, bounded preview tests and manager dispatch/cancellation tests. The new header predicate mirrors Pi's public alphanumeric-ended grammar (including internal dots and long IDs), separately from generated entry IDs.
+
+Recovery permits baseline-only absent paths only with the pinned previous-state fingerprint and matching retained artifact group/hash evidence. Unknown paths and forged group membership still refuse recovery; restart rolls forward without republishing or resurrecting equal deletions.
+
+Indexed identity/ancestor/resource/include edges replace pairwise grouping rescans without changing conservative closure. Group/hash indexes also replace repeat scans in artifact reuse and journal verification. The 16,384-independent-conflict scale fixture completed in 18 ms in one local run and normalizes each path once; this measurement is not a timing guarantee.
+
+Preview indexes each version once, enforces cumulative raw display bytes before decoding/appending, preserves exact line endings and binary fallback, and leaves raw evidence unchanged. Compact sanitized labels avoid listing every path before group selection. Artifact loading/verification still reads the bounded private record; the display budget prevents additional whole-group materialization, not that required verification.
+
+The manager conflicts action dispatches direction/selection decisions through the existing sync-origin reviewer and propagates cancellation/closure. Targeted tests reproduced 13 failures on the preceding reviewed source; fixed fixtures remain under the existing 5,000 ms timeout. No defaults, model-visible prefix or activation behavior changes.
 
 ## Concurrent stack integration
 

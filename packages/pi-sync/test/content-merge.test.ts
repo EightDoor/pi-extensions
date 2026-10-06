@@ -105,6 +105,37 @@ test("public Pi writer produces accepted system, retain-none compaction and re-e
   );
 });
 
+for (const identity of ["a", "0", "team.alpha", "a.b-_.9", "a".repeat(512)])
+  test(`public session header ID grammar accepts ${identity.length > 32 ? "long ID" : identity}`, () => {
+    const manager = SessionManager.inMemory("/tmp", { id: identity });
+    manager.appendMessage({ role: "user", content: "base", timestamp: 1 });
+    const baseline = log(manager.getHeader(), ...manager.getEntries());
+    manager.appendMessage({ role: "user", content: "suffix", timestamp: 2 });
+    const extended = log(manager.getHeader(), ...manager.getEntries());
+    assert.equal(validateSession(baseline), identity);
+    assert.deepEqual(mergeSession(baseline, baseline, extended), extended);
+  });
+for (const identity of [
+  "",
+  ".alpha",
+  "alpha.",
+  "_alpha",
+  "alpha_",
+  "-alpha",
+  "alpha-",
+  "a/b",
+  "a\\b",
+  "a b",
+  "é",
+  "a\n",
+])
+  test(`public session header ID grammar refuses ${JSON.stringify(identity)}`, () => {
+    assert.throws(() => SessionManager.inMemory("/tmp", { id: identity }));
+    const invalid = log({ ...header, id: identity }, entry("root", null));
+    assert.throws(() => validateSession(invalid));
+    assert.equal(mergeSession(base, base, invalid), undefined);
+  });
+
 const system = {
   role: "system",
   content: [{ type: "text", text: "instructions" }],

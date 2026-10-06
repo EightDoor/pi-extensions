@@ -235,11 +235,12 @@ export async function showSyncManager(
         return { kind: "stay" };
       },
       conflicts: async () => {
-        await runCancellableOperation(ctx, "Reviewing private conflicts…", "conflicts", runRoute, {
+        const result = await runCancellableOperation(ctx, "Reviewing private conflicts…", "conflicts", runRoute, {
           commitAware: true,
           signal: sessionSignal,
         });
-        return { kind: "stay" };
+        const disposition = await dispatchManagerResult(ctx, result, "sync", runRoute, sessionSignal);
+        return disposition.kind === "close" ? { kind: "close" } : { kind: "stay" };
       },
       back: async () => ({ kind: "back" }),
     },

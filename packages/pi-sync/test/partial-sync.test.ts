@@ -19,7 +19,7 @@ import {
 import { pruneCompletedConflicts } from "../src/sync/conflict-retention.js";
 import { showConflicts } from "../src/sync/conflict-review.js";
 import { snapshotFile } from "../src/sync/content-conflicts.js";
-import { readMergeJournal } from "../src/sync/merge-journal.js";
+import { readMergeJournal, writeMergeJournal } from "../src/sync/merge-journal.js";
 import { mergeSync } from "../src/sync/merged-sync.js";
 import { push } from "../src/sync/sync-mutations.js";
 import { v3S3Settings, withTempHome } from "./helpers.js";
@@ -175,6 +175,75 @@ test("partial accepted-state failure rolls forward once without republishing or 
     assert.equal(state.lastFileHashes["AGENTS.md"], f.state.lastFileHashes["AGENTS.md"]);
     assert.equal((await readMergeAncestor(f.config, state, "AGENTS.md"))?.toString(), "a\nb\nc\n");
   }));
+
+test("committed partial recovery preserves baseline-only equal deletions and rejects unpinned groups", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    await fs.writeFile(path.join(root, "prompts/deleted.md"), "old ancestor\n");
+    await push(f.context.ctx, { ...options, force: true }, undefined, () => f.backend);
+    const baseline = await readStateForConfig(f.config);
+    await fs.unlink(path.join(root, "prompts/deleted.md"));
+    await fs.writeFile(path.join(root, "prompts/safe.md"), "local conflict\n");
+    const oldHead = await f.backend.readHead();
+    assert.ok(oldHead);
+    const before = await f.backend.readSnapshot(oldHead.snapshotRef);
+    await f.backend.publishSnapshot(
+      {
+        ...before,
+        id: "deleted-conflict",
+        files: before.files
+          .filter((file) => file.path !== "prompts/deleted.md")
+          .map((file) =>
+            file.path === "prompts/safe.md"
+              ? snapshotFile(file.path, Buffer.from("remote conflict\n"))
+              : file.path === "AGENTS.md"
+                ? snapshotFile(file.path, Buffer.from("independent incoming\n"))
+                : file,
+          ),
+      },
+      expectedRemoteHead(oldHead),
+    );
+    const rename = fs.rename.bind(fs);
+    const failure = vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (String(target) === statePathForConfig(f.config)) throw new Error("state interrupted after commit");
+      return rename(source, target);
+    });
+    try {
+      await assert.rejects(mergeSync(f.context.ctx, options, () => f.backend));
+    } finally {
+      failure.mockRestore();
+    }
+    const journal = await readMergeJournal(f.config);
+    assert.ok(journal?.progress);
+    assert.ok(journal.progress.groups.some((group) => group.paths.includes("prompts/deleted.md")));
+    assert.ok(
+      [journal.before, journal.after, journal.upload].every(
+        (image) => !image.files.some((file) => file.path === "prompts/deleted.md"),
+      ),
+    );
+    const altered = structuredClone(journal);
+    assert.ok(altered.progress);
+    const group = altered.progress.groups[0];
+    assert.ok(group);
+    group.paths.push("settings.json");
+    await writeMergeJournal(f.config, altered);
+    await assert.rejects(readMergeJournal(f.config), /does not match retained artifact/);
+    group.paths.pop();
+    group.paths.push("prompts/unknown.md");
+    await writeMergeJournal(f.config, altered);
+    await assert.rejects(readMergeJournal(f.config), /Invalid partial acceptance metadata/);
+    await writeMergeJournal(f.config, journal);
+    const publication = vi.spyOn(f.backend, "publishSnapshot");
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    assert.equal(publication.mock.calls.length, 0);
+    assert.equal(await readMergeJournal(f.config), undefined);
+    await assert.rejects(fs.access(path.join(root, "prompts/deleted.md")));
+    const state = await readStateForConfig(f.config);
+    assert.equal(state.lastFileHashes["prompts/deleted.md"], baseline.lastFileHashes["prompts/deleted.md"]);
+    assert.ok(state.unresolved?.some((group) => group.paths.includes("prompts/deleted.md")));
+    assert.equal(await fs.readFile(path.join(root, "AGENTS.md"), "utf8"), "independent incoming\n");
+  }));
+
 test("remote collision dependency group is retained while an independent path progresses", async () =>
   withTempHome(async (root) => {
     const f = await fixture(root);

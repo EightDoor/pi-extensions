@@ -6,7 +6,10 @@ import type { Snapshot, SnapshotFile } from "../snapshot/snapshot-types.js";
 import { syncDirectory, writeJson } from "../state/json-file.js";
 import type { SyncState } from "../state/state-types.js";
 import { statePathForConfig, syncStateFingerprint } from "../state/sync-state-store.js";
-import { type FileMergePlan, mergePathIdentity, planFileMerge } from "./file-merge-planner.js";
+import { planFileMerge } from "./file-merge-planner.js";
+
+export { conflictGroups } from "./conflict-groups.js";
+
 import { mergeJournalIdentity } from "./merge-journal.js";
 export interface ConflictArtifact {
   version: 1;
@@ -36,43 +39,6 @@ async function directory(config: AnySyncConfig, create = false) {
 function tokenPath(config: AnySyncConfig, token: string) {
   if (!/^[a-f0-9-]{36}$/u.test(token)) throw new Error("Invalid conflict token.");
   return path.join(conflictDirectory(config), `${token}.json`);
-}
-export function conflictGroups(plan: Extract<FileMergePlan, { kind: "planned" }>, config: AnySyncConfig) {
-  const all = plan.decisions.map((item) => item.path);
-  const related = (left: string, right: string) => {
-    const a = mergePathIdentity(left);
-    const b = mergePathIdentity(right);
-    if (a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
-    const root = left.split("/")[0];
-    return (
-      (["extensions", "themes", "skills", "prompts"].includes(root ?? "") && right.split("/")[0] === root) ||
-      config.include.some(
-        (include) =>
-          !["settings.json", "AGENTS.md", "sessions"].includes(include) &&
-          a.startsWith(`${mergePathIdentity(include)}/`) &&
-          b.startsWith(`${mergePathIdentity(include)}/`),
-      )
-    );
-  };
-  const groups: { paths: string[]; reasons: string[] }[] = [];
-  for (const conflict of plan.conflicts) {
-    if (groups.some((group) => group.paths.includes(conflict.path))) continue;
-    const members = new Set([conflict.path]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const candidate of all)
-        if (!members.has(candidate) && [...members].some((member) => related(member, candidate))) {
-          members.add(candidate);
-          changed = true;
-        }
-    }
-    groups.push({
-      paths: [...members].sort(),
-      reasons: [...new Set(plan.conflicts.filter((item) => members.has(item.path)).map((item) => item.reason))],
-    });
-  }
-  return groups;
 }
 export async function saveConflictArtifact(
   config: AnySyncConfig,

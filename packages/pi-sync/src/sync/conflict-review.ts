@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createSyncBackend, type SyncBackendFactory } from "../backends/backend-factory.js";
 import type { CommandOptions } from "../commands/command-types.js";
 import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
@@ -6,6 +7,7 @@ import { readStateForConfig, syncStateFingerprint } from "../state/sync-state-st
 import { confirmMergeReview } from "../ui/merge-review.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
 import { conflictArtifactFingerprint, readConflictArtifact } from "./conflict-artifacts.js";
+import { conflictPreview } from "./conflict-preview.js";
 import { mergeSync } from "./merged-sync.js";
 import { captureMutationOwner } from "./sync-local.js";
 export async function showConflicts(
@@ -32,7 +34,11 @@ export async function showConflicts(
   const backend = await factory(config);
   validate();
   const labels = state.unresolved.map(
-    (group, index) => `${index + 1}: ${group.paths.length} paths · ${group.paths.map(safeTerminalText).join(", ")}`,
+    (group, index) =>
+      `${index + 1}: ${group.paths.length} paths · ${group.paths
+        .slice(0, 3)
+        .map((value) => truncateToWidth(safeTerminalText(value), 80))
+        .join(", ")}${group.paths.length > 3 ? ", …" : ""}`,
   );
   const choice = await ctx.ui.select("Review unresolved dependency group", [...labels, "Keep all unresolved"], {
     signal: options.signal,
@@ -48,39 +54,12 @@ export async function showConflicts(
     (group) => JSON.stringify(group.paths) === JSON.stringify(reference.paths),
   );
   if (groupIndex < 0) throw new Error("Conflict reference is stale; refresh sync.");
-  const version = (source: typeof artifact.local.files, filePath: string) => {
-    const file = source.find((item) => item.path === filePath);
-    if (!file) return "(absent)";
-    const bytes = Buffer.from(file.contentBase64, "base64");
-    const value = bytes.toString("utf8");
-    return [`sha256: ${file.sha256}`, Buffer.from(value).equals(bytes) ? value : `base64: ${file.contentBase64}`].join(
-      "\n",
-    );
-  };
-  const body = [
-    `Storage: ${safeTerminalText(backend.destination)}`,
-    "Private conflict versions. Historical artifact is not authority for changed bytes/head. No automatic activation.",
-    ...reference.paths.flatMap((filePath) => [
-      `Path: ${safeTerminalText(filePath)}`,
-      "Base:",
-      artifact.state.lastFileHashes[filePath] && !artifact.ancestors?.some((file) => file.path === filePath)
-        ? `(verified ancestor unavailable; sha256: ${artifact.state.lastFileHashes[filePath]})`
-        : version(artifact.ancestors ?? [], filePath),
-      "Local:",
-      version(artifact.local.files, filePath),
-      "Remote:",
-      version(artifact.remote.files, filePath),
-    ]),
-  ].join("\n");
-  if (Buffer.byteLength(body) > 2 * 1024 * 1024)
-    throw new Error(
-      "Conflict review exceeds the 2 MiB display bound; inspect private evidence and use a reviewed explicit direction.",
-    );
+  const body = conflictPreview(artifact, reference.paths, backend.destination);
   if (
     !(await confirmMergeReview(
       ctx,
       "Review private conflict versions",
-      body.split("\n").map(safeTerminalText).join("\n"),
+      body,
       options.signal,
       () => {
         try {

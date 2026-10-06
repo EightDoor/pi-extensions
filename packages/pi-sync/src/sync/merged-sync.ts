@@ -238,10 +238,22 @@ export async function mergeSync(
         /* Retain unknown evidence; absence remains explicit. */
       }
       await validate();
-      const previousArtifacts = new Map<string, Awaited<ReturnType<typeof readConflictArtifact>>>();
+      const previousArtifacts = new Map<
+        string,
+        {
+          artifact: Awaited<ReturnType<typeof readConflictArtifact>>;
+          local: ReturnType<typeof fileHashMap>;
+          remote: ReturnType<typeof fileHashMap>;
+        }
+      >();
       for (const token of new Set(state.unresolved?.map((group) => group.artifact) ?? [])) {
         try {
-          previousArtifacts.set(token, await readConflictArtifact(config, backend.identity, token));
+          const artifact = await readConflictArtifact(config, backend.identity, token);
+          previousArtifacts.set(token, {
+            artifact,
+            local: fileHashMap(artifact.local),
+            remote: fileHashMap(artifact.remote),
+          });
         } catch {
           /* Unknown evidence retained, never reused. */
         }
@@ -249,17 +261,16 @@ export async function mergeSync(
       }
       const localHashes = fileHashMap(local);
       const remoteHashes = fileHashMap(remote);
+      const previousGroups = new Map(state.unresolved?.map((item) => [JSON.stringify(item.paths), item]));
       const pending = groups.map((group) => {
-        const previous = state.unresolved?.find((item) => JSON.stringify(item.paths) === JSON.stringify(group.paths));
+        const previous = previousGroups.get(JSON.stringify(group.paths));
         const original = previous ? previousArtifacts.get(previous.artifact) : undefined;
         if (!original || !previous) return { group };
-        const originalLocal = fileHashMap(original.local);
-        const originalRemote = fileHashMap(original.remote);
         return group.paths.every(
           (filePath) =>
-            localHashes[filePath] === originalLocal[filePath] &&
-            remoteHashes[filePath] === originalRemote[filePath] &&
-            state.lastFileHashes[filePath] === original.state.lastFileHashes[filePath],
+            localHashes[filePath] === original.local[filePath] &&
+            remoteHashes[filePath] === original.remote[filePath] &&
+            state.lastFileHashes[filePath] === original.artifact.state.lastFileHashes[filePath],
         )
           ? { group, artifact: previous.artifact }
           : { group };
