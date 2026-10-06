@@ -28,7 +28,9 @@ export interface SearchResult {
 export function displayText(value: string): string {
   return Array.from(stripVTControlCharacters(value), (char) => {
     const code = char.charCodeAt(0);
-    return code < 32 || (code >= 127 && code <= 159) ? " " : char;
+    // Directional formatting can spoof adjacent terminal text. Keep legitimate
+    // Unicode joiners (ZWJ/ZWNJ), and leave the request/structured payload intact.
+    return code < 32 || (code >= 127 && code <= 159) || /\p{Bidi_Control}/u.test(char) ? " " : char;
   }).join("");
 }
 function bounded(value: string, maxBytes: number): string {

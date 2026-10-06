@@ -4,10 +4,14 @@ import { displayText, outputSchema, resultText, search } from "./client.js";
 import { DEFAULTS, type Settings, SettingsStore } from "./settings.js";
 import { showSettings } from "./settings-ui.js";
 
+class ExposureRecoveryError extends Error {}
+const RECOVERY_ERROR = "Settings recovery failed; repair pi-web-search.json and /reload before searching or saving.";
+
 export default async function webSearch(pi: ExtensionAPI) {
   const store = new SettingsStore();
   let settings: Settings = { ...DEFAULTS };
   let loadError: string | undefined;
+  let recoveryRequired = false;
   try {
     settings = await store.load();
   } catch {
@@ -48,8 +52,15 @@ export default async function webSearch(pi: ExtensionAPI) {
   }
   pi.registerTool(tool(settings.exposure));
 
-  function apply(next: Settings) {
-    if (next.exposure !== settings.exposure) {
+  function apply(next: Settings, resetIndirect = false) {
+    if (recoveryRequired) throw new ExposureRecoveryError(RECOVERY_ERROR);
+    const indirect = next.exposure !== "direct" && next.exposure !== "model-only";
+    // A real reload recreates the factory but Pi preserves old active names.
+    // Explicit reload resets our indirect declaration, not ordinary session switches.
+    if (
+      next.exposure !== settings.exposure ||
+      (resetIndirect && indirect && pi.getActiveTools().includes("web_search"))
+    ) {
       const previous = settings.exposure;
       const active = pi.getActiveTools();
       try {
@@ -60,8 +71,12 @@ export default async function webSearch(pi: ExtensionAPI) {
           pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "web_search"));
         }
       } catch {
-        pi.registerTool(tool(previous));
-        pi.setActiveTools(active);
+        try {
+          pi.registerTool(tool(previous));
+          pi.setActiveTools(active);
+        } catch {
+          throw new ExposureRecoveryError("Could not restore tool exposure; reload required.");
+        }
         throw new Error("Could not apply tool exposure; previous exposure restored.");
       }
     }
@@ -69,17 +84,19 @@ export default async function webSearch(pi: ExtensionAPI) {
     loadError = undefined;
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     owner?.controller.abort();
     const next: Owner = { manager: ctx.sessionManager, controller: new AbortController() };
     owner = next;
     try {
       const loaded = await store.load();
       if (!valid(next)) return;
-      apply(loaded);
+      apply(loaded, event.reason === "reload");
     } catch {
       if (!valid(next)) return;
-      loadError = "Invalid pi-web-search.json; repair the file before searching or saving settings.";
+      loadError = recoveryRequired
+        ? RECOVERY_ERROR
+        : "Invalid pi-web-search.json; repair the file before searching or saving settings.";
       if (ctx.hasUI) ctx.ui.notify(loadError, "warning");
     }
   });
@@ -137,30 +154,37 @@ export default async function webSearch(pi: ExtensionAPI) {
         () => settings,
         async (patch, signal) => {
           if (!valid(active)) throw new Error("Session changed.");
+          if (recoveryRequired) throw new ExposureRecoveryError(RECOVERY_ERROR);
           const previous = { ...settings };
           const next = await store.save(patch, signal);
           // A committed save may finish after UI disposal; apply only in the owning session.
           if (!valid(active)) return;
-          try {
+          const applyAtIdle = (value: Settings) => {
             // Commands can overlap an SDK-owned run even after the menu opened at idle.
-            // Never change a declaration mid-run; roll this explicit edit back instead.
-            if (next.exposure !== settings.exposure && !ctx.isIdle()) throw new Error("Exposure requires idle.");
-            apply(next);
-          } catch {
+            // Recovery follows the same guard: external fields can change exposure too.
+            if (value.exposure !== settings.exposure && !ctx.isIdle()) throw new Error("Exposure requires idle.");
+            apply(value);
+          };
+          try {
+            applyAtIdle(next);
+          } catch (error) {
             const rollback: Partial<Settings> = {};
             for (const key of Object.keys(patch) as (keyof Settings)[])
               Object.assign(rollback, { [key]: previous[key] });
             try {
-              await store.save(rollback);
+              const restored = await store.save(rollback);
+              if (!valid(active)) return;
+              if (error instanceof ExposureRecoveryError) throw error;
+              applyAtIdle(restored);
             } catch {
               if (valid(active)) {
-                loadError =
-                  "Exposure application and disk rollback failed; repair pi-web-search.json and /reload before searching.";
+                recoveryRequired = true;
+                loadError = RECOVERY_ERROR;
                 ctx.ui.notify(loadError, "error");
               }
               throw new Error("Settings recovery failed.");
             }
-            throw new Error("Exposure change failed; previous settings restored.");
+            throw new Error("Exposure change failed; edited preferences restored from the latest document.");
           }
         },
         active.controller.signal,

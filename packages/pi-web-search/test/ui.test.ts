@@ -158,16 +158,18 @@ test("pasted controls cannot trigger shortcuts or escape through the invalid-dra
     harness.screen.handleInput?.("\u001b[200~");
     harness.screen.handleInput?.("\u0003");
     harness.screen.handleInput?.("\u0018");
-    harness.screen.handleInput?.("\u001b]52;c;secret\u0007a");
+    harness.screen.handleInput?.("\u001b]52;c;secret\u0007a\u202e\u2066");
     harness.screen.handleInput?.("\u001b[201~");
     const preview = harness.screen.render(80).join("\n");
     assert.match(preview, /Invalid characters/);
     assert.ok(!preview.includes("\u001b]52"));
     assert.ok(!preview.includes("\u0003"));
+    assert.doesNotMatch(preview, /\p{Bidi_Control}/u);
     harness.screen.handleInput?.("\r");
     await changed;
     assert.ok(patch?.accountId?.includes("\u0003")); // validation sees the original invalid draft
     assert.ok(patch?.accountId?.includes("\u001b]52"));
+    assert.ok(patch?.accountId?.includes("\u202e\u2066"));
     harness.screen.handleInput?.("\u0018");
     await running;
   } finally {

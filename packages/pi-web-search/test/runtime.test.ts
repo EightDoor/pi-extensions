@@ -45,13 +45,15 @@ async function harness(exposure: Settings["exposure"] = "codemode") {
   });
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
   const registry = new ModelRegistry(runtime);
-  registry.registerProvider(faux.provider, {
-    api: faux.api,
-    apiKey: "fixture",
-    baseUrl: "http://localhost",
-    streamSimple: faux.streamSimple,
-    models: faux.models,
-  });
+  const registerFaux = () =>
+    registry.registerProvider(faux.provider, {
+      api: faux.api,
+      apiKey: "fixture",
+      baseUrl: "http://localhost",
+      streamSimple: faux.streamSimple,
+      models: faux.models,
+    });
+  registerFaux();
   const model = registry.find(faux.provider, "fixture");
   assert.ok(model);
   const settingsManager = SettingsManager.inMemory({
@@ -89,6 +91,7 @@ async function harness(exposure: Settings["exposure"] = "codemode") {
     faux,
     module,
     configure,
+    registerFaux,
     errors,
     async close() {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -159,6 +162,46 @@ test("all explicit exposure transitions change only our declaration and reload u
     await h.close();
   }
 });
+
+test.each(EXPOSURES)("real AgentSession.reload reconciles every transition from %s", async (from) => {
+  const h = await harness(from);
+  try {
+    const other = h.session.getActiveToolNames().filter((name) => name !== "web_search");
+    for (const to of EXPOSURES) {
+      await h.configure(from);
+      await h.session.reload();
+      if (from !== "hidden") h.session.setActiveToolsByName([...h.session.getActiveToolNames(), "web_search"]);
+      await h.configure(to);
+      await h.session.reload();
+      assert.equal(h.session.getAllTools().find((tool) => tool.name === "web_search")?.exposure, to);
+      assert.equal(h.session.getActiveToolNames().includes("web_search"), matrix[to].active, `${from} -> ${to}`);
+      assert.equal(h.session.getCallableToolNames().includes("web_search"), matrix[to].callable, `${from} -> ${to}`);
+      assert.deepEqual(
+        h.session.getActiveToolNames().filter((name) => name !== "web_search"),
+        other,
+      );
+    }
+    assert.deepEqual(h.errors, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test.each(["codemode", "deferred"] as const)(
+  "non-reload session start preserves explicit %s activation",
+  async (exposure) => {
+    const h = await harness(exposure);
+    try {
+      h.session.setActiveToolsByName([...h.session.getActiveToolNames(), "web_search"]);
+      const active = h.session.getActiveToolNames();
+      await h.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+      assert.deepEqual(h.session.getActiveToolNames(), active);
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
 
 test("Codemode discovers web_search, receives structured data, and preserves ordinary request prefixes", async () => {
   const h = await harness();
@@ -243,6 +286,35 @@ test.each(EXPOSURES)(
     }
   },
 );
+
+test.each(EXPOSURES)("real reload to %s preserves ordinary provider prefixes in the new epoch", async (exposure) => {
+  const h = await harness("direct");
+  const contexts: TranscriptContext["messages"][] = [];
+  try {
+    h.faux.setResponses(
+      Array.from({ length: 3 }, () => (context: TranscriptContext) => {
+        contexts.push(structuredClone(context.messages));
+        return h.module.fauxAssistantMessage("done");
+      }),
+    );
+    await h.session.prompt("Before real reload.");
+    await h.configure(exposure);
+    await h.session.reload();
+    // Pi reload intentionally resets provider registrations; restore only the test provider.
+    h.registerFaux();
+    await h.session.prompt("First turn after real reload.");
+    const active = h.session.getActiveToolNames();
+    await h.session.prompt("Ordinary turn in the same epoch.");
+    assert.equal(contexts.length, 3);
+    const baseline = normalizedMessages(contexts[1]);
+    assert.deepEqual(normalizedMessages(contexts[2]).slice(0, baseline.length), baseline);
+    assert.deepEqual(h.session.getActiveToolNames(), active);
+    assert.equal(active.includes("web_search"), matrix[exposure].active);
+    assert.deepEqual(h.errors, []);
+  } finally {
+    await h.close();
+  }
+});
 
 test("print-mode slash command has observable help, rejects arguments and does not call a model", async () => {
   const h = await harness();

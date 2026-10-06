@@ -62,6 +62,220 @@ test.each(["print", "json", "rpc"])(
   },
 );
 
+test.each(["print", "json", "rpc"])(
+  "%s reports strip directional controls from the configured agent path",
+  async (mode) => {
+    process.env.PI_CODING_AGENT_DIR = join(root, "agent\u202e\u2066");
+    const h = await setup(mode);
+    const command = h.commands.get("web-search");
+    assert.ok(command);
+    let rejection = "";
+    if (mode === "print")
+      await assert.rejects(command.handler("", h.ctx) as Promise<unknown>, (error: Error) => {
+        rejection = error.message;
+        return true;
+      });
+    else await command.handler("", h.ctx);
+    const output = mode === "print" ? rejection : JSON.stringify(mode === "rpc" ? h.notifications : h.sentMessages);
+    assert.doesNotMatch(output, /\p{Bidi_Control}/u);
+    assert.match(output, /pi-web-search.json/);
+  },
+);
+
+test.each(["runtime-failure", "busy"])("rollback adopts external fields before another edit: %s", async (scenario) => {
+  let restored: Settings | undefined;
+  vi.doMock("../src/settings-ui.js", () => ({
+    showSettings: async (
+      _ctx: unknown,
+      current: () => Settings,
+      save: (patch: Partial<Settings>, signal: AbortSignal) => Promise<void>,
+      signal: AbortSignal,
+    ) => {
+      await writeFile(
+        join(root, "pi-web-search.json"),
+        JSON.stringify({
+          accountId: "a".repeat(32),
+          apiToken: "TOP_SECRET",
+          limit: 8,
+          gatewayId: "external",
+          future: { keep: true },
+        }),
+        { mode: 0o600 },
+      );
+      await assert.rejects(save({ exposure: "direct" }, signal));
+      restored = { ...current() };
+      await save({ limit: current().limit + 1 }, signal);
+    },
+  }));
+  const h = await setup("tui");
+  const ctx = h.ctx as unknown as ExtensionCommandContext;
+  ctx.ui.select = async () => "Settings";
+  if (scenario === "busy") ctx.isIdle = () => false;
+  else {
+    const register = h.rawPi.registerTool;
+    let fail = true;
+    h.rawPi.registerTool = (tool) => {
+      if (fail && (tool as ToolDefinition).exposure === "direct") {
+        fail = false;
+        throw new Error("runtime failure");
+      }
+      register(tool);
+    };
+  }
+  await h.commands.get("web-search")?.handler("", ctx);
+  const { readFile } = await import("node:fs/promises");
+  const doc = JSON.parse(await readFile(join(root, "pi-web-search.json"), "utf8"));
+  assert.equal(restored?.exposure, "codemode");
+  assert.equal(restored?.limit, 8);
+  assert.equal(restored?.gatewayId, "external");
+  assert.equal(doc.limit, 9);
+  assert.deepEqual(doc.future, { keep: true });
+  let body: unknown;
+  vi.stubGlobal("fetch", async (_url: string, options: RequestInit) => {
+    body = JSON.parse(String(options.body));
+    return new Response(JSON.stringify({ items: [], metadata: {} }));
+  });
+  await h.tool.execute("call", { query: "news" }, undefined, undefined, ctx as unknown as ExtensionToolContext);
+  assert.equal((body as { limit: number }).limit, 9);
+});
+
+test.each(["busy-restoration", "runtime-restoration", "previous-definition-restoration"])(
+  "recovery fails closed without mid-run exposure changes: %s",
+  async (scenario) => {
+    let failed = false;
+    let shown: Settings | undefined;
+    vi.doMock("../src/settings-ui.js", () => ({
+      showSettings: async (
+        _ctx: unknown,
+        current: () => Settings,
+        save: (patch: Partial<Settings>, signal: AbortSignal) => Promise<void>,
+        signal: AbortSignal,
+      ) => {
+        await writeFile(
+          join(root, "pi-web-search.json"),
+          JSON.stringify({
+            accountId: "a".repeat(32),
+            apiToken: "TOP_SECRET",
+            exposure: scenario === "previous-definition-restoration" ? "codemode" : "direct",
+            limit: 8,
+          }),
+          { mode: 0o600 },
+        );
+        try {
+          await save(scenario === "previous-definition-restoration" ? { exposure: "direct" } : { limit: 7 }, signal);
+        } catch {
+          failed = true;
+        }
+        // A later preference-only save must not clear a failed runtime recovery.
+        await assert.rejects(save({ limit: 6 }, signal), /recovery failed/);
+        shown = { ...current() };
+      },
+    }));
+    const h = await setup("tui");
+    const ctx = h.ctx as unknown as ExtensionCommandContext;
+    ctx.ui.select = async () => "Settings";
+    let idleChecks = 0;
+    if (scenario !== "previous-definition-restoration")
+      ctx.isIdle = () => {
+        idleChecks++;
+        return scenario === "runtime-restoration" && idleChecks > 1;
+      };
+    const register = h.rawPi.registerTool;
+    const attempts: string[] = [];
+    h.rawPi.registerTool = (tool) => {
+      attempts.push((tool as ToolDefinition).exposure ?? "direct");
+      if (
+        scenario === "previous-definition-restoration" ||
+        (scenario === "runtime-restoration" && (tool as ToolDefinition).exposure === "direct")
+      )
+        throw new Error("TOP_SECRET runtime failure");
+      register(tool);
+    };
+    const request = vi.fn();
+    vi.stubGlobal("fetch", request);
+    await h.commands.get("web-search")?.handler("", ctx);
+    assert.ok(failed);
+    assert.equal(shown?.exposure, "codemode");
+    const { readFile } = await import("node:fs/promises");
+    const doc = JSON.parse(await readFile(join(root, "pi-web-search.json"), "utf8"));
+    assert.equal(doc.exposure, scenario === "previous-definition-restoration" ? "codemode" : "direct");
+    assert.equal(doc.limit, scenario === "previous-definition-restoration" ? 8 : 5);
+    if (scenario === "busy-restoration") assert.deepEqual(attempts, []);
+    await assert.rejects(
+      h.tool.execute("call", { query: "news" }, undefined, undefined, ctx as unknown as ExtensionToolContext),
+      /recovery failed/,
+    );
+    assert.equal(request.mock.calls.length, 0);
+    assert.doesNotMatch(JSON.stringify(h.notifications), /TOP_SECRET/);
+  },
+);
+
+test("replacement during rollback prevents stale restored state from being applied", async () => {
+  vi.doMock("../src/settings-ui.js", () => ({
+    showSettings: async (
+      _ctx: unknown,
+      _current: () => Settings,
+      save: (patch: Partial<Settings>, signal: AbortSignal) => Promise<void>,
+      signal: AbortSignal,
+    ) => {
+      await writeFile(
+        join(root, "pi-web-search.json"),
+        JSON.stringify({ accountId: "a".repeat(32), apiToken: "TOP_SECRET", limit: 8 }),
+        { mode: 0o600 },
+      );
+      await save({ exposure: "direct" }, signal);
+    },
+  }));
+  const h = await setup("tui");
+  const ctx = h.ctx as unknown as ExtensionCommandContext;
+  ctx.ui.select = async () => "Settings";
+  const replacement = createMockContext({ mode: "print" });
+  const register = h.rawPi.registerTool;
+  h.rawPi.registerTool = (tool) => {
+    if ((tool as ToolDefinition).exposure === "direct") throw new Error("runtime failure");
+    register(tool);
+  };
+  const { SettingsStore } = await import("../src/settings.js");
+  const save = SettingsStore.prototype.save;
+  let calls = 0;
+  vi.spyOn(SettingsStore.prototype, "save").mockImplementation(async function (
+    this: InstanceType<typeof SettingsStore>,
+    patch,
+    signal,
+  ) {
+    const number = ++calls;
+    const restored = await save.call(this, patch, signal);
+    if (number === 2) {
+      await writeFile(
+        join(root, "pi-web-search.json"),
+        JSON.stringify({ accountId: "a".repeat(32), apiToken: "TOP_SECRET", limit: 10 }),
+        { mode: 0o600 },
+      );
+      await h.emit("session_start", replacement.ctx);
+    }
+    return restored;
+  });
+  await h.commands.get("web-search")?.handler("", ctx);
+  let limit: unknown;
+  vi.stubGlobal("fetch", async (_url: string, options: RequestInit) => {
+    limit = JSON.parse(String(options.body)).limit;
+    return new Response(JSON.stringify({ items: [], metadata: {} }));
+  });
+  await h.tool.execute(
+    "new",
+    { query: "news" },
+    undefined,
+    undefined,
+    replacement.ctx as unknown as ExtensionToolContext,
+  );
+  assert.equal(limit, 10);
+  await assert.rejects(
+    h.tool.execute("old", { query: "news" }, undefined, undefined, ctx as unknown as ExtensionToolContext),
+    /not active/,
+  );
+  assert.equal(h.notifications.length, 0);
+});
+
 test.each(["session_shutdown", "session_start"])(
   "%s cancels pending network work even when headless UI is shared",
   async (event) => {
@@ -230,7 +444,7 @@ test.each(["success", "runtime-failure", "busy", "recovery-failure"])(
     if (scenario === "recovery-failure") {
       await assert.rejects(
         h.tool.execute("call", { query: "news" }, undefined, undefined, ctx as unknown as ExtensionToolContext),
-        /rollback failed/,
+        /recovery failed/,
       );
       assert.match(JSON.stringify(h.notifications), /repair pi-web-search.json/);
     }

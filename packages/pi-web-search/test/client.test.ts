@@ -125,6 +125,40 @@ test("structured and text output stay bounded and terminal sanitization does not
   assert.equal(displayText("\x1b]52;c;secret\x07safe"), "safe");
 });
 
+test.each([
+  "\u061c",
+  "\u200e",
+  "\u200f",
+  "\u202a",
+  "\u202b",
+  "\u202c",
+  "\u202d",
+  "\u202e",
+  "\u2066",
+  "\u2067",
+  "\u2068",
+  "\u2069",
+])("display removes Unicode directional formatting control %j", (control) => {
+  assert.equal(displayText(`safe${control}text`), "safe text");
+});
+
+test("display keeps legitimate Unicode joining while raw search fields retain directional controls", async () => {
+  const joined = "فارسی\u200c👩\u200d💻";
+  assert.equal(displayText(joined), joined);
+  const raw = "safe\u202e\u2066text";
+  let sent: unknown;
+  const result = await search(settings, raw, 1, signal(), async (_url, options) => {
+    sent = JSON.parse(String(options?.body)).query;
+    return response({ items: [{ url: `https://example.com/${raw}`, title: raw, description: raw }], metadata: {} });
+  });
+  assert.equal(sent, raw);
+  assert.equal(result.metadata.query, raw);
+  assert.equal(result.items[0].title, raw);
+  assert.equal(result.items[0].description, raw);
+  assert.equal(result.items[0].url, `https://example.com/${raw}`);
+  assert.doesNotMatch(resultText(result), /\p{Bidi_Control}/u);
+});
+
 test("credentials echoed by a successful provider response are redacted", async () => {
   const result = await search(settings, "query", 1, signal(), async () =>
     response({

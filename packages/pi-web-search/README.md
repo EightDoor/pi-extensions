@@ -122,6 +122,7 @@ Exposure controls tool visibility, not authorization:
 Explicit Pi activation can directly declare `codemode`/`deferred` tools.
 Choosing a different exposure in this extension's Settings explicitly resets its own declaration to that exposure's default and leaves other tools alone.
 This is an intentional model-visible prefix transition, not ordinary-turn lazy loading; subsequent ordinary turns keep the tool definition and prompt prefix stable.
+`/reload` reapplies the configured indirect (`codemode`, `deferred`, or `hidden`) exposure as inactive, including after explicit Pi activation; unchanged non-reload session switches preserve explicit activation.
 The extension does not automatically enable Codemode or `tool_search`.
 
 Missing-file reads do not create files or directories.
@@ -129,7 +130,8 @@ An explicit preference save creates the file, patches only changed fields in the
 A malformed, invalid, oversized, symlinked, nonregular, or insecure file blocks saves and searches until repaired.
 Settings files are limited to 64 KB and require `0600` permissions on POSIX.
 Writes use a private same-directory temporary file followed by rename, with ordered in-process saves, failure rollback, and temporary-file cleanup.
-If runtime exposure application fails, the previous preferences are restored; if the recovery write also fails, searches stop until you repair the file and run `/reload`.
+If runtime exposure application fails, edited preferences are restored from the latest valid document and unrelated external changes become effective.
+Recovery never changes an exposure mid-run; if disk or runtime recovery fails, searches stop until you repair the file and run `/reload`.
 Separate Pi processes are not protected against concurrent edits; avoid editing the same file from multiple processes.
 A save already committed by rename remains saved even if the UI closes immediately afterward.
 
@@ -148,7 +150,8 @@ Without an alias, Cloudflare uses the provider's gateway key named `default` if 
 See [Cloudflare's BYOK behavior](https://developers.cloudflare.com/web-search/how-to-use/#bring-your-own-key-byok).
 This package does not store underlying search-provider keys or promise a fixed search price.
 
-Terminal controls are stripped at display boundaries; bounded structured result fields retain raw source text except for credential redaction.
+VT, C0/C1, and Unicode directional formatting controls are removed at display boundaries before wrapping; legitimate Unicode joiners remain intact.
+Bounded structured result fields and requests retain raw source text except for credential redaction in returned fields.
 URLs and snippets are untrusted and must not be treated as agent instructions.
 
 ## 🚧 Limitations
