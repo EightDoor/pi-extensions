@@ -59,6 +59,14 @@ import {
 const VERSION = 1;
 const POST_LOCAL_COMMIT_TIMEOUT_MS = 30_000;
 
+/** Whole-direction acceptance must never forget withheld state without an explicit recovery choice. */
+function requireResolvedDirectionalProgress(state: SyncState, options: CommandOptions, allowForce = true) {
+  if (state.unresolved?.length && (options.auto || !options.force || !allowForce))
+    throw new Error(
+      "Unresolved partial conflicts remain. Review /sync conflicts or explicitly choose push --force or pull --force; automatic transfer and rollback cannot accept unresolved groups.",
+    );
+}
+
 export class PublicationStatePersistenceError extends Error {
   readonly head: RemoteHead;
   readonly backupPath?: string;
@@ -104,9 +112,11 @@ export async function push(
   const config = input?.config ?? (await loadConfig(options.setup));
   throwIfAborted(options.signal);
   await requireNoMergeJournal(config, options);
+  const state = input?.state ?? (await readStateForConfig(config));
+  validateMutation();
+  requireResolvedDirectionalProgress(state, options);
   setSyncStatus(ctx, `pushing ${config.setupName}`);
   const backend = input?.backend ?? (await factory(config));
-  const state = input?.state ?? (await readStateForConfig(config));
   throwIfAborted(options.signal);
   const localRaw =
     input?.local ?? (await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config)));
@@ -203,6 +213,8 @@ export async function push(
     if (!sameHashes(fileHashMap(current), fileHashMap(localRaw)))
       throw new Error("Local content changed during recovery review; retry from current bytes.");
   }
+  requireResolvedDirectionalProgress(await readStateForConfig(config), options);
+  validateMutation();
   const result = await backend.publishSnapshot(upload, expectedRemoteHead(head), {
     signal: options.signal,
     onCommit: options.onCommit,
@@ -257,7 +269,8 @@ export async function pull(
   setSyncStatus(ctx, `pulling ${config.setupName}`);
   const backend = await factory(config);
   const state = await readStateForConfig(config);
-  throwIfAborted(options.signal);
+  validateMutation();
+  requireResolvedDirectionalProgress(state, options);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
   throwIfAborted(options.signal);
   const { head, snapshot: remote } = await readRemoteSnapshot(backend, config, options.signal);
@@ -340,6 +353,7 @@ export async function pull(
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, physical);
   if (recoveringMerge) await requireFreshRecovery();
+  requireResolvedDirectionalProgress(await readStateForConfig(config), options);
   validateMutation();
   options.onCommit?.();
   const lastFileHashes = await applySnapshot(physical, protectedSessionPaths(ctx), {
@@ -538,6 +552,9 @@ export async function rollback(
   }
   // --force is only a rollback compatibility flag, not a reviewed merge-recovery direction.
   await requireNoMergeJournal(config);
+  const state = await readStateForConfig(config);
+  validateMutation();
+  requireResolvedDirectionalProgress(state, options, false);
   const decoded = await backend.readSnapshot(target, options.signal);
   validatePortableSnapshot(decoded);
   if (!sameLocalFields(decoded.localFields, config.localFields))
@@ -550,7 +567,6 @@ export async function rollback(
   );
   const remote = portableSnapshot(regenerateSnapshotIdentity(selected), config.localFields);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
-  const state = await readStateForConfig(config);
   const expectedHead = await backend.readHead(options.signal);
   const currentRemote = expectedHead ? await readSnapshotForHead(backend, expectedHead, options.signal) : undefined;
   validateMutation();
@@ -581,7 +597,8 @@ export async function rollback(
   throwIfAborted(options.signal);
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, remote);
-  throwIfAborted(options.signal);
+  requireResolvedDirectionalProgress(await readStateForConfig(config), options, false);
+  validateMutation();
   options.onCommit?.();
   const lastFileHashes = await applySnapshot(physical, protectedSessionPaths(ctx), {
     include: config.include,

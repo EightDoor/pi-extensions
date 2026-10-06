@@ -5,7 +5,6 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 import { expectedRemoteHead } from "../src/backends/sync-backend.js";
-import type { CommandOptions } from "../src/commands/command-types.js";
 import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { readMergeAncestor } from "../src/state/merge-baseline-store.js";
@@ -25,52 +24,9 @@ import { readMergeJournal, writeMergeJournal } from "../src/sync/merge-journal.j
 import { mergeSync } from "../src/sync/merged-sync.js";
 import { push } from "../src/sync/sync-mutations.js";
 import { fileHashMap } from "../src/sync/sync-state.js";
-import { v3S3Settings, withTempHome } from "./helpers.js";
-import { MemorySyncBackend } from "./memory-sync-backend.js";
+import { withTempHome } from "./helpers.js";
+import { fixture, options, publish } from "./partial-sync-fixture.js";
 
-const options: CommandOptions = {
-  args: [],
-  yes: true,
-  force: false,
-  stale: false,
-  silent: false,
-  reload: false,
-  auto: false,
-};
-async function fixture(root: string, portablePolicy = true) {
-  await fs.mkdir(path.join(root, "prompts"), { recursive: true });
-  const settings = v3S3Settings({ include: ["settings.json", "AGENTS.md", "prompts"] });
-  Object.assign(settings.syncSetups.home.sync, {
-    mergeContent: true,
-    partialSync: true,
-    ...(portablePolicy ? { localFields: [] } : {}),
-  });
-  await fs.writeFile(localConfigPath(), JSON.stringify({ ...settings, version: 5 }));
-  await fs.writeFile(path.join(root, "settings.json"), "{}\n");
-  await fs.writeFile(path.join(root, "AGENTS.md"), "a\nb\nc\n");
-  await fs.writeFile(path.join(root, "prompts", "safe.md"), "base\n");
-  const backend = new MemorySyncBackend();
-  const context = createMockContext({ hasUI: true });
-  await push(context.ctx, options, undefined, () => backend);
-  const config = await loadConfig();
-  const state = await readStateForConfig(config);
-  return { backend, context, config, state };
-}
-async function publish(f: Awaited<ReturnType<typeof fixture>>, values: Record<string, string>) {
-  const head = await f.backend.readHead();
-  assert.ok(head);
-  const original = await f.backend.readSnapshot(head.snapshotRef);
-  return f.backend.publishSnapshot(
-    {
-      ...original,
-      id: `remote-${Math.random()}`,
-      files: original.files.map((file) =>
-        values[file.path] === undefined ? file : snapshotFile(file.path, Buffer.from(values[file.path] ?? "")),
-      ),
-    },
-    expectedRemoteHead(head),
-  );
-}
 test("verified text ancestor merges independent edits end to end", async () =>
   withTempHome(async (root) => {
     const f = await fixture(root);

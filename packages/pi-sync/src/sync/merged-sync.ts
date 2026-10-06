@@ -41,7 +41,7 @@ import {
   readMergeJournal,
   writeMergeJournal,
 } from "./merge-journal.js";
-import { type PartialProgress, progressState } from "./partial-progress.js";
+import { acceptedMergeFiles, type PartialProgress, progressState } from "./partial-progress.js";
 import {
   formatRemoteSelectionStatus,
   readSnapshotForHead,
@@ -316,13 +316,7 @@ export async function mergeSync(
     let progress: PartialProgress | undefined;
     const accepted = regenerateSnapshotIdentity({
       ...local,
-      files: plan.decisions.flatMap((decision) =>
-        decision.kind === "accepted" && !withheld.has(decision.path) && decision.file
-          ? [decision.file]
-          : withheld.has(decision.path)
-            ? local.files.filter((file) => file.path === decision.path)
-            : [],
-      ),
+      files: acceptedMergeFiles(plan.decisions, local.files, withheld),
     });
     const after = overlayLocalFields(accepted, localRaw, config.localFields);
     if (config.include.includes("sessions")) requireStableMergeSessionRoot(localRaw, after);

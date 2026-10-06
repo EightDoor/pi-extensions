@@ -40,7 +40,16 @@ function replacementPaths(removed: Set<string>, afterHashes: Readonly<Record<str
   for (const relative of [...removed]) {
     let parent = path.posix.dirname(relative);
     while (parent !== ".") {
-      if (afterHashes[parent]) removed.add(parent);
+      if (afterHashes[parent]) {
+        for (
+          let directory = path.posix.dirname(relative);
+          directory !== parent;
+          directory = path.posix.dirname(directory)
+        )
+          removed.add(directory);
+        removed.add(parent);
+        break;
+      }
       parent = path.posix.dirname(parent);
     }
   }
@@ -131,6 +140,12 @@ async function assertReviewedTree(directory: string, relative: string, beforeHas
   }
 }
 
+function hasBlockingFileAncestor(target: string, files: ReadonlySet<string>) {
+  for (let parent = path.dirname(target); parent !== path.dirname(parent); parent = path.dirname(parent))
+    if (files.has(parent)) return true;
+  return false;
+}
+
 async function resolvedTargetIdentity(target: string, options: SnapshotOptions) {
   // Resolve the nearest existing ancestor too: roots may alias even when a target is absent.
   let ancestor = target;
@@ -205,7 +220,14 @@ export async function applyMergedSnapshot(
   const beforeHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(before));
   const afterHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(after));
   const paths = [...new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])].sort();
-  const changed = paths.filter((item) => beforeHashes[item] !== afterHashes[item]);
+  const replacements = replacementPaths(
+    new Set(paths.filter((item) => beforeHashes[item] && !afterHashes[item])),
+    afterHashes,
+  );
+  const intermediateDirectories = [...replacements].filter((item) => !beforeHashes[item] && !afterHashes[item]);
+  const changed = [
+    ...new Set([...paths.filter((item) => beforeHashes[item] !== afterHashes[item]), ...intermediateDirectories]),
+  ].sort();
   const protectedKeys = new Set([...protectedPaths].map(mergePathIdentity));
   if (changed.some((item) => protectedKeys.has(mergePathIdentity(item)))) {
     throw new Error("A merged transfer targets the current session; review is required.");
@@ -230,6 +252,15 @@ export async function applyMergedSnapshot(
     await validate();
     const current = await createSnapshot(before.profile, options);
     const currentHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(current));
+    const blockingFiles = new Set(
+      paths
+        .filter(
+          (relative) =>
+            (beforeHashes[relative] && !afterHashes[relative]) ||
+            (afterHashes[relative] && currentHashes[relative] === afterHashes[relative]),
+        )
+        .map((relative) => snapshotTarget(root, relative, options.sessionDir)),
+    );
     for (const item of changed) {
       if (currentHashes[item] !== beforeHashes[item] && currentHashes[item] !== afterHashes[item]) {
         throw new Error(
@@ -243,19 +274,7 @@ export async function applyMergedSnapshot(
           throw new Error("Merged transfer target is no longer an independent regular file.");
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (
-          code !== "ENOENT" &&
-          !(
-            code === "ENOTDIR" &&
-            paths.some(
-              (relative) =>
-                beforeHashes[relative] &&
-                !afterHashes[relative] &&
-                target.startsWith(`${snapshotTarget(root, relative, options.sessionDir)}${path.sep}`),
-            )
-          )
-        )
-          throw error;
+        if (code !== "ENOENT" && !(code === "ENOTDIR" && hasBlockingFileAncestor(target, blockingFiles))) throw error;
       }
     }
     const plan = preflightSnapshotApply(root, after, current, options);
@@ -263,6 +282,18 @@ export async function applyMergedSnapshot(
     plan.deletes = plan.deletes.filter((target) => targetSet.has(target));
     await preflightSnapshotMutations(root, plan, options.sessionDir, options);
     const deletedTargets = new Set(plan.deletes);
+    for (const relative of intermediateDirectories) {
+      for (let parent = path.posix.dirname(relative); parent !== "."; parent = path.posix.dirname(parent)) {
+        if (afterHashes[parent] && deletedTargets.has(snapshotTarget(root, parent, options.sessionDir))) {
+          plan.deletes.push(snapshotTarget(root, relative, options.sessionDir));
+          break;
+        }
+      }
+    }
+    // A parent must remain until every reviewed leaf and intermediate directory is gone.
+    plan.deletes.sort(
+      (left, right) => right.split(path.sep).length - left.split(path.sep).length || left.localeCompare(right),
+    );
     const removed = replacementPaths(
       new Set(paths.filter((relative) => deletedTargets.has(snapshotTarget(root, relative, options.sessionDir)))),
       afterHashes,
@@ -301,6 +332,7 @@ export async function applyMergedSnapshot(
       await revalidateTarget(target);
       try {
         const stat = await fs.lstat(target);
+        await validate();
         if (stat.isDirectory())
           await fs.rmdir(target); // Only an empty, reviewed directory may be replaced.
         else await fs.rm(target, { force: true });

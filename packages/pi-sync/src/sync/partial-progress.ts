@@ -1,8 +1,26 @@
 import type { RemoteHead } from "../backends/sync-backend.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
-import type { Snapshot } from "../snapshot/snapshot-types.js";
+import type { Snapshot, SnapshotFile } from "../snapshot/snapshot-types.js";
 import type { SyncState } from "../state/state-types.js";
+import type { FileMergeDecision } from "./file-merge-planner.js";
 import { fileHashMap } from "./sync-state.js";
+/** Withholding preserves the complete local version, including explicit absence. */
+export function acceptedMergeFiles(
+  decisions: readonly FileMergeDecision[],
+  localFiles: readonly SnapshotFile[],
+  withheld: ReadonlySet<string>,
+) {
+  const localByPath = new Map(localFiles.map((file) => [file.path, file]));
+  return decisions.flatMap((decision) => {
+    const file = withheld.has(decision.path)
+      ? localByPath.get(decision.path)
+      : decision.kind === "accepted"
+        ? decision.file
+        : undefined;
+    return file ? [file] : [];
+  });
+}
+
 export interface PartialProgress {
   previous: SyncState;
   groups: { paths: string[]; artifact: string }[];

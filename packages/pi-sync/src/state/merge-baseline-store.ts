@@ -71,6 +71,7 @@ export async function stageMergeBaseline(
     );
   });
   if (previous) {
+    const stagedPaths = new Set(files.map((file) => file.path));
     let ancestors: SnapshotFile[] = [];
     try {
       ancestors = (await readMergeAncestors(config, previous)) ?? [];
@@ -81,9 +82,11 @@ export async function stageMergeBaseline(
       if (
         !collisions.has(ancestor.path) &&
         accepted.lastFileHashes[ancestor.path] === ancestor.sha256 &&
-        !files.some((file) => file.path === ancestor.path)
-      )
+        !stagedPaths.has(ancestor.path)
+      ) {
         files.push(ancestor);
+        stagedPaths.add(ancestor.path);
+      }
   }
   const plan = planFileMerge({ baseline: {}, local: files, remote: [], selectionCompatible: true });
   if (plan.kind !== "planned" || plan.conflicts.length)
