@@ -136,42 +136,57 @@ for (const event of ["foreground", "agent_start", "replacement", "shutdown"] as 
         await updateSyncSetup("home", (setup) => ({ ...setup, sync: { ...setup.sync, automaticTransfer: false } }));
       cleanup.resolve();
       await drain;
+      assert.equal(context.statuses.get("sync"), undefined, "cancellation clears progress before shutdown");
       await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, context.ctx);
       assert.equal(context.statuses.get("sync"), undefined);
     }));
 
-test("cancelled automatic transfer does not publish its stale observation", async () =>
-  withTempHome(async (agentDir) => {
-    await configure(agentDir);
-    const { createStartupCheck } = await import("../src/sync/startup-check.js");
-    const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
-    const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
-    const entered = deferred();
-    const attention = createSyncAttentionController();
-    const publish = vi.spyOn(attention, "publish");
-    const controller = createStartupCheck(
-      createSyncLoaders({
-        loadSyncInspection: async () => ({ inspectSync: (config) => inspectionFixture(config) }),
-        loadSyncOperations: async () => ({
-          ...(await import("../src/sync/sync-operations.js")),
-          syncBoth: async (_ctx, options) => {
-            entered.resolve();
-            await new Promise<void>((resolve) =>
-              options.signal?.addEventListener("abort", () => resolve(), { once: true }),
-            );
-            return "cancelled" as const;
-          },
-        }),
-      }),
-      attention,
-    );
-    const context = createMockContext({ mode: "rpc" });
-    controller.start(context.ctx, new AbortController().signal, await loadConfig());
-    await entered.promise;
-    await controller.stop();
-    assert.equal(publish.mock.calls.length, 0);
-    assert.equal(context.widgets.get("sync:attention"), undefined);
-  }));
+for (const mode of ["tui", "rpc"] as const)
+  for (const cancellation of ["stop", "interrupt", "replaced-session"] as const)
+    test(`${mode} ${cancellation} clears only owned progress without publishing stale attention`, async () =>
+      withTempHome(async (agentDir) => {
+        await configure(agentDir);
+        const { createStartupCheck } = await import("../src/sync/startup-check.js");
+        const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
+        const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
+        const entered = deferred();
+        const attention = createSyncAttentionController();
+        const publish = vi.spyOn(attention, "publish");
+        const controller = createStartupCheck(
+          createSyncLoaders({
+            loadSyncInspection: async () => ({ inspectSync: (config) => inspectionFixture(config) }),
+            loadSyncOperations: async () => ({
+              ...(await import("../src/sync/sync-operations.js")),
+              syncBoth: async (_ctx, options) => {
+                entered.resolve();
+                await new Promise<void>((resolve) =>
+                  options.signal?.addEventListener("abort", () => resolve(), { once: true }),
+                );
+                return "cancelled" as const;
+              },
+            }),
+          }),
+          attention,
+        );
+        const context = createMockContext({ mode });
+        const session = new AbortController();
+        controller.start(context.ctx, session.signal, await loadConfig());
+        await entered.promise;
+        assert.equal(context.statuses.get("sync"), "sync ...");
+        if (cancellation === "replaced-session") {
+          session.abort();
+          contextUi(context.ctx).setStatus("sync", "replacement-owned status");
+        }
+        if (cancellation === "interrupt") await controller.interrupt(context.ctx);
+        else await controller.stop();
+        assert.equal(publish.mock.calls.length, 0);
+        assert.equal(context.widgets.get("sync:attention"), undefined);
+        assert.equal(context.notifications.length, 0);
+        assert.equal(
+          context.statuses.get("sync"),
+          cancellation === "replaced-session" ? "replacement-owned status" : undefined,
+        );
+      }));
 
 for (const committed of [false, true])
   test(`automatic transfer failure ${committed ? "after" : "before"} commit preserves only current attention`, async () =>
