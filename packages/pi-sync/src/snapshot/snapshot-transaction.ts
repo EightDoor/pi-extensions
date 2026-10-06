@@ -11,6 +11,7 @@ import { stateDir } from "../state/state-directory.js";
 import { mergePathIdentity } from "../sync/file-merge-planner.js";
 import { agentDir, configuredSessionDir } from "./session-paths.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
+import { fileImage, indexTransactionPlan } from "./snapshot-transaction-plan.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
 
 const JOURNAL_VERSION = 3;
@@ -42,6 +43,8 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
   options.validateMutation?.();
   await recoverPendingSnapshotTransactions(options);
   const targets = [...new Set([...plan.deletes, ...plan.writes.map((item) => item.target)])].sort();
+  if (targets.length > 16_384)
+    throw new Error("Snapshot transaction exceeds its target bound; review a smaller transfer.");
   return withTargetQueues(targets, async () => {
     options.signal?.throwIfAborted();
     if (
@@ -54,25 +57,21 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       )
     )
       throw new Error("Snapshot transaction targets the current session; review is required.");
-    const transaction = await prepareTransaction(plan, options);
+    const transaction = await prepareTransaction(plan, targets, options);
+    const entriesByTarget = new Map(transaction.journal.entries.map((entry) => [entry.target, entry]));
     try {
-      const deleted = new Set<string>();
-      const deletes = plan.deletes.filter((target) => !plan.deletes.some((parent) => isStrictlyInside(parent, target)));
-      for (const target of deletes.sort((a, b) => a.length - b.length)) {
+      for (const target of transaction.deletes.sort((a, b) => a.length - b.length)) {
         options.signal?.throwIfAborted();
-        const entry = transaction.journal.entries.find((item) => item.target === target);
+        const entry = entriesByTarget.get(target);
         if (!entry) throw new Error("Unowned transaction target.");
         await removeOwnedTarget(transaction.directory, entry, transaction.journal, options);
-        deleted.add(target);
         await syncDirectory(path.dirname(target));
       }
       for (const item of plan.writes) {
         options.signal?.throwIfAborted();
-        const entry = transaction.journal.entries.find((entry) => entry.target === item.target);
+        const entry = entriesByTarget.get(item.target);
         if (!entry) throw new Error("Unowned transaction target.");
-        const deletedByThisCall = [...deleted].some(
-          (target) => target === item.target || isPathInside(target, item.target),
-        );
+        const deletedByThisCall = transaction.deletedWrites.has(item.target);
         await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
         await fs.mkdir(path.dirname(item.target), { recursive: true });
         const temp = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
@@ -169,17 +168,15 @@ async function pendingTransactionEntries() {
   }
 }
 
-async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionOptions) {
+async function prepareTransaction(plan: SnapshotApplyPlan, targets: string[], options: TransactionOptions) {
   const { sessionDir } = options;
   const root = path.resolve(agentDir());
   const sessionRoot = sessionDir ? path.resolve(sessionStorageRoot(root, sessionDir)) : undefined;
+  const indexed = indexTransactionPlan(plan, targets);
   const directory = path.join(transactionRoot(), randomUUID());
   const backupDirectory = path.join(directory, "before");
   await fs.mkdir(backupDirectory, { recursive: true, mode: 0o700 });
   const entries: TransactionEntry[] = [];
-  const targets = [...new Set([...plan.deletes, ...plan.writes.map((item) => item.target)])].sort();
-  if (targets.length > 16_384)
-    throw new Error("Snapshot transaction exceeds its target bound; review a smaller transfer.");
   for (const [index, target] of targets.entries()) {
     options.signal?.throwIfAborted();
     options.validateMutation?.();
@@ -220,11 +217,8 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
         : entry.kind === "missing"
           ? "missing"
           : await image(backup, true);
-    const write = plan.writes.find((item) => item.target === target);
-    entry.afterImage = write ? fileImage(write.content) : "missing";
-    entry.postFiles = plan.writes
-      .filter((item) => isStrictlyInside(target, item.target))
-      .map((item) => ({ relative: path.relative(target, item.target), image: fileImage(item.content) }));
+    entry.afterImage = indexed.writeImages.get(target) ?? "missing";
+    entry.postFiles = indexed.postFiles.get(target) ?? [];
     entries.push(entry);
   }
   // File fsync does not persist the name linking each backup into this directory.
@@ -236,7 +230,7 @@ async function prepareTransaction(plan: SnapshotApplyPlan, options: TransactionO
   await syncDirectory(transactionRoot());
   await syncDirectory(stateDir());
   await syncDirectory(path.dirname(stateDir()));
-  return { directory, journal };
+  return { directory, journal, deletes: indexed.deletes, deletedWrites: indexed.deletedWrites };
 }
 
 async function restoreTransaction(directory: string, journal: TransactionJournal, options: TransactionOptions) {
@@ -398,9 +392,6 @@ async function beforeImage(directory: string, entry: TransactionEntry) {
   const value = await image(path.join(directory, "before", entry.backupName));
   if (value === "missing") throw new Error("Transaction backup is missing; preserve evidence for review.");
   return value;
-}
-function fileImage(content: Buffer) {
-  return `file:${createHash("sha256").update(content).digest("hex")}`;
 }
 async function image(target: string, durable = false): Promise<string> {
   let stat: Stats;
