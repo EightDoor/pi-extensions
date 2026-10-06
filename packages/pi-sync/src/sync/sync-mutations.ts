@@ -226,9 +226,9 @@ export async function push(
     throw new PublicationStatePersistenceError(result.head, error);
   }
   await retireMergeJournal(config);
-  if (options.signal?.aborted) return;
   await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
   validateCommittedOwner();
+  if (options.signal?.aborted) return;
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(
@@ -367,9 +367,9 @@ export async function pull(
     validateCommittedOwner,
   );
   await retireMergeJournal(config);
-  if (options.signal?.aborted) return "applied" as const;
   await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
   validateCommittedOwner();
+  if (options.signal?.aborted) return "applied" as const;
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(`Pulled ${remote.files.length} files from ${remote.id}. Backup: ${backup}`, "info");
@@ -530,16 +530,22 @@ export async function rollback(
   await requireNoMergeJournal(config);
   const decoded = await backend.readSnapshot(target, options.signal);
   validatePortableSnapshot(decoded);
+  if (!sameLocalFields(decoded.localFields, config.localFields))
+    throw new Error(
+      "Rollback requires the historical snapshot local-field policy to match the configured rules. Review push --force from current local bytes to migrate policy first; choose matching history afterward.",
+    );
   const selected = filterSnapshotForConfigPolicy(
     config.include.includes("sessions") ? decoded : snapshotWithoutSessions(decoded),
     config,
   );
   const remote = portableSnapshot(regenerateSnapshotIdentity(selected), config.localFields);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
-  if (!(await confirmFieldMigration(ctx, config, await readStateForConfig(config), decoded, true, options.signal)))
-    return;
+  const state = await readStateForConfig(config);
   const expectedHead = await backend.readHead(options.signal);
-  throwIfAborted(options.signal);
+  const currentRemote = expectedHead ? await readSnapshotForHead(backend, expectedHead, options.signal) : undefined;
+  validateMutation();
+  if (!(await confirmFieldMigration(ctx, config, state, currentRemote, true, options.signal))) return;
+  validateMutation();
   const physical = overlayLocalFields(remote, local, config.localFields);
 
   if (
@@ -573,13 +579,13 @@ export async function rollback(
     signal: options.signal,
     validateMutation,
   });
-  validateMutation();
+  // The local transaction is retired; finish publication despite caller cancellation.
+  validateCommittedOwner();
   let result: PublishSnapshotResult;
   try {
     const completionSignal = AbortSignal.timeout(POST_LOCAL_COMMIT_TIMEOUT_MS);
-    const upload = await snapshotForUpload(backend, config, remote, expectedHead, undefined, completionSignal, {
-      ignoreUnreadableRemote: true,
-    });
+    const upload = await snapshotForUpload(backend, config, remote, expectedHead, currentRemote, completionSignal);
+    validateCommittedOwner();
     result = await backend.publishSnapshot(upload, expectedRemoteHead(expectedHead), {
       signal: completionSignal,
     });
@@ -607,9 +613,9 @@ export async function rollback(
     throw new PublicationStatePersistenceError(result.head, error, backup);
   }
   await retireMergeJournal(config);
-  if (options.signal?.aborted) return;
   await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
   validateCommittedOwner();
+  if (options.signal?.aborted) return;
   ctx.ui.notify(
     [
       `Rolled back sync setup “${config.setupName}” to ${target}; latest: ${result.head.snapshotId}. Backup: ${backup}`,
@@ -667,18 +673,9 @@ async function snapshotForUpload(
   head: RemoteHead | undefined,
   remote?: Snapshot,
   signal?: AbortSignal,
-  options: { ignoreUnreadableRemote?: boolean } = {},
 ) {
   if (!head) return local;
-  let snapshot = remote;
-  if (!snapshot) {
-    try {
-      snapshot = await readSnapshotForHead(backend, head, signal);
-    } catch (error) {
-      if (options.ignoreUnreadableRemote) return local;
-      throw error;
-    }
-  }
+  const snapshot = remote ?? (await readSnapshotForHead(backend, head, signal));
   return mergeRemotePreservedFiles(local, snapshot, config);
 }
 

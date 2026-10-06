@@ -207,8 +207,10 @@ function validateSyncSetup(name: string, value: Record<string, unknown>, connect
   if (!Object.hasOwn(sync, "include")) {
     throw new Error(`Invalid pi-sync settings: sync setup “${name}” is missing sync.include.`);
   }
-  normalizeSyncInclude(sync.include);
-  normalizeLocalFields(sync.localFields);
+  const include = normalizeSyncInclude(sync.include);
+  const localFields = normalizeLocalFields(sync.localFields);
+  if (localFields.length > 0 && !include.includes("settings.json"))
+    throw new Error("Nonempty localFields requires settings.json in sync.include.");
   if (sync.mergeSettings !== undefined && typeof sync.mergeSettings !== "boolean")
     throw new Error("mergeSettings must be boolean.");
   if (sync.automaticTransfer !== undefined && typeof sync.automaticTransfer !== "boolean") {

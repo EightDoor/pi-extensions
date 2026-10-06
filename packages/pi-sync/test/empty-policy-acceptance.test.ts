@@ -34,7 +34,10 @@ for (const configured of [undefined, []]) {
         );
         const config = await loadConfig();
         const backend = new MemorySyncBackend();
-        const remote = portableSnapshot({ ...snapshot([]), profile: config.snapshotIdentity }, remotePolicy);
+        const remote = portableSnapshot(
+          { ...snapshot([]), profile: config.snapshotIdentity, selection: { version: 1, include: config.include } },
+          remotePolicy,
+        );
         const head = (await backend.publishSnapshot(remote, { kind: "missing" })).head;
         const { ctx } = createMockContext({ hasUI: true });
         if ((configured === undefined) !== (remotePolicy === undefined)) {

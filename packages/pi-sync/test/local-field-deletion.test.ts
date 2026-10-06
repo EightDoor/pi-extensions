@@ -72,7 +72,10 @@ for (const route of ["pull", "rollback", "merge"] as const) {
         const state = await readStateForConfig(config);
         const previousHead = await backend.readHead();
         assert.ok(previousHead);
-        const empty = portableSnapshot({ ...snapshot([]), profile: config.snapshotIdentity }, ["machine"]);
+        const empty = portableSnapshot(
+          { ...snapshot([]), profile: config.snapshotIdentity, selection: { version: 1, include: config.include } },
+          ["machine"],
+        );
         const incoming = (await backend.publishSnapshot(empty, { kind: "revision", revision: previousHead.revision }))
           .head;
         const operation =

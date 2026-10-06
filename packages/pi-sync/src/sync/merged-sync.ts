@@ -381,9 +381,13 @@ async function completeJournal(
     const state = await readStateForConfig(config);
     await validate();
     if (
-      syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, journal.committedHead, journal.accepted ?? journal.after))
+      syncStateFingerprint(state) ===
+      syncStateFingerprint(acceptedState(config, journal.committedHead, journal.accepted ?? journal.after))
     ) {
       await clearMergeJournal(config);
+      await validate();
+      await pruneMergeBaselines(config, state, captureMutationOwner(ctx, signal));
+      await validate();
       return true;
     }
   }

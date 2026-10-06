@@ -7,7 +7,12 @@ import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
 import { statePathForConfig } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
-import { portableSnapshot, validatePortableSnapshot, validateSnapshotFieldPolicy } from "./local-fields.js";
+import {
+  portableSnapshot,
+  sameLocalFields,
+  validatePortableSnapshot,
+  validateSnapshotFieldPolicy,
+} from "./local-fields.js";
 import { fileHashMap, sameHashes } from "./sync-state.js";
 
 export interface MergeJournal {
@@ -109,11 +114,21 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
   } catch {
     throw new Error("Invalid merge journal paths, metadata, or bytes; preserve evidence for review.");
   }
-  if (
-    journal.accepted &&
-    !sameHashes(fileHashMap(portableSnapshot(journal.after, config.localFields)), fileHashMap(journal.accepted))
-  )
+  // Integrity is intrinsic to the recorded transaction, not the user's current recovery policy.
+  // completeJournal separately checks that the recorded policy matches the current setup.
+  try {
+    if (
+      journal.accepted &&
+      (!sameLocalFields(journal.accepted.localFields, journal.upload.localFields) ||
+        !sameHashes(
+          fileHashMap(portableSnapshot(journal.after, journal.upload.localFields)),
+          fileHashMap(journal.accepted),
+        ))
+    )
+      throw new Error("Projection mismatch.");
+  } catch {
     throw new Error("Invalid accepted merge projection; preserve journal evidence.");
+  }
   return journal;
 }
 
