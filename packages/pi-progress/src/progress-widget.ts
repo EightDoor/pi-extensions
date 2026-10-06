@@ -63,7 +63,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
   };
 
   const publish = (ctx: ExtensionContext): void => {
-    if (!ownsSession(ctx) || ctx.mode !== "tui") return;
+    if (!ownsSession(ctx) || !ctx.hasUI) return;
     if (!settings.widget.enabled || steps.length === 0 || completionSummaryHidden) {
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       return;
@@ -88,7 +88,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
   const publishCompletionSummary = (ctx: ExtensionContext): void => {
     cancelCompletionSummary();
     completionSummaryHidden = false;
-    if (!ownsSession(ctx) || ctx.mode !== "tui" || !settings.widget.enabled) {
+    if (!ownsSession(ctx) || !ctx.hasUI || !settings.widget.enabled) {
       publish(ctx);
       return;
     }
@@ -192,7 +192,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
     generation += 1;
     const ownerGeneration = generation;
     activeSession = ctx.sessionManager;
-    if (ctx.mode === "tui") {
+    if (ctx.hasUI) {
       const ownerSession = ctx.sessionManager;
       activeWidgetOwner = {
         sessionManager: ownerSession,
