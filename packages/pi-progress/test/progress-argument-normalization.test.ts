@@ -28,8 +28,5 @@ test("drops reason from non-blocked progress steps before strict validation", ()
 test("keeps blocked reason validation strict", () => {
   const { tool } = createHarness();
 
-  assert.throws(
-    () => tool.prepareArguments({ steps: [{ text: "waiting", status: "blocked" }] }),
-    /blocked.*reason/iu,
-  );
+  assert.throws(() => tool.prepareArguments({ steps: [{ text: "waiting", status: "blocked" }] }), /blocked.*reason/iu);
 });
