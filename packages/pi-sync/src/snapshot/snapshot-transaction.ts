@@ -14,7 +14,7 @@ import { sessionStorageRoot } from "./snapshot-paths.js";
 import { fileImage, indexTransactionPlan } from "./snapshot-transaction-plan.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
 
-const JOURNAL_VERSION = 3;
+const JOURNAL_VERSION = 4;
 interface TransactionEntry {
   target: string;
   backupName: string;
@@ -25,6 +25,8 @@ interface TransactionEntry {
   postFiles?: { relative: string; image: string }[];
   /** Durable intent permits only a missing intermediate image, never unknown bytes. */
   removalPending?: boolean;
+  /** Published before materialization: absence/partial trees can no longer prove an unstarted replacement. */
+  replacementStarted?: boolean;
 }
 interface TransactionJournal {
   version: number;
@@ -67,13 +69,27 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         await removeOwnedTarget(transaction.directory, entry, transaction.journal, options);
         await syncDirectory(path.dirname(target));
       }
+      await retireRemovalIntent(
+        transaction.directory,
+        transaction.journal,
+        transaction.journal.entries.filter(
+          (entry) => entry.removalPending && (entry.afterImage !== "missing" || (entry.postFiles?.length ?? 0) > 0),
+        ),
+        options,
+      );
+      // Only this uninterrupted call knows which deleted writes have not attempted installation yet.
+      const uninstalledWrites = new Set(transaction.deletedWrites);
       for (const item of plan.writes) {
         options.signal?.throwIfAborted();
         const entry = entriesByTarget.get(item.target);
         if (!entry) throw new Error("Unowned transaction target.");
-        const deletedByThisCall = transaction.deletedWrites.has(item.target);
+        const deletedByThisCall = uninstalledWrites.delete(item.target);
         await verifyTarget(transaction.directory, entry, transaction.journal, deletedByThisCall);
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
         await fs.mkdir(path.dirname(item.target), { recursive: true });
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
         const temp = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
         try {
           let mode = 0o600;
@@ -278,6 +294,11 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
         options.validateMutation?.();
         options.signal?.throwIfAborted();
         if (atRename === before) continue;
+        await retireRestorationIntent(directory, journal, entry, options);
+        const atInstall = await verifyTarget(directory, entry, journal, atRename === "missing");
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
+        if (atInstall === before) continue;
         await fs.rename(temporary, entry.target);
         await syncDirectory(path.dirname(entry.target));
       } finally {
@@ -315,6 +336,11 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
       options.validateMutation?.();
       options.signal?.throwIfAborted();
       if (atRename === before) continue;
+      await retireRestorationIntent(directory, journal, entry, options);
+      const atInstall = await verifyTarget(directory, entry, journal, atRename === "missing");
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      if (atInstall === before) continue;
       await fs.rename(temporary, entry.target);
       await syncDirectory(path.dirname(entry.target));
     } finally {
@@ -343,14 +369,18 @@ async function verifyTarget(
   if (journal.version >= 2 && before !== entry.beforeImage)
     throw new Error("Transaction backup changed; preserve evidence for review.");
   const current = await image(entry.target);
-  if (
-    current === before ||
-    (current === "missing" && (deletedByThisCall || (journal.version === 3 && entry.removalPending)))
-  )
-    return current;
-  if (
+  if (current === before) return current;
+  if (current === "missing") {
+    if (deletedByThisCall || (journal.version === 4 && entry.removalPending && !entry.replacementStarted))
+      return current;
+  } else if (
     journal.version >= 2 &&
-    (current === entry.afterImage || (await ownedPostTree(entry.target, entry.postFiles ?? [])))
+    (current === entry.afterImage ||
+      (await ownedPostTree(
+        entry.target,
+        entry.postFiles ?? [],
+        journal.version !== 4 || entry.replacementStarted === true || !entry.removalPending,
+      )))
   )
     return current;
   throw new Error(
@@ -370,11 +400,13 @@ async function removeOwnedTarget(
   options.signal?.throwIfAborted();
   if (restoringBefore !== undefined && current === restoringBefore) return false;
   // Persist intent before removal, including descendants affected by a recursive delete.
-  // A crash at any later boundary can recognize absence without accepting other intermediate bytes.
-  journal.version = JOURNAL_VERSION;
+  // Until replacement is armed, interrupted removal can recognize absence without accepting unknown bytes.
+  upgradeRemovalEvidence(journal);
   for (const affected of journal.entries) {
-    if (affected.target === entry.target || isStrictlyInside(entry.target, affected.target))
+    if (affected.target === entry.target || isStrictlyInside(entry.target, affected.target)) {
       affected.removalPending = true;
+      affected.replacementStarted = false;
+    }
   }
   await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
   const verified = await verifyTarget(directory, entry, journal);
@@ -384,6 +416,49 @@ async function removeOwnedTarget(
   await fs.rm(entry.target, { recursive: true, force: true });
   await syncDirectory(path.dirname(entry.target));
   return true;
+}
+
+function upgradeRemovalEvidence(journal: TransactionJournal) {
+  if (journal.version < JOURNAL_VERSION) {
+    // Old pending markers may already have survived a committed replacement.
+    for (const entry of journal.entries) entry.removalPending = false;
+    journal.version = JOURNAL_VERSION;
+  }
+}
+
+async function retireRemovalIntent(
+  directory: string,
+  journal: TransactionJournal,
+  entries: TransactionEntry[],
+  options: TransactionOptions,
+) {
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+  if (!entries.length) return;
+  upgradeRemovalEvidence(journal);
+  for (const entry of entries) {
+    entry.removalPending = false;
+    entry.replacementStarted = true;
+  }
+  await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+}
+
+async function retireRestorationIntent(
+  directory: string,
+  journal: TransactionJournal,
+  entry: TransactionEntry,
+  options: TransactionOptions,
+) {
+  // Installing a complete parent preimage supersedes descendant replacement progress too.
+  for (const child of journal.entries) {
+    if (isStrictlyInside(entry.target, child.target)) {
+      child.removalPending = false;
+      child.replacementStarted = false;
+    }
+  }
+  await retireRemovalIntent(directory, journal, [entry], options);
 }
 
 async function beforeImage(directory: string, entry: TransactionEntry) {
@@ -422,9 +497,10 @@ async function image(target: string, durable = false): Promise<string> {
   if (durable) await syncDirectory(target);
   return `directory:${createHash("sha256").update(JSON.stringify(entries)).digest("hex")}`;
 }
-async function ownedPostTree(target: string, files: { relative: string; image: string }[]) {
+async function ownedPostTree(target: string, files: { relative: string; image: string }[], requireComplete: boolean) {
   if (!files.length) return false;
   const expected = new Map(files.map((file) => [mergePathIdentity(file.relative), file.image]));
+  const seen = new Set<string>();
   async function visit(directory: string): Promise<boolean> {
     let stat: Stats;
     try {
@@ -440,15 +516,18 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
       if (value.startsWith("directory:")) {
         if (![...expected.keys()].some((key) => key.startsWith(relative + path.sep)) || !(await visit(child)))
           return false;
-      } else if (expected.get(relative) !== value) return false;
+      } else {
+        if (expected.get(relative) !== value) return false;
+        seen.add(relative);
+      }
     }
     return true;
   }
-  return visit(target);
+  return (await visit(target)) && (!requireComplete || [...expected.keys()].every((key) => seen.has(key)));
 }
 
 function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
-  if (![1, 2, 3].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
+  if (![1, 2, 3, 4].includes(journal.version) || !Array.isArray(journal.entries) || journal.entries.length > 16_384)
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
@@ -479,8 +558,15 @@ function validateJournal(directory: string, journal: TransactionJournal, session
       (typeof entry.beforeImage !== "string" || typeof entry.afterImage !== "string" || !Array.isArray(entry.postFiles))
     )
       throw new Error("Invalid transaction postimage evidence.");
-    if (entry.removalPending !== undefined && (journal.version !== 3 || typeof entry.removalPending !== "boolean"))
+    if (entry.removalPending !== undefined && (journal.version < 3 || typeof entry.removalPending !== "boolean"))
       throw new Error("Invalid transaction removal evidence.");
+    if (
+      entry.replacementStarted !== undefined &&
+      (journal.version !== 4 || typeof entry.replacementStarted !== "boolean")
+    )
+      throw new Error("Invalid transaction replacement evidence.");
+    if (entry.removalPending && entry.replacementStarted)
+      throw new Error("Conflicting transaction replacement evidence.");
     for (const file of entry.postFiles ?? []) {
       if (
         typeof file.relative !== "string" ||
