@@ -28,9 +28,38 @@ const options: CommandOptions = {
 const image = (value: unknown) => snapshot([{ path: "settings.json", content: Buffer.from(JSON.stringify(value)) }]);
 const object = (value: ReturnType<typeof image>) =>
   JSON.parse(Buffer.from(value.files[0]?.contentBase64 ?? "", "base64").toString());
-for (const rules of ["x", ["x", "x"], ["__proto__"], ["bad\nfield"], ["defaultModel"], ["skills"], [1]]) {
+for (const rules of [
+  "x",
+  ["x", "x"],
+  ["__proto__"],
+  ["bad\nfield"],
+  ["defaultModel"],
+  ["skills"],
+  ["enableAnalytics"],
+  ["trackingId"],
+  [1],
+]) {
   test(`invalid explicit exclusion: ${JSON.stringify(rules)}`, () => assert.throws(() => normalizeLocalFields(rules)));
 }
+test("analytics exclusions require both coupled fields in settings and portable snapshots", () => {
+  for (const onlyOne of [["enableAnalytics"], ["trackingId"]]) {
+    const settings = v3S3Settings();
+    Object.assign(settings.syncSetups.home.sync, { localFields: onlyOne });
+    assert.throws(() => validateSettingsDocument({ ...settings, version: 4 }), /excluded together/);
+    assert.throws(
+      () => portableSnapshot(image({ enableAnalytics: true, trackingId: "private" }), onlyOne),
+      /excluded together/,
+    );
+  }
+  const fields = ["enableAnalytics", "trackingId"];
+  const projected = portableSnapshot(image({ enableAnalytics: true, trackingId: "private", theme: "dark" }), fields);
+  assert.deepEqual(object(projected), { theme: "dark" });
+  assert.deepEqual(
+    object(overlayLocalFields(projected, image({ enableAnalytics: false, trackingId: "local" }), fields)),
+    { theme: "dark", enableAnalytics: false, trackingId: "local" },
+  );
+});
+
 test("portable projection omits exact fields and local overlay preserves values and absence", () => {
   const remote = portableSnapshot(image({ theme: "dark", machine: "remote-secret" }), ["machine"]);
   assert.deepEqual(object(remote), { theme: "dark" });

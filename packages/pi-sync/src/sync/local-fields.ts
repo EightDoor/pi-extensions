@@ -31,6 +31,7 @@ export function normalizeLocalFields(value: unknown): string[] {
     ["skills", "enableSkillCommands"],
     ["queueMode", "steeringMode"],
     ["websockets", "transport"],
+    ["enableAnalytics", "trackingId"],
   ]) {
     if (value.includes(first) !== value.includes(second))
       throw new Error("Coupled settings fields must be excluded together.");

@@ -100,6 +100,7 @@ export async function push(
   factory: SyncBackendFactory = createSyncBackend,
 ) {
   const validateMutation = captureMutationOwner(ctx, options.signal);
+  const validateCommittedOwner = captureMutationOwner(ctx);
   const config = input?.config ?? (await loadConfig(options.setup));
   throwIfAborted(options.signal);
   await requireNoMergeJournal(config, options);
@@ -219,15 +220,15 @@ export async function push(
         ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
       },
       local,
-      validateMutation,
+      validateCommittedOwner,
     );
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error);
   }
   await retireMergeJournal(config);
   if (options.signal?.aborted) return;
-  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
-  validateMutation();
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
+  validateCommittedOwner();
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(
@@ -249,6 +250,7 @@ export async function pull(
   factory: SyncBackendFactory = createSyncBackend,
 ) {
   const validateMutation = captureMutationOwner(ctx, options.signal);
+  const validateCommittedOwner = captureMutationOwner(ctx);
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
   await requireNoMergeJournal(config, options);
@@ -346,7 +348,8 @@ export async function pull(
     signal: options.signal,
     validateMutation,
   });
-  validateMutation();
+  // Local installation is complete; user cancellation must not leave the baseline stale.
+  validateCommittedOwner();
   await writeStateForConfig(
     config,
     {
@@ -361,12 +364,12 @@ export async function pull(
       ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
     },
     logical,
-    validateMutation,
+    validateCommittedOwner,
   );
   await retireMergeJournal(config);
   if (options.signal?.aborted) return "applied" as const;
-  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
-  validateMutation();
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
+  validateCommittedOwner();
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(`Pulled ${remote.files.length} files from ${remote.id}. Backup: ${backup}`, "info");
