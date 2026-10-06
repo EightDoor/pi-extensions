@@ -220,7 +220,7 @@ test("both credentials and registration ID participate in cache identity", async
   assert.equal(new Set([a?.fingerprint, b?.fingerprint, c?.fingerprint, d?.fingerprint, e?.fingerprint]).size, 5);
 });
 
-test("app usage changes never affect visible percentages, including multiple windows and missing resets", () => {
+test("statusline omits app windows while reports retain app reset details without percentages", () => {
   const now = 2_000_000_000_000;
   const makeReport = (remaining: number) => ({
     providerId: "openai",

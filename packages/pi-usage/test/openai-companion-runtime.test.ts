@@ -410,7 +410,7 @@ for (const change of ["rotation", "removal"] as const) {
   });
 }
 
-test("automatic refresh publishes only plan status and releases its HTTP/timers on shutdown", async () => {
+test("automatic refresh publishes only plan limits and releases its HTTP/timers on shutdown", async () => {
   const state = await setup();
   const calls = mockFetch();
   try {

@@ -199,7 +199,7 @@ MiniMax publishes Token Plan window percentages or the regional pay-as-you-go av
 Baseten publishes the exact trailing 30-day Model APIs net subtotal after credits.
 xAI is always menu-only and never starts a scheduled status refresh.
 Z.AI statusline usage refreshes every five minutes while the selected model remains on Z.AI.
-Verified native OpenAI OAuth with valid companion auth refreshes both read-only endpoints automatically, for example `chatgpt plan 70% ↻ 2h30m`.
+Verified native OpenAI OAuth with valid companion auth refreshes both read-only endpoints automatically. The statusline shows only plan limits, for example `chatgpt plan 70% ↻ 2h30m`; app reset details remain available in `/usage`.
 Without companion auth it publishes `chatgpt usage: web only`; refreshes revalidate auth without calling a usage endpoint.
 OpenAI API-key auth clears this status.
 
