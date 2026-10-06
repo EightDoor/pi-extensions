@@ -8,7 +8,16 @@ import { FIRECRAWL_TOOL_NAMES, type FirecrawlToolName } from "./tool-names.js";
 const NEW_SETTINGS_FILE = "pi-firecrawl.json";
 const LEGACY_SETTINGS_FILE = "pi-firecrawl-settings.json";
 
+export const FIRECRAWL_TOOL_MODES = ["codemode", "lazy", "direct"] as const;
+export type FirecrawlToolMode = (typeof FIRECRAWL_TOOL_MODES)[number];
+export const DEFAULT_TOOL_MODE: FirecrawlToolMode = "codemode";
+
+export function isFirecrawlToolMode(value: unknown): value is FirecrawlToolMode {
+  return FIRECRAWL_TOOL_MODES.includes(value as FirecrawlToolMode);
+}
+
 export interface FirecrawlSettings {
+  toolMode?: FirecrawlToolMode;
   tools: FirecrawlToolName[];
   updatedAt: number;
 }
@@ -77,7 +86,7 @@ async function readSettingsDocument(filePath: string): Promise<SettingsDocumentR
     return {
       result: {
         kind: "invalid",
-        reason: `${filePath}: expected tools to be an array of Firecrawl tool names`,
+        reason: `${filePath}: expected valid tools, a finite updatedAt, and toolMode (codemode, lazy, or direct) when present`,
       },
     };
   } catch (error) {
@@ -117,14 +126,19 @@ async function pathEntryExists(filePath: string) {
 }
 
 export function normalizeFirecrawlSettings(value: unknown): FirecrawlSettings | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const settings = value as { tools?: unknown; updatedAt?: unknown };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const settings = value as { tools?: unknown; updatedAt?: unknown; toolMode?: unknown };
+  if (settings.toolMode !== undefined && !isFirecrawlToolMode(settings.toolMode)) return undefined;
   if (typeof settings.updatedAt !== "number" || !Number.isFinite(settings.updatedAt)) {
     return undefined;
   }
   if (!Array.isArray(settings.tools)) return undefined;
   if (!settings.tools.every(isFirecrawlToolName)) return undefined;
-  return { tools: orderedUniqueFirecrawlTools(settings.tools), updatedAt: settings.updatedAt };
+  return {
+    toolMode: settings.toolMode ?? DEFAULT_TOOL_MODE,
+    tools: orderedUniqueFirecrawlTools(settings.tools),
+    updatedAt: settings.updatedAt,
+  };
 }
 
 function isFirecrawlToolName(value: unknown): value is FirecrawlToolName {
@@ -146,26 +160,52 @@ export function saveSettings(
   if (!normalizedSettings) {
     return Promise.reject(new Error("Cannot save invalid Firecrawl settings"));
   }
-  const operation = settingsSaveQueue.then(() => saveSettingsNow(normalizedSettings, operations));
+  return queueSettingsSave({ ...normalizedSettings, toolMode: settings.toolMode }, operations);
+}
+
+export function saveToolMode(
+  toolMode: FirecrawlToolMode,
+  fallbackTools: readonly FirecrawlToolName[],
+  operations: Partial<SettingsFileOperations> = {},
+): Promise<void> {
+  if (!isFirecrawlToolMode(toolMode) || !fallbackTools.every(isFirecrawlToolName)) {
+    return Promise.reject(new Error("Cannot save invalid Firecrawl settings"));
+  }
+  return queueSettingsSave({ toolMode, updatedAt: Date.now() }, operations, fallbackTools);
+}
+
+function queueSettingsSave(
+  patch: Partial<FirecrawlSettings> & { updatedAt: number },
+  operations: Partial<SettingsFileOperations>,
+  fallbackTools: readonly FirecrawlToolName[] = FIRECRAWL_TOOL_NAMES,
+): Promise<void> {
+  const filePath = settingsFilePath();
+  const legacyPath = legacySettingsFilePath();
+  const fallback = [...fallbackTools];
+  const operation = settingsSaveQueue.then(() => saveSettingsNow(filePath, legacyPath, patch, operations, fallback));
   settingsSaveQueue = operation.catch(() => undefined);
   return operation;
 }
 
 async function saveSettingsNow(
-  settings: FirecrawlSettings,
+  filePath: string,
+  legacyPath: string,
+  patch: Partial<FirecrawlSettings> & { updatedAt: number },
   operations: Partial<SettingsFileOperations>,
+  fallbackTools: readonly FirecrawlToolName[],
 ): Promise<void> {
-  const filePath = settingsFilePath();
   let current = await readSettingsDocument(filePath);
   const replaceCanonical = current.result.kind !== "missing";
-  if (!replaceCanonical) current = await readSettingsDocument(legacySettingsFilePath());
+  if (!replaceCanonical) current = await readSettingsDocument(legacyPath);
   if (current.result.kind === "invalid") {
     throw new Error(`Cannot save Firecrawl settings until you repair ${current.result.reason}`);
   }
   const nextDocument = {
     ...(current.document ?? {}),
-    tools: [...settings.tools],
-    updatedAt: settings.updatedAt,
+    toolMode:
+      patch.toolMode ?? (current.result.kind === "loaded" ? current.result.settings.toolMode : DEFAULT_TOOL_MODE),
+    tools: [...(patch.tools ?? (current.result.kind === "loaded" ? current.result.settings.tools : fallbackTools))],
+    updatedAt: patch.updatedAt,
   };
   await mkdir(dirname(filePath), { recursive: true });
   const tempFile = `${filePath}.${process.pid}.${randomUUID()}.tmp`;

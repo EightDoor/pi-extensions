@@ -7,7 +7,7 @@ import { registerRuntimeBuilderContract } from "../../../test/runtime-builder-co
 
 const { packageRoot, loadBuilder } = registerRuntimeBuilderContract({
   packageId: "pi-firecrawl",
-  forbiddenEagerInputs: [],
+  forbiddenEagerInputs: ["src/settings-ui.ts"],
   forbiddenEagerExternals: ["@narumitw/pi-tui-kit"],
 });
 

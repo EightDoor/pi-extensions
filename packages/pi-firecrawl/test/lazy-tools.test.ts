@@ -3,8 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test, vi } from "vitest";
-import { createMockContext as createBaseMockContext, createMockPi } from "../../../test/support.js";
+import { createMockContext as createBaseMockContext } from "../../../test/support.js";
 import firecrawl from "../src/firecrawl.js";
+import {
+  applyAvailableFirecrawlTools,
+  createFirecrawlLoadTool,
+  supportsNativeDeferredToolLoading,
+} from "../src/lazy-tools.js";
+import { createMockPi } from "./mock-pi.js";
 
 const NATIVE_DEFERRED_MODEL = {
   api: "openai-responses",
@@ -39,20 +45,21 @@ test("firecrawl factory registers without reading action methods", () => {
   assert.ok(mock.events.has("session_start"));
 });
 
-test("firecrawl registers deferred capability tools and one loader", () => {
+test("firecrawl factory registers five codemode capabilities and no loader", () => {
   const mock = createMockPi();
   firecrawl(mock.pi);
 
   assert.deepEqual(
     mock.tools.map((tool) => tool.name),
-    [...CAPABILITY_TOOLS, LOAD_TOOL],
+    [...CAPABILITY_TOOLS],
   );
   for (const tool of mock.tools.filter((candidate) => candidate.name !== LOAD_TOOL)) {
     assert.equal(tool.promptSnippet, undefined);
     assert.equal(tool.promptGuidelines, undefined);
   }
-  const loader = mock.tools.find((tool) => tool.name === LOAD_TOOL);
-  assert.deepEqual(loader?.promptGuidelines, [
+  for (const tool of mock.tools) assert.equal(tool.exposure, "codemode");
+  const loader = createFirecrawlLoadTool(mock.pi);
+  assert.deepEqual(loader.promptGuidelines, [
     "Use firecrawl_load when a task requires Firecrawl web scraping, crawling, URL discovery, crawl status, or search and the needed firecrawl_* capability is not active.",
     "If FIRECRAWL_API_KEY is missing, report the configuration error instead of retrying repeatedly.",
   ]);
@@ -63,8 +70,8 @@ test("firecrawl registers deferred capability tools and one loader", () => {
 test("firecrawl loader schema bounds task queries and result count", () => {
   const mock = createMockPi();
   firecrawl(mock.pi);
-  const loader = mock.tools.find((tool) => tool.name === LOAD_TOOL);
-  const schema = loader?.parameters as {
+  const loader = createFirecrawlLoadTool(mock.pi);
+  const schema = loader.parameters as {
     properties?: {
       query?: { maxLength?: number };
       limit?: { minimum?: number; maximum?: number };
@@ -236,7 +243,7 @@ test("firecrawl honors native additional-tools support", async () => {
   });
 });
 
-test("firecrawl keeps its missing-settings catalog across session replacement", async () => {
+test("firecrawl keeps its configured lazy catalog across session replacement", async () => {
   await withTempAgentDir(async () => {
     const firecrawlModule = await importFreshFirecrawl();
     const mock = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
@@ -262,7 +269,7 @@ test("firecrawl keeps its missing-settings catalog across session replacement", 
 });
 
 test("firecrawl preserves an unsaved catalog across reload API replacement", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
     const sessionManager = {
       getSessionId: () => "reload-session",
       getBranch: () => [],
@@ -273,32 +280,20 @@ test("firecrawl preserves an unsaved catalog across reload API replacement", asy
     const firstContext = createMockContext({ sessionManager }).ctx;
     firstModule.default(first.pi);
     await first.events.get("session_start")?.[0]?.({ reason: "startup" }, firstContext);
+    applyAvailableFirecrawlTools(first.pi, [SCRAPE_TOOL], sessionManager);
+    rmSync(path.join(agentDir, NEW_SETTINGS_FILE));
 
     const secondModule = await importFreshFirecrawl();
     const replacement = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
     const replacementContext = createMockContext({ sessionManager }).ctx;
     secondModule.default(replacement.pi);
     await replacement.events.get("session_start")?.[0]?.({ reason: "reload" }, replacementContext);
-    const loader = replacement.tools.find((tool) => tool.name === LOAD_TOOL) as {
-      execute: (...args: unknown[]) => Promise<{ details: { matches: string[] } }>;
-    };
-    const unavailable = await loader.execute(
-      "loader-unavailable",
-      { query: "search the web" },
-      new AbortController().signal,
-      undefined,
-      replacementContext,
+    assert.equal(replacement.tools.find((tool) => tool.name === SEARCH_TOOL)?.exposure, "hidden");
+    assert.equal(replacement.tools.find((tool) => tool.name === SCRAPE_TOOL)?.exposure, "codemode");
+    assert.equal(
+      replacement.tools.some((tool) => tool.name === LOAD_TOOL),
+      false,
     );
-    const available = await loader.execute(
-      "loader-available",
-      { query: "scrape one page" },
-      new AbortController().signal,
-      undefined,
-      replacementContext,
-    );
-
-    assert.deepEqual(unavailable.details.matches, []);
-    assert.deepEqual(available.details.matches, [SCRAPE_TOOL]);
   });
 });
 
@@ -494,6 +489,7 @@ async function withTempAgentDir<T>(fn: (agentDir: string) => Promise<T>) {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const agentDir = mkdtempSync(path.join(os.tmpdir(), "pi-firecrawl-lazy-tools-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  writeSettings(agentDir, CAPABILITY_TOOLS);
   try {
     return await fn(agentDir);
   } finally {
@@ -504,5 +500,61 @@ async function withTempAgentDir<T>(fn: (agentDir: string) => Promise<T>) {
 }
 
 function writeSettings(agentDir: string, tools: readonly string[]) {
-  writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ tools, updatedAt: 1 }));
+  writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ tools, toolMode: "lazy", updatedAt: 1 }));
+}
+
+const supportCases = [
+  [undefined, false],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-sonnet-4-5" }, true],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-opus-4-6" }, true],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-fable-5" }, true],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-sonnet-4" }, false],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-opus-4-20250514" }, false],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-sonnet-4-5-20250929" }, true],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "claude-haiku-4-5" }, false],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "CLAUDE-SONNET-4-5" }, false],
+  [{ api: "anthropic-messages", provider: "anthropic", id: "unknown" }, false],
+  [{ api: "anthropic-messages", provider: "custom", id: "claude-sonnet-4-5" }, false],
+  [{ api: "anthropic-messages", provider: "custom", id: "unknown", compat: { supportsToolReferences: true } }, true],
+  [
+    {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "claude-sonnet-4-5",
+      compat: { supportsToolReferences: false },
+    },
+    false,
+  ],
+  [
+    {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "claude-haiku-4-5",
+      compat: { supportsToolReferences: true },
+    },
+    true,
+  ],
+  [
+    { api: "anthropic-messages", provider: "fireworks", id: "unknown", compat: { supportsToolReferences: true } },
+    false,
+  ],
+  [{ api: "anthropic-messages", provider: "custom", id: "unknown", compat: { supportsToolReferences: "true" } }, false],
+  [{ api: "openai-completions", compat: { deferredToolsMode: "kimi" } }, true],
+  [{ api: "openai-completions", compat: { deferredToolsMode: "KIMI" } }, false],
+  [{ api: "openai-completions", compat: { supportsToolSearch: true } }, false],
+  [{ api: "openai-responses", compat: { supportsAdditionalTools: true } }, true],
+  [{ api: "openai-responses", compat: { supportsToolSearch: true } }, true],
+  [{ api: "openai-responses", compat: { supportsAdditionalTools: false, supportsToolSearch: true } }, true],
+  [{ api: "openai-responses", compat: { supportsAdditionalTools: "true", supportsToolSearch: "true" } }, false],
+  [{ api: "openai-responses", compat: [] }, false],
+  [{ api: "openai-codex-responses", compat: { supportsAdditionalTools: true } }, true],
+  [{ api: "openai-codex-responses", compat: { supportsToolSearch: false } }, false],
+  [{ api: "azure-openai-responses", compat: { supportsToolSearch: true } }, false],
+  [{ api: "google-generative-ai", compat: { supportsAdditionalTools: true } }, false],
+] as const;
+
+for (const [model, supported] of supportCases) {
+  test(`native deferred compatibility: ${JSON.stringify(model)} -> ${supported}`, () => {
+    assert.equal(supportsNativeDeferredToolLoading(model as never), supported);
+  });
 }
