@@ -22,8 +22,8 @@ import {
   currentFirecrawlSessionSignal,
   isCurrentFirecrawlSession,
   sanitizeFirecrawlDisplay,
+  setFirecrawlCapabilityEnabled,
   setFirecrawlToolMode,
-  setSelectedFirecrawlTools,
   waitForFirecrawlSettings,
 } from "./tool-selector.js";
 
@@ -111,25 +111,15 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
           pending += 1;
           // Register persistence at acceptance so replacement/shutdown can await it, even
           // before this screen's observer queue runs. Only runtime/UI work is session-owned.
-          const modeSave =
-            id === "toolMode" && isFirecrawlToolMode(value)
-              ? setFirecrawlToolMode(pi, ctx, value, sessionSignal)
+          const modeEdit = id === "toolMode" && isFirecrawlToolMode(value);
+          const save = modeEdit
+            ? setFirecrawlToolMode(pi, ctx, value, sessionSignal)
+            : FIRECRAWL_TOOL_NAMES.includes(id as FirecrawlToolName)
+              ? setFirecrawlCapabilityEnabled(pi, ctx, id as FirecrawlToolName, value === "enabled", sessionSignal)
               : undefined;
           queue = queue
             .then(async () => {
-              if (modeSave) {
-                if ((await modeSave) && isCurrent() && isFirecrawlToolMode(value)) savedMode = value;
-              } else if (isCurrent() && FIRECRAWL_TOOL_NAMES.includes(id as FirecrawlToolName)) {
-                const tools = new Set(availableFirecrawlTools(pi));
-                if (value === "enabled") tools.add(id as FirecrawlToolName);
-                else tools.delete(id as FirecrawlToolName);
-                await setSelectedFirecrawlTools(
-                  pi,
-                  ctx,
-                  FIRECRAWL_TOOL_NAMES.filter((name) => tools.has(name)),
-                  sessionSignal,
-                );
-              }
+              if (save && (await save) && isCurrent() && modeEdit && isFirecrawlToolMode(value)) savedMode = value;
             })
             .catch((error: unknown) => {
               if (isCurrent())
@@ -152,7 +142,7 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
       );
       // Six bounded rows need no search input; SettingsList owns navigation and value cycling.
       // Submitted settings changes drain in order even after close; disposal releases UI ownership.
-      // Session replacement suppresses unstarted runtime actions, not accepted mode persistence.
+      // Session replacement suppresses stale runtime/UI work, not accepted persistence.
       sessionSignal.addEventListener("abort", close, { once: true });
       return {
         render(width: number) {

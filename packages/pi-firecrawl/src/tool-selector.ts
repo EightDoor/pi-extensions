@@ -192,6 +192,45 @@ export async function setSelectedFirecrawlTools(
   );
 }
 
+export function setFirecrawlCapabilityEnabled(
+  pi: ExtensionAPI,
+  ctx: CommandContext,
+  name: FirecrawlToolName,
+  enabled: boolean,
+  notificationSignal?: AbortSignal,
+): Promise<boolean> {
+  const generation = currentFirecrawlSessionGeneration(pi);
+  const fallbackTools = availableFirecrawlTools(pi);
+  const operation = toolTransactionQueue.then(async () => {
+    const current = isCurrentFirecrawlSession(pi, generation);
+    // A stale owner may read persisted state, but must not read or mutate runtime state.
+    const settings = current ? undefined : await loadSettings();
+    const base = current
+      ? availableFirecrawlTools(pi)
+      : settings?.kind === "loaded"
+        ? settings.settings.tools
+        : fallbackTools;
+    const selected = new Set(base);
+    if (enabled) selected.add(name);
+    else selected.delete(name);
+    return (
+      (await transactSelectedToolsNow(
+        pi,
+        ctx,
+        orderedFirecrawlTools(selected),
+        generation,
+        undefined,
+        notificationSignal,
+      )) === "saved"
+    );
+  });
+  toolTransactionQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  return operation;
+}
+
 let toolTransactionQueue = Promise.resolve();
 
 export async function waitForFirecrawlSettings(): Promise<void> {
@@ -206,8 +245,9 @@ function transactSelectedTools(
   expectedAvailableTools?: readonly FirecrawlToolName[],
   notificationSignal?: AbortSignal,
 ): Promise<ToolSelectionSaveResult> {
+  const acceptedTools = [...selectedTools];
   const operation = toolTransactionQueue.then(() =>
-    transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, expectedAvailableTools, notificationSignal),
+    transactSelectedToolsNow(pi, ctx, acceptedTools, expectedGeneration, expectedAvailableTools, notificationSignal),
   );
   toolTransactionQueue = operation.then(
     () => undefined,
@@ -224,7 +264,15 @@ async function transactSelectedToolsNow(
   expectedAvailableTools?: readonly FirecrawlToolName[],
   notificationSignal?: AbortSignal,
 ): Promise<ToolSelectionSaveResult> {
-  if (!isCurrentFirecrawlSession(pi, expectedGeneration)) return "failed";
+  if (!isCurrentFirecrawlSession(pi, expectedGeneration)) {
+    // Lifecycle waits include accepted writes even when their runtime owner has gone away.
+    try {
+      await persistSettings(selectedTools);
+      return "saved";
+    } catch {
+      return "failed";
+    }
+  }
   if (expectedAvailableTools && !arraysEqual(availableFirecrawlTools(pi), expectedAvailableTools)) {
     ctx.ui.notify(
       "Firecrawl tool availability changed while the selector was open. Review the current state and try again.",
