@@ -160,9 +160,20 @@ export function createStartupCheck(loaders: SyncLoaders, attention: SyncAttentio
           } finally {
             clearTimeout(timer);
             if (isCurrent() && checking) {
-              if (!signal.aborted || controller.signal.reason?.name === "TimeoutError")
-                await attention.publish(ctx, sessionSignal);
-              else setSyncStatus(ctx, undefined);
+              if (!signal.aborted || controller.signal.reason?.name === "TimeoutError") {
+                const latest = await loadConfigForCheck().catch(() => undefined);
+                if (isCurrent()) {
+                  if (signal.aborted && controller.signal.reason?.name !== "TimeoutError")
+                    setSyncStatus(ctx, undefined);
+                  else if (
+                    config &&
+                    latest &&
+                    syncCheckConfigFingerprint(latest) === syncCheckConfigFingerprint(config)
+                  )
+                    await attention.publish(ctx, sessionSignal);
+                  else attention.reset(ctx);
+                }
+              } else setSyncStatus(ctx, undefined);
             }
             if (active === task) active = undefined;
           }

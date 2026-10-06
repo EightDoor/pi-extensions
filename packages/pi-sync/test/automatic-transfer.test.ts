@@ -188,6 +188,136 @@ for (const mode of ["tui", "rpc"] as const)
         );
       }));
 
+for (const mode of ["tui", "rpc"] as const)
+  for (const mutation of ["selection", "missing", "invalid"] as const)
+    for (const phase of ["loader", "failure", "success"] as const)
+      test(`${mode} ${mutation} settings at ${phase} invalidate captured automatic attention`, async () =>
+        withTempHome(async (agentDir) => {
+          await configure(agentDir);
+          const { createStartupCheck } = await import("../src/sync/startup-check.js");
+          const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
+          const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
+          const attention = createSyncAttentionController();
+          const finished = deferred();
+          let changed = false;
+          const originalPublish = attention.publish.bind(attention);
+          const publish = vi.spyOn(attention, "publish").mockImplementation(async (...args) => {
+            await originalPublish(...args);
+            if (changed) finished.resolve();
+          });
+          const context = createMockContext({ mode });
+          const invalidate = async () => {
+            assert.ok(attention.observation(), "observation was captured before settings changed");
+            // Model an existing presentation too, not just a never-published observation.
+            await attention.publish(context.ctx);
+            publish.mockClear();
+            assert.ok(context.statuses.get("sync"));
+            if (mutation === "missing") await fs.rm(localConfigPath());
+            else if (mutation === "invalid") await fs.writeFile(localConfigPath(), "{broken");
+            else {
+              const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+              settings.syncSetups.home.sync.include = ["AGENTS.md"];
+              await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+            }
+            changed = true;
+          };
+          const controller = createStartupCheck(
+            createSyncLoaders({
+              loadSyncInspection: async () => ({
+                inspectSync: (config) => inspectionFixture(config, { localChanged: true, remoteChanged: true }),
+              }),
+              loadSyncOperations: async () => {
+                if (phase === "loader") {
+                  await invalidate();
+                  throw new Error("settings changed during loading");
+                }
+                return {
+                  ...(await import("../src/sync/sync-operations.js")),
+                  syncBoth: async () => {
+                    await invalidate();
+                    if (phase === "failure") throw new Error("settings changed before commit");
+                    return "cancelled" as const;
+                  },
+                };
+              },
+            }),
+            attention,
+          );
+          const originalReset = attention.reset.bind(attention);
+          vi.spyOn(attention, "reset").mockImplementation((ctx) => {
+            originalReset(ctx);
+            finished.resolve();
+          });
+          controller.start(context.ctx, new AbortController().signal, await loadConfig());
+          await finished.promise;
+          await controller.stop();
+          assert.equal(attention.observation(), undefined);
+          assert.equal(publish.mock.calls.length, 0);
+          assert.equal(context.statuses.get("sync"), undefined);
+          assert.equal(context.widgets.get("sync:attention"), undefined);
+          assert.equal(context.notifications.length, 0);
+        }));
+
+for (const cancellation of ["stop", "replacement"] as const)
+  test(`${cancellation} during final settings validation prevents stale publication`, async () =>
+    withTempHome(async (agentDir) => {
+      await configure(agentDir);
+      const { createStartupCheck } = await import("../src/sync/startup-check.js");
+      const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
+      const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
+      const attention = createSyncAttentionController();
+      const publish = vi.spyOn(attention, "publish");
+      const reset = vi.spyOn(attention, "reset");
+      const entered = deferred();
+      const release = deferred();
+      let finalizing = false;
+      const open = fs.open.bind(fs);
+      const read = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        if (finalizing && args[0] === localConfigPath()) {
+          finalizing = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return open(...args);
+      });
+      const controller = createStartupCheck(
+        createSyncLoaders({
+          loadSyncInspection: async () => ({ inspectSync: (config) => inspectionFixture(config) }),
+          loadSyncOperations: async () => ({
+            ...(await import("../src/sync/sync-operations.js")),
+            syncBoth: async () => {
+              finalizing = true;
+              return "cancelled" as const;
+            },
+          }),
+        }),
+        attention,
+      );
+      const context = createMockContext({ mode: "rpc" });
+      const session = new AbortController();
+      try {
+        controller.start(context.ctx, session.signal, await loadConfig());
+        await entered.promise;
+        if (cancellation === "replacement") {
+          session.abort();
+          contextUi(context.ctx).setStatus("sync", "replacement-owned status");
+        }
+        const stopped = controller.stop();
+        release.resolve();
+        await stopped;
+        assert.equal(publish.mock.calls.length, 0);
+        assert.equal(reset.mock.calls.length, 0);
+        assert.equal(
+          context.statuses.get("sync"),
+          cancellation === "replacement" ? "replacement-owned status" : undefined,
+        );
+      } finally {
+        release.resolve();
+        await controller.stop();
+        read.mockRestore();
+      }
+    }));
+
 for (const committed of [false, true])
   test(`automatic transfer failure ${committed ? "after" : "before"} commit preserves only current attention`, async () =>
     withTempHome(async (agentDir) => {
