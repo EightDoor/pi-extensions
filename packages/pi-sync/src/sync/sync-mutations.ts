@@ -510,6 +510,7 @@ export async function rollback(
   expectedSelection?: { backendIdentity: string; setup?: string },
 ) {
   const validateMutation = captureMutationOwner(ctx, options.signal);
+  const validateCommittedOwner = captureMutationOwner(ctx);
   const target = options.args[0];
   if (!target) throw new Error("Usage: /sync rollback <snapshot-id> [--yes]");
 
@@ -597,15 +598,15 @@ export async function rollback(
         ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
       },
       remote,
-      validateMutation,
+      validateCommittedOwner,
     );
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error, backup);
   }
   await retireMergeJournal(config);
   if (options.signal?.aborted) return;
-  await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
-  validateMutation();
+  await pruneMergeBaselines(config, await readStateForConfig(config), validateCommittedOwner);
+  validateCommittedOwner();
   ctx.ui.notify(
     [
       `Rolled back sync setup “${config.setupName}” to ${target}; latest: ${result.head.snapshotId}. Backup: ${backup}`,

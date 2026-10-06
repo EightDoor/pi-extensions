@@ -24,7 +24,7 @@ Installed `dist/core/keybindings.js` parses BOM-compatible JSON, filters invalid
 | Comments, trailing comma, nonobject, invalid UTF-8, duplicate/prototype-sensitive keys, over 1 MiB/depth 64/16,384 nodes | Review; original bytes remain unchanged. |
 | Scalars, absence, null, unknown fields | Conservative presence-aware three-way decisions; accepted deletion preserves absence. |
 | Objects/arrays | Atomic, including unknown nested objects; no array union or unproven recursive invariants. |
-| Provider/model, queue/steering, websocket/transport, skills/skill-command fields | Coupled root units; incompatible group edits conflict. |
+| Provider/model, queue/steering, websocket/transport, skills/skill-command, analytics/tracking ID fields | Coupled root units; incompatible group edits conflict. |
 | Unaffected local members | Raw spelling, separators, ordering, BOM, line endings and trailing bytes retained; new members use local indentation. Output is parsed again. |
 | Missing/mismatched/corrupt ancestor | Review, never synthesize current data or rely on remote retention. |
 
@@ -51,6 +51,16 @@ Saving rules explicitly upgrades settings to version 4, including after rule rem
 Portable JSON is deterministically canonicalized, excluding selected fields. Local overlay retains latest validated values/absence and unaffected semantic values' raw spelling. Complete settings deletion with any excluded root field present is refused, including null values; validated documents with no excluded fields may be deleted. State hashes and ancestors describe the portable common version; journal before/after describe physical local bytes, accepted describes portable bytes, and upload preserves unmanaged remote files. Journal validation checks the accepted projection against physical after-images. Journal identity preserves policy presence, and the upload policy must match before either candidate retirement or committed recovery. Older ambiguous absent-policy identities fail closed without deleting evidence; reviewed force directions remain the recovery route.
 
 Rule additions/removals and transitions from absent to explicit empty policy block ordinary/background merge. Explicit force directions require extra TUI/RPC migration confirmation even with --yes, warn about old history and removal risks, and validate the fresh setup/local/head before mutation. Push publishes the configured policy; pull only adopts already-matching authoritative remote rules and refuses a mismatch before review or mutation. A pull cannot manufacture a portable baseline against an unchanged nonportable remote. Cancelled/stale review changes neither files nor head. Remote bytes and newly merged/projected content remain subject to secret scanning. Excluding a value now does not erase prior remote history or private backups.
+
+## Review of commit `d0d3a44f` (PR #1456)
+
+| Feedback | Classification and evidence | Outcome |
+| --- | --- | --- |
+| [Couple analytics and tracking ID](https://github.com/narumiruna/pi-extensions/pull/1456#discussion_r4190756573) | The installed Pi SettingsManager setter changes these fields as one operation. Independent acceptance can enable analytics with no tracking ID. | Actionable: treat both as one three-way decision unit; unilateral and divergent test cases exercise that invariant. |
+| [Finish rollback after cancellation](https://github.com/narumiruna/pi-extensions/pull/1456#discussion_r4190756576) | The rollback publication uses its own bounded completion signal, but prior state persistence still used the aborted command signal. | Actionable: after the successful remote commit use cancellation-independent ownership validation to persist state and prune; retain session identity checks. A deterministic post-publication abort test asserts that accepted revision and local result agree. |
+| [Repair Phase 3 plan link](https://github.com/narumiruna/pi-extensions/pull/1456#discussion_r4190756581) | The plan referenced a Phase 2 plan deleted by this PR. | Actionable: point `docs/plans/2026-10-05_pi-sync-content-merge-plan.md` to this package audit instead. |
+
+Earlier inline feedback is already addressed by the code and regressions described above and by the PR's previous signed review commits (`c2dfbcff`, `48b9f46d`, `d192f85c`, `d0d3a44f`); the submitted reviews and conversation summaries are wrappers for those findings with no distinct unanswered technical request. This ledger does not assert that GitHub threads were resolved.
 
 ## Limits and evidence
 

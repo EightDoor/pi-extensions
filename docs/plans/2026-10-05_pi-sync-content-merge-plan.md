@@ -4,7 +4,7 @@
 
 Merge independent text changes, reconcile safe session extensions, and let independent conflict-free paths synchronize while genuine conflicts remain available for later review. Preserve every divergent version without loading recovery copies as Pi resources.
 
-This phase depends on [Phase 1](2026-10-05_pi-sync-safe-automatic-sync-plan.md) and [Phase 2](2026-10-05_pi-sync-settings-merge-plan.md). Finish and verify each dependency before enabling the features below. This is planned behavior, not an implemented guarantee.
+This phase depends on [Phase 1](2026-10-05_pi-sync-safe-automatic-sync-plan.md) and [Phase 2](../../packages/pi-sync/docs/settings-merge-audit.md). Finish and verify each dependency before enabling the features below. This is planned behavior, not an implemented guarantee.
 
 ## Context
 

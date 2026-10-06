@@ -15,6 +15,13 @@ for (const [name, base, local, remote, expected] of [
   ["unknown addition and deletion", { old: 1 }, {}, { old: 1, future: null }, { future: null }],
   ["null is not absent", {}, { x: null }, {}, { x: null }],
   ["atomic array unilateral", { x: [1] }, { x: [1, 2] }, { x: [1], y: 2 }, { x: [1, 2], y: 2 }],
+  [
+    "unilateral analytics opt-in keeps its tracking ID",
+    { enableAnalytics: false, trackingId: "old", theme: "light" },
+    { enableAnalytics: true, trackingId: "new", theme: "light" },
+    { enableAnalytics: false, trackingId: "old", theme: "dark" },
+    { enableAnalytics: true, trackingId: "new", theme: "dark" },
+  ],
   ["atomic object unilateral", { x: { a: 1 } }, { x: { a: 2 } }, { x: { a: 1 }, y: true }, { x: { a: 2 }, y: true }],
 ] as const) {
   test(`settings merge: ${name}`, () => {
@@ -30,6 +37,12 @@ for (const [name, base, local, remote] of [
   ["incompatible types", { x: 1 }, { x: [] }, { x: {} }],
   ["array union refused", { x: [1] }, { x: [1, 2] }, { x: [1, 3] }],
   ["nested objects conservative", { x: { a: 1, b: 1 } }, { x: { a: 2, b: 1 } }, { x: { a: 1, b: 2 } }],
+  [
+    "analytics opt-in and tracking ID must stay coupled",
+    { enableAnalytics: false, trackingId: "old" },
+    { enableAnalytics: true, trackingId: "old" },
+    { enableAnalytics: false },
+  ],
   [
     "coupled provider/model",
     { defaultProvider: "p", defaultModel: "m" },

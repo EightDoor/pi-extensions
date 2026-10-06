@@ -15,6 +15,7 @@ const COUPLED_FIELDS = [
   ["queueMode", "steeringMode"],
   ["websockets", "transport"],
   ["skills", "enableSkillCommands"],
+  ["enableAnalytics", "trackingId"],
 ] as const;
 
 /** Only global settings.json; objects/arrays are atomic units until their invariants are proven. */
