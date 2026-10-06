@@ -319,9 +319,13 @@ export async function syncBoth(
 ) {
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
-  const backend = await factory(config);
+  if (config.include.length > 0 && options.auto && config.automaticTransfer) return mergeSync(ctx, options, factory);
+  if (!options.auto && config.include.length > 0 && (await readMergeJournal(config)))
+    return mergeSync(ctx, options, factory);
   const state = await readStateForConfig(config);
   throwIfAborted(options.signal);
+  if (!options.auto && config.include.length > 0 && state.lastAppliedSnapshot) return mergeSync(ctx, options, factory);
+  const backend = await factory(config);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
   throwIfAborted(options.signal);
   if (config.include.length === 0) {
@@ -338,9 +342,7 @@ export async function syncBoth(
   const localChanged = hasLocalChanges(local, state, config);
   const remoteChanged = remote ? hasRemoteChanges(remote, state, config, protectedSessionPaths(ctx)) : false;
   const firstSync = !state.lastAppliedSnapshot;
-  if (options.auto && config.automaticTransfer) return mergeSync(ctx, options, factory);
   if (options.auto) throw new Error("Automatic transfer is not authorized by the current settings.");
-  if (!firstSync || (await readMergeJournal(config))) return mergeSync(ctx, options, factory);
 
   if (firstSync && remote && remote.files.length > 0 && local.files.length > 0) {
     if (!canPullRemoteSettingsOnFirstSync(local, remote)) {

@@ -179,6 +179,10 @@ export async function mergeSync(
     const apply = !sameHashes(fileHashMap(local), fileHashMap(after));
     if (!publish && !apply) {
       await validate();
+      const currentHead = await backend.readHead(options.signal);
+      await validate();
+      if (!currentHead || !backend.sameRevision(currentHead.revision, head.revision))
+        throw new Error("Remote changed before baseline acceptance; retry from a fresh observation.");
       await writeAcceptedState(config, head, after);
       if (!options.silent) ctx.ui.notify("Pi Sync is already up to date.", "info");
       return "applied" as const;
@@ -226,7 +230,7 @@ export async function mergeSync(
       backup,
       stateIdentity: syncStateFingerprint(state),
       ...(sessionRoot !== undefined ? { sessionRoot } : {}),
-      ...(!publish ? { committedHead: head } : {}),
+      ...(!publish ? { committedHead: head, applyOnly: true } : {}),
     };
     await writeMergeJournal(config, journal);
     // No backend call has begun: a stale candidate can be retired without ambiguous publication.
@@ -277,7 +281,15 @@ export async function mergeSync(
         { cause: error },
       );
     }
-    await completeJournal(ctx, config, backend, journal, validate, options.signal, options.auto);
+    const completed = await completeJournal(ctx, config, backend, journal, validate, options.signal, options.auto);
+    if (!completed) {
+      if (!options.signal?.aborted && (options.auto || !options.silent))
+        ctx.ui.notify(
+          "Remote changed before local apply; candidate retired without transfer. Run sync again.",
+          "warning",
+        );
+      return "cancelled" as const;
+    }
     if (!options.signal?.aborted && (options.auto || !options.silent))
       ctx.ui.notify(
         [
@@ -326,6 +338,19 @@ async function completeJournal(
     return false;
   }
   await validate();
+  if (journal.applyOnly && (!head || !backend.sameRevision(head.revision, journal.expectedHead.revision))) {
+    const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
+    const state = await readStateForConfig(config);
+    await validate();
+    if (
+      sameHashes(fileHashMap(local), fileHashMap(journal.before)) &&
+      syncStateFingerprint(state) === journal.stateIdentity
+    ) {
+      await clearMergeJournal(config);
+      return false;
+    }
+    throw new Error("Apply-only remote head advanced after local changes; preserve the journal for reviewed recovery.");
+  }
   if (
     !head ||
     head.snapshotId !== journal.upload.id ||
@@ -367,6 +392,10 @@ async function completeJournal(
     ctx.sessionManager.getSessionFile?.(),
   );
   await validate();
+  const headAtAcceptance = await backend.readHead(signal);
+  await validate();
+  if (!headAtAcceptance || !backend.sameRevision(headAtAcceptance.revision, head.revision))
+    throw new Error("Remote changed during merged apply; journal and backup retained for review.");
   await writeAcceptedState(config, head, journal.after);
   await validate();
   await clearMergeJournal(config);

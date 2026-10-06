@@ -147,6 +147,93 @@ for (const unsafe of [false, true])
       }
     }));
 
+for (const invalid of ["{private-token", '{"sessionDir":true}', "[]"])
+  test(`merge refuses invalid remote session settings ${invalid} before publication`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir, new MemorySyncBackend(), true);
+      const state = await readStateForConfig(f.config);
+      await f.remoteEdit("settings.json", invalid);
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "independent local");
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        await assert.rejects(
+          syncBoth(f.ctx, options, () => f.backend),
+          (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.doesNotMatch(error.message, /private-token/);
+            return true;
+          },
+        );
+        assert.equal(publish.mock.calls.length, 0);
+        assert.deepEqual(await readStateForConfig(f.config), state);
+        assert.equal(await readMergeJournal(f.config), undefined);
+      } finally {
+        publish.mockRestore();
+      }
+    }));
+
+test("invalid UTF-8 session settings are withheld before publication", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir, new MemorySyncBackend(), true);
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const original = await f.backend.readSnapshot(head.snapshotRef);
+    const invalid = snapshot([{ path: "settings.json", content: Buffer.from([0x7b, 0xff, 0x7d]) }]).files[0];
+    assert.ok(invalid);
+    await f.backend.publishSnapshot(
+      regenerateSnapshotIdentity({
+        ...original,
+        files: [...original.files.filter((file) => file.path !== invalid.path), invalid],
+      }),
+      { kind: "revision", revision: head.revision },
+    );
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /cannot be parsed/,
+    );
+    assert.equal(await readMergeJournal(f.config), undefined);
+  }));
+
+test("established sync avoids a second planning download", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const read = vi.spyOn(f.backend, "readSnapshot");
+    await syncBoth(f.ctx, options, () => f.backend);
+    // One planning read and one post-publication verification, never a duplicate planning read.
+    assert.equal(read.mock.calls.length, 2);
+    read.mockRestore();
+  }));
+
+test("no-op established sync downloads once", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const read = vi.spyOn(f.backend, "readSnapshot");
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.equal(read.mock.calls.length, 1);
+    read.mockRestore();
+  }));
+
+test("no-op acceptance refuses a concurrently advanced head", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const state = await readStateForConfig(f.config);
+    const original = f.backend.readHead.bind(f.backend);
+    let reads = 0;
+    const read = vi.spyOn(f.backend, "readHead").mockImplementation(async (...args) => {
+      if (++reads === 2) {
+        read.mockRestore();
+        await f.remoteEdit("AGENTS.md", "newer remote");
+      }
+      return original(...args);
+    });
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Remote changed before baseline acceptance/,
+    );
+    assert.deepEqual(await readStateForConfig(f.config), state);
+  }));
+
 test("an older committed session-root transition journal requires directional recovery", async () =>
   withTempHome(async (agentDir) => {
     const f = await fixture(agentDir, new MemorySyncBackend(), true);
@@ -270,6 +357,59 @@ for (const boundary of ["backup", "journal"] as const)
         publish.mockRestore();
       }
     }));
+
+test("apply-only candidate retires when the remote advances during journal publication", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const state = await readStateForConfig(f.config);
+    const rename = fs.rename.bind(fs);
+    let advanced = false;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (!advanced && to === mergeJournalPath(f.config)) {
+        advanced = true;
+        await f.remoteEdit("AGENTS.md", "newer remote instructions");
+      }
+    });
+    try {
+      assert.equal(await syncBoth(f.ctx, options, () => f.backend), "cancelled");
+      assert.equal(advanced, true);
+      assert.equal(await readMergeJournal(f.config), undefined);
+      assert.deepEqual(await readStateForConfig(f.config), state);
+      assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
+    } finally {
+      renameSpy.mockRestore();
+    }
+  }));
+
+test("remote advance after apply retains an apply-only journal instead of accepting a stale baseline", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const state = await readStateForConfig(f.config);
+    const original = f.backend.readHead.bind(f.backend);
+    let reads = 0;
+    const read = vi.spyOn(f.backend, "readHead").mockImplementation(async (...args) => {
+      if (++reads === 3) {
+        read.mockRestore();
+        await f.remoteEdit("AGENTS.md", "newer remote instructions");
+      }
+      return original(...args);
+    });
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Remote changed during merged apply/,
+    );
+    assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "remote instructions");
+    assert.deepEqual(await readStateForConfig(f.config), state);
+    assert.ok(await readMergeJournal(f.config));
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Apply-only remote head advanced/,
+    );
+    assert.ok(await readMergeJournal(f.config));
+  }));
 
 test("merged sync publishes both independent edits and applies remote bytes without reload", async () =>
   withTempHome(async (agentDir) => {

@@ -16,6 +16,8 @@ export interface MergeJournal {
   upload: Snapshot;
   expectedHead: RemoteHead;
   committedHead?: RemoteHead;
+  /** No remote publication was attempted; a stale candidate can retire if local preimages remain intact. */
+  applyOnly?: boolean;
   backup: string;
   stateIdentity: string;
   /** Effective collection/apply root; absent legacy evidence cannot authorize session recovery. */
@@ -48,6 +50,12 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
     typeof journal.identity !== "string" ||
     typeof journal.backup !== "string" ||
     typeof journal.stateIdentity !== "string" ||
+    (journal.applyOnly !== undefined &&
+      (journal.applyOnly !== true ||
+        !journal.committedHead ||
+        journal.committedHead.revision !== journal.expectedHead?.revision ||
+        journal.committedHead.snapshotId !== journal.expectedHead?.snapshotId ||
+        journal.upload?.id !== journal.expectedHead?.snapshotId)) ||
     (journal.sessionRoot !== undefined &&
       (typeof journal.sessionRoot !== "string" ||
         !path.isAbsolute(journal.sessionRoot) ||

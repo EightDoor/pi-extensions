@@ -140,6 +140,39 @@ for (const event of ["foreground", "agent_start", "replacement", "shutdown"] as 
       assert.equal(context.statuses.get("sync"), undefined);
     }));
 
+test("cancelled automatic transfer does not publish its stale observation", async () =>
+  withTempHome(async (agentDir) => {
+    await configure(agentDir);
+    const { createStartupCheck } = await import("../src/sync/startup-check.js");
+    const { createSyncLoaders } = await import("../src/sync/sync-loaders.js");
+    const { createSyncAttentionController } = await import("../src/ui/sync-attention.js");
+    const entered = deferred();
+    const attention = createSyncAttentionController();
+    const publish = vi.spyOn(attention, "publish");
+    const controller = createStartupCheck(
+      createSyncLoaders({
+        loadSyncInspection: async () => ({ inspectSync: (config) => inspectionFixture(config) }),
+        loadSyncOperations: async () => ({
+          ...(await import("../src/sync/sync-operations.js")),
+          syncBoth: async (_ctx, options) => {
+            entered.resolve();
+            await new Promise<void>((resolve) =>
+              options.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+            return "cancelled" as const;
+          },
+        }),
+      }),
+      attention,
+    );
+    const context = createMockContext({ mode: "rpc" });
+    controller.start(context.ctx, new AbortController().signal, await loadConfig());
+    await entered.promise;
+    await controller.stop();
+    assert.equal(publish.mock.calls.length, 0);
+    assert.equal(context.widgets.get("sync:attention"), undefined);
+  }));
+
 test("turning off a queued policy before idle performs no transfer", async () =>
   withTempHome(async (agentDir) => {
     await configure(agentDir);
