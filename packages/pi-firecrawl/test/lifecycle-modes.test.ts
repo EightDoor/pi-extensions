@@ -83,7 +83,7 @@ test("failed old-session save restores its accepted policy before replacement st
   });
 });
 
-test("session replacement closes an open settings component and cancels unstarted old-context actions", async () => {
+test("session replacement closes the screen but persists accepted mode changes without stale notifications", async () => {
   await fixture(async () => {
     initTheme("dark", false);
     const { default: extension } = await import("../src/firecrawl.js");
@@ -107,7 +107,7 @@ test("session replacement closes an open settings component and cancels unstarte
     await mock.events.get("session_start")?.[0]?.({ reason: "switch" }, replacement.ctx);
     await command;
     assert.deepEqual(notifications, []);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["codemode"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["codemode", "firecrawl_load", ...capabilities]);
   });
 });
 

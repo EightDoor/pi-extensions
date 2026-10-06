@@ -109,12 +109,17 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
         (id, value) => {
           if (!live()) return;
           pending += 1;
+          // Register persistence at acceptance so replacement/shutdown can await it, even
+          // before this screen's observer queue runs. Only runtime/UI work is session-owned.
+          const modeSave =
+            id === "toolMode" && isFirecrawlToolMode(value)
+              ? setFirecrawlToolMode(pi, ctx, value, sessionSignal)
+              : undefined;
           queue = queue
             .then(async () => {
-              if (!isCurrent()) return;
-              if (id === "toolMode" && isFirecrawlToolMode(value)) {
-                if (await setFirecrawlToolMode(pi, ctx, value, sessionSignal)) savedMode = value;
-              } else if (FIRECRAWL_TOOL_NAMES.includes(id as FirecrawlToolName)) {
+              if (modeSave) {
+                if ((await modeSave) && isCurrent() && isFirecrawlToolMode(value)) savedMode = value;
+              } else if (isCurrent() && FIRECRAWL_TOOL_NAMES.includes(id as FirecrawlToolName)) {
                 const tools = new Set(availableFirecrawlTools(pi));
                 if (value === "enabled") tools.add(id as FirecrawlToolName);
                 else tools.delete(id as FirecrawlToolName);
@@ -147,7 +152,7 @@ export async function showFirecrawlSettings(pi: ExtensionAPI, ctx: ExtensionComm
       );
       // Six bounded rows need no search input; SettingsList owns navigation and value cycling.
       // Submitted settings changes drain in order even after close; disposal releases UI ownership.
-      // Session replacement prevents unstarted actions from using the old context.
+      // Session replacement suppresses unstarted runtime actions, not accepted mode persistence.
       sessionSignal.addEventListener("abort", close, { once: true });
       return {
         render(width: number) {

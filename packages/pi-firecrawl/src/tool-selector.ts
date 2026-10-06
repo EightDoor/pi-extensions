@@ -302,11 +302,12 @@ export function setFirecrawlToolMode(
   notificationSignal?: AbortSignal,
 ): Promise<boolean> {
   const generation = currentFirecrawlSessionGeneration(pi);
+  const fallbackTools = availableFirecrawlTools(pi);
   const operation = toolTransactionQueue.then(async () => {
-    if (!isCurrentFirecrawlSession(pi, generation)) return false;
+    // Accepted mode writes are global persistence, not work owned by the old session.
     try {
-      await saveToolMode(mode, availableFirecrawlTools(pi));
-      return isCurrentFirecrawlSession(pi, generation);
+      await saveToolMode(mode, fallbackTools);
+      return true;
     } catch (error) {
       if (!notificationSignal?.aborted && isCurrentFirecrawlSession(pi, generation)) {
         ctx.ui.notify(sanitizeFirecrawlDisplay(`Firecrawl settings save failed: ${formatError(error)}`), "warning");
