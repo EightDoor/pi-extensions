@@ -94,7 +94,12 @@ export function createHarness(
 }
 
 export function createContext(
-  options: { mode?: ExtensionContext["mode"]; branch?: SessionEntry[]; terminalRows?: number } = {},
+  options: {
+    mode?: ExtensionContext["mode"];
+    hasUI?: boolean;
+    branch?: SessionEntry[];
+    terminalRows?: number;
+  } = {},
 ) {
   const widgets: Array<{
     key: string;
@@ -107,9 +112,10 @@ export function createContext(
   const sessionManager = {
     getBranch: () => branch,
   } as unknown as ExtensionContext["sessionManager"];
+  const mode = options.mode ?? "tui";
   const ctx = {
-    mode: options.mode ?? "tui",
-    hasUI: options.mode !== "print" && options.mode !== "json",
+    mode,
+    hasUI: options.hasUI ?? mode === "tui",
     sessionManager,
     ui: {
       setWidget(key: string, content: WidgetFactory | undefined, widgetOptions?: { placement: "aboveEditor" }) {
