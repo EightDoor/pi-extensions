@@ -178,6 +178,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     const settings = settingsRuntime.get().settings;
     const showCodexResetCountdown =
       outcome.state.report.providerId === "openai-codex" && settings.codexStatusResetCountdown;
+    const isCompanionReport = outcome.state.report.source === "openai-chatgpt-companion";
     const now = Date.now();
     const rawValue = formatUsageStatusline(
       outcome.state.report,
@@ -191,9 +192,13 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     if (shouldSchedule && sessionActive) scheduleStatusRefresh(ctx, model);
     if (
       sessionActive &&
-      (showCodexResetCountdown || outcome.state.report.source === "openai-chatgpt-companion") &&
+      (showCodexResetCountdown || isCompanionReport) &&
       outcome.state.report.buckets.some(
-        (bucket) => bucket.resetsAt !== undefined && Number.isFinite(bucket.resetsAt) && bucket.resetsAt * 1_000 > now,
+        (bucket) =>
+          (!isCompanionReport || bucket.groupId === "chatgpt-plan") &&
+          bucket.resetsAt !== undefined &&
+          Number.isFinite(bucket.resetsAt) &&
+          bucket.resetsAt * 1_000 > now,
       )
     ) {
       const generation = statusGeneration;
