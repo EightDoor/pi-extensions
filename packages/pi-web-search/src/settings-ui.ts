@@ -118,7 +118,8 @@ export async function showSettings(
               );
           }
           if (!disposed && !sessionSignal.aborted) {
-            list.updateValue(id, values(key));
+            // A save adopts the latest document, including externally edited fields.
+            for (const item of items) list.updateValue(item.id, values(item.id as keyof Settings));
             tui.requestRender();
           }
         });

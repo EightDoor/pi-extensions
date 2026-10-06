@@ -99,8 +99,10 @@ export class SettingsStore {
     private readonly publish = rename,
   ) {}
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(() => withFileMutationQueue(this.path, task));
-    this.queue = result.catch(() => undefined);
+    // Register immediately so every store observes invocation order. Keep flush
+    // waiting for earlier work even if a later queue registration fails early.
+    const result = withFileMutationQueue(this.path, task);
+    this.queue = Promise.allSettled([this.queue, result]).then(() => undefined);
     return result;
   }
   load(): Promise<Settings> {
@@ -126,6 +128,8 @@ export class SettingsStore {
         signal?.throwIfAborted();
         const handle = await open(temporary, "wx", 0o600);
         try {
+          // open's mode is filtered by umask; publish the exact mode we require on reads.
+          if (process.platform !== "win32") await handle.chmod(0o600);
           await handle.writeFile(data, "utf8");
           await handle.sync();
         } finally {

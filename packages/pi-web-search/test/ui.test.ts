@@ -14,7 +14,7 @@ import { DEFAULTS, type Settings } from "../src/settings.js";
 import { showSettings } from "../src/settings-ui.js";
 
 type Screen = Component & { focused?: boolean; dispose?(): void };
-function screenHarness(keys: KeybindingsManager) {
+function screenHarness(keys: KeybindingsManager, onRender = () => {}) {
   let screen!: Screen;
   let finish!: () => void;
   let opened!: () => void;
@@ -27,7 +27,7 @@ function screenHarness(keys: KeybindingsManager) {
       new Promise<void>((resolve) => {
         finish = resolve;
         screen = factory(
-          { requestRender() {} },
+          { requestRender: onRender },
           { fg: (_role: string, value: string) => value, bold: (value: string) => value },
           keys,
           () => {
@@ -222,6 +222,63 @@ test("UI edits serialize, recover from failure and restore displayed effective v
   assert.match(harness.screen.render(100).join("\n"), /deferred/);
   harness.screen.handleInput?.("\u0003");
   await running;
+});
+
+test("saving adopts all external fields in displayed rows and subsequent cycles", async () => {
+  initTheme("dark", false);
+  let settings: Settings = { ...DEFAULTS };
+  const latest: Settings = {
+    ...DEFAULTS,
+    accountId: "b".repeat(32),
+    gatewayId: "external-gateway",
+    byokAlias: "external-key",
+    limit: 8,
+    timeoutMs: 60000,
+  };
+  const patches: Partial<Settings>[] = [];
+  let refreshed!: () => void;
+  const rendered = new Promise<void>((resolve) => {
+    refreshed = resolve;
+  });
+  let cycled!: () => void;
+  const updated = new Promise<void>((resolve) => {
+    cycled = resolve;
+  });
+  const harness = screenHarness(new KeybindingsManager(TUI_KEYBINDINGS), () => {
+    if (settings.limit === 8) refreshed();
+    if (settings.limit === 9) cycled();
+  });
+  const running = showSettings(
+    harness.ctx,
+    () => settings,
+    async (patch) => {
+      patches.push(patch);
+      settings = { ...latest, ...patch };
+      Object.assign(latest, patch);
+    },
+    new AbortController().signal,
+  );
+  try {
+    await harness.ready;
+    for (let i = 0; i < 3; i++) harness.screen.handleInput?.("\u001b[B");
+    harness.screen.handleInput?.("\r");
+    await rendered;
+    const lines = harness.screen.render(130).join("\n");
+    assert.match(lines, /bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/);
+    assert.match(lines, /external-gateway/);
+    assert.match(lines, /external-key/);
+    assert.match(lines, /Default result limit.*8/);
+    assert.match(lines, /Request timeout.*60000/);
+    harness.screen.handleInput?.("\u001b[B");
+    harness.screen.handleInput?.("\r");
+    assert.deepEqual(patches, [{ exposure: "direct" }]);
+    await updated;
+    assert.deepEqual(patches, [{ exposure: "direct" }, { limit: 9 }]);
+    assert.equal(settings.limit, 9);
+  } finally {
+    harness.screen.handleInput?.("\u0003");
+    await running;
+  }
 });
 
 test("closing waits for a committed save to settle before returning to the command", async () => {

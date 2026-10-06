@@ -131,12 +131,54 @@ test("reads and flush wait for ordered saves, including other stores using the s
   assert.equal(flushed, false);
   release();
   await first;
-  // A separate store's read queues behind the already-enqueued first save;
-  // own-store reads additionally wait for every earlier local save.
-  assert.equal((await reading).limit, 1);
+  const observed = await reading;
   await second;
   await flush;
+  // Assert only after every owned operation settles, even on a regression failure.
+  assert.equal(observed.limit, 9);
   assert.equal((await store.load()).limit, 9);
+});
+
+test("flush still waits for earlier work when a later shared-queue registration fails", async () => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  let release!: () => void;
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { rename } = await import("node:fs/promises");
+  const store = new SettingsStore(path, async (from, to) => {
+    started();
+    await gate;
+    await rename(from, to);
+  });
+  const first = store.save({ limit: 1 });
+  await ready;
+  try {
+    await chmod(join(root, "agent"), 0o000);
+    await assert.rejects(store.save({ limit: 2 }), { code: "EACCES" });
+    let flushed = false;
+    const flush = store.flush().then(() => {
+      flushed = true;
+    });
+    // Let flush continuations run without releasing publication or using sleeps.
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(flushed, false);
+    await chmod(join(root, "agent"), 0o700);
+    release();
+    await first;
+    await flush;
+    assert.equal(flushed, true);
+    assert.equal((await store.load()).limit, 1);
+  } finally {
+    await chmod(join(root, "agent"), 0o700);
+    release();
+    await first;
+  }
 });
 
 test("cancellation while waiting for mutation ownership prevents publication", async () => {
@@ -161,6 +203,23 @@ test("cancellation while waiting for mutation ownership prevents publication", a
   await lock;
   await rejection;
   await assert.rejects(lstat(join(root, "agent")), { code: "ENOENT" });
+});
+
+test.each([0o277, 0o477, 0o777])("POSIX saves enforce 0600 despite restrictive umask %s", async (mask) => {
+  if (process.platform === "win32") return;
+  await mkdir(join(root, "agent"), { mode: 0o700 });
+  const previous = process.umask(mask);
+  try {
+    const store = new SettingsStore(path);
+    await store.save({ limit: 3 });
+    assert.equal((await lstat(path)).mode & 0o777, 0o600);
+    assert.equal((await new SettingsStore(path).load()).limit, 3);
+    await store.save({ exposure: "direct" });
+    assert.equal((await lstat(path)).mode & 0o777, 0o600);
+    assert.equal((await new SettingsStore(path).load()).exposure, "direct");
+  } finally {
+    process.umask(previous);
+  }
 });
 
 test("cancelled saves do not publish or create defaults", async () => {
