@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { assertWithinRoot, isDeniedPath, isPathInside, parentPaths, safeJoin, toPosix } from "../paths.js";
@@ -57,7 +57,7 @@ export async function applySnapshot(
     ),
     snapshot,
   );
-  await preflightSnapshotMutations(root, plan, sessionDir);
+  await preflightSnapshotMutations(root, plan, sessionDir, options);
   await applySnapshotTransaction(plan, transactionOptions);
   return appliedFileHashMap(snapshot, current, protectedRelativePaths);
 }
@@ -192,18 +192,43 @@ function decodeBase64Strict(value: string, filePath: string) {
   return Buffer.from(value, "base64");
 }
 
+type MutationGuards = Pick<SnapshotOptions, "signal" | "validateMutation">;
+
 export async function preflightSnapshotMutations(
   root: string,
   plan: { deletes: string[]; writes: Array<{ target: string; content: Buffer }> },
   sessionDir?: string,
+  options: MutationGuards = {},
 ) {
+  assertMutationCurrent(options);
   const deletePaths = new Set(plan.deletes);
   for (const target of plan.deletes) {
-    await assertNoSymlinkParents(rootForTarget(root, target, sessionDir), target);
+    await assertNoSymlinkParents(rootForTarget(root, target, sessionDir), target, options);
+    assertMutationCurrent(options);
   }
   for (const item of plan.writes) {
-    await prepareSnapshotWrite(rootForTarget(root, item.target, sessionDir), item.target, deletePaths);
+    await prepareSnapshotWrite(rootForTarget(root, item.target, sessionDir), item.target, deletePaths, options);
+    assertMutationCurrent(options);
   }
+}
+
+function assertMutationCurrent(options: MutationGuards) {
+  options.validateMutation?.();
+  options.signal?.throwIfAborted();
+}
+
+async function guardedStat(target: string, options: MutationGuards) {
+  assertMutationCurrent(options);
+  let stat: Stats;
+  try {
+    stat = await fs.lstat(target);
+  } catch (error) {
+    assertMutationCurrent(options);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  assertMutationCurrent(options);
+  return stat;
 }
 
 function rootForTarget(root: string, target: string, sessionDir?: string) {
@@ -212,44 +237,46 @@ function rootForTarget(root: string, target: string, sessionDir?: string) {
   return root;
 }
 
-async function prepareSnapshotWrite(root: string, target: string, deletePaths: Set<string>) {
-  const parentWillBeReplaced = await ensureSafeDirectory(root, path.dirname(target), deletePaths);
+async function prepareSnapshotWrite(root: string, target: string, deletePaths: Set<string>, options: MutationGuards) {
+  const parentWillBeReplaced = await ensureSafeDirectory(root, path.dirname(target), deletePaths, options);
+  assertMutationCurrent(options);
   if (parentWillBeReplaced) return;
-  try {
-    const stat = await fs.lstat(target);
-    if (stat.isSymbolicLink()) throw new Error(`Refusing to overwrite symlink during snapshot apply: ${target}`);
-    if (stat.isDirectory() && !deletePaths.has(target)) {
-      throw new Error(`Refusing to overwrite directory during snapshot apply: ${target}`);
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  const stat = await guardedStat(target, options);
+  assertMutationCurrent(options);
+  if (stat?.isSymbolicLink()) throw new Error(`Refusing to overwrite symlink during snapshot apply: ${target}`);
+  if (stat?.isDirectory() && !deletePaths.has(target)) {
+    throw new Error(`Refusing to overwrite directory during snapshot apply: ${target}`);
   }
 }
 
-async function ensureSafeDirectory(root: string, directory: string, deletePaths: Set<string>) {
+async function ensureSafeDirectory(root: string, directory: string, deletePaths: Set<string>, options: MutationGuards) {
+  assertMutationCurrent(options);
   assertWithinRoot(root, directory);
   const rootPath = path.resolve(root);
   const relative = path.relative(rootPath, path.resolve(directory));
   let current = rootPath;
   for (const part of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, part);
-    try {
-      const stat = await fs.lstat(current);
+    const stat = await guardedStat(current, options);
+    assertMutationCurrent(options);
+    if (stat) {
       if (stat.isSymbolicLink()) throw new Error(`Refusing to follow symlink during snapshot apply: ${current}`);
       if (!stat.isDirectory()) {
         if (deletePaths.has(current)) return true;
         throw new Error(`Snapshot path parent is not a directory: ${current}`);
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    } else {
       await fs.mkdir(current);
+      assertMutationCurrent(options);
       await syncDirectory(path.dirname(current));
+      assertMutationCurrent(options);
     }
   }
   return false;
 }
 
-async function assertNoSymlinkParents(root: string, target: string) {
+async function assertNoSymlinkParents(root: string, target: string, options: MutationGuards) {
+  assertMutationCurrent(options);
   assertWithinRoot(root, target);
   const rootPath = path.resolve(root);
   const relative = path.relative(rootPath, path.resolve(target));
@@ -257,13 +284,10 @@ async function assertNoSymlinkParents(root: string, target: string) {
   const parts = relative.split(path.sep).filter(Boolean);
   for (const part of parts.slice(0, -1)) {
     current = path.join(current, part);
-    try {
-      const stat = await fs.lstat(current);
-      if (stat.isSymbolicLink()) throw new Error(`Refusing to follow symlink during snapshot apply: ${current}`);
-      if (!stat.isDirectory()) throw new Error(`Snapshot path parent is not a directory: ${current}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
+    const stat = await guardedStat(current, options);
+    assertMutationCurrent(options);
+    if (!stat) return;
+    if (stat.isSymbolicLink()) throw new Error(`Refusing to follow symlink during snapshot apply: ${current}`);
+    if (!stat.isDirectory()) throw new Error(`Snapshot path parent is not a directory: ${current}`);
   }
 }

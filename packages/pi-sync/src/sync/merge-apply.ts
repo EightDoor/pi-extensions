@@ -153,7 +153,7 @@ export async function applyMergedSnapshot(
     const plan = preflightSnapshotApply(root, after, current, options);
     plan.writes = plan.writes.filter((item) => targets.includes(item.target));
     plan.deletes = plan.deletes.filter((target) => targets.includes(target));
-    await preflightSnapshotMutations(root, plan, options.sessionDir);
+    await preflightSnapshotMutations(root, plan, options.sessionDir, options);
     await validate();
     const revalidateTarget = async (target: string) => {
       await validate();
