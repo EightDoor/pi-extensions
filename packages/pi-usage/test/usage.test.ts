@@ -115,7 +115,6 @@ function memorySettingsRuntime(
     kind,
     path: "/tmp/pi-usage.json",
     settings: {
-      openaiCompanionUsage: false,
       codexFastMode: false,
       codexStatusResetCountdown: options.codexStatusResetCountdown ?? false,
       codexStatusPercentage: options.codexStatusPercentage ?? "remaining",
@@ -2586,7 +2585,7 @@ test("the TUI SettingsList describes and applies usage preferences immediately",
   assert.ok(renderedSettings.some((frame) => /Use faster Codex routing/.test(frame)));
   assert.doesNotMatch(renderedSettings.join("\n"), /Fireworks account/u);
   assert.doesNotMatch(renderedSettings.join("\n"), /xAI/iu);
-  assert.match(renderedSettings.join("\n"), /Experimental ChatGPT companion usage/);
+  assert.doesNotMatch(renderedSettings.join("\n"), /ChatGPT companion usage/);
 });
 
 test("the Settings frame respects the live terminal row budget", async () => {
@@ -2713,7 +2712,6 @@ test("Ctrl+C hard-cancels Settings before conflicting configurable actions", asy
 
   assert.equal(changed, false);
   assert.deepEqual(settings.state().settings, {
-    openaiCompanionUsage: false,
     codexFastMode: false,
     codexStatusResetCountdown: false,
     codexStatusPercentage: "remaining",

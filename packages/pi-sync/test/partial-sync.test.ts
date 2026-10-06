@@ -16,12 +16,15 @@ import {
   readConflictArtifact,
   saveConflictArtifact,
 } from "../src/sync/conflict-artifacts.js";
+import { resolveReviewedGroup } from "../src/sync/conflict-resolution.js";
 import { pruneCompletedConflicts } from "../src/sync/conflict-retention.js";
 import { showConflicts } from "../src/sync/conflict-review.js";
 import { snapshotFile } from "../src/sync/content-conflicts.js";
+import { planFileMerge } from "../src/sync/file-merge-planner.js";
 import { readMergeJournal, writeMergeJournal } from "../src/sync/merge-journal.js";
 import { mergeSync } from "../src/sync/merged-sync.js";
 import { push } from "../src/sync/sync-mutations.js";
+import { fileHashMap } from "../src/sync/sync-state.js";
 import { v3S3Settings, withTempHome } from "./helpers.js";
 import { MemorySyncBackend } from "./memory-sync-backend.js";
 
@@ -34,10 +37,14 @@ const options: CommandOptions = {
   reload: false,
   auto: false,
 };
-async function fixture(root: string) {
+async function fixture(root: string, portablePolicy = true) {
   await fs.mkdir(path.join(root, "prompts"), { recursive: true });
   const settings = v3S3Settings({ include: ["settings.json", "AGENTS.md", "prompts"] });
-  Object.assign(settings.syncSetups.home.sync, { mergeContent: true, partialSync: true, localFields: [] });
+  Object.assign(settings.syncSetups.home.sync, {
+    mergeContent: true,
+    partialSync: true,
+    ...(portablePolicy ? { localFields: [] } : {}),
+  });
   await fs.writeFile(localConfigPath(), JSON.stringify({ ...settings, version: 5 }));
   await fs.writeFile(path.join(root, "settings.json"), "{}\n");
   await fs.writeFile(path.join(root, "AGENTS.md"), "a\nb\nc\n");
@@ -866,3 +873,100 @@ for (const paths of [
       assert.deepEqual(await artifactNames(f.config), []);
       assert.equal(await readMergeJournal(f.config), undefined);
     }));
+
+for (const source of ["local", "remote"] as const)
+  test(`large reviewed group indexes selected ${source} versions once`, async () =>
+    withTempHome(async (root) => {
+      const f = await fixture(root);
+      const head = await f.backend.readHead();
+      assert.ok(head);
+      const common = await f.backend.readSnapshot(head.snapshotRef);
+      const paths = Array.from({ length: 4096 }, (_, index) => `prompts/${index}.md`);
+      const versions = (value: string) => ({
+        ...common,
+        files: paths.map((path) => snapshotFile(path, Buffer.from(value))),
+      });
+      const base = versions("base\n");
+      const local = versions("ours\n");
+      const remote = versions("theirs\n");
+      const previous = { ...f.state, lastFileHashes: fileHashMap(base) };
+      const token = await saveConflictArtifact(
+        f.config,
+        f.backend.identity,
+        {
+          state: previous,
+          local,
+          remote,
+          groups: [{ paths, reasons: ["both-changed"] }],
+          observed: { snapshotId: head.snapshotId, revision: head.revision },
+        },
+        () => {},
+      );
+      const artifact = await readConflictArtifact(f.config, f.backend.identity, token);
+      const state = {
+        ...previous,
+        lastObservedSnapshot: head.snapshotId,
+        lastObservedRevision: head.revision,
+        unresolved: [{ paths, artifact: token }],
+      };
+      const plan = planFileMerge({
+        baseline: previous.lastFileHashes,
+        local: local.files,
+        remote: remote.files,
+        selectionCompatible: true,
+      });
+      const selected = source === "local" ? local : remote;
+      const find = vi.spyOn(selected.files, "find").mockImplementation(() => {
+        throw new Error("per-decision array scan");
+      });
+      try {
+        const result = await resolveReviewedGroup(
+          f.config,
+          f.backend,
+          state,
+          local,
+          remote,
+          head,
+          plan,
+          {
+            token,
+            group: 0,
+            source,
+            stateIdentity: syncStateFingerprint(state),
+            artifactIdentity: conflictArtifactFingerprint(artifact),
+          },
+          new Set(),
+        );
+        assert.equal(result.kind, "planned");
+        if (result.kind === "planned") {
+          assert.equal(result.conflicts.length, 0);
+          assert.equal(result.decisions.length, paths.length);
+          for (const decision of result.decisions) {
+            assert.equal(decision.kind, "accepted");
+            if (decision.kind === "accepted") assert.equal(decision.file?.sha256, selected.files[0]?.sha256);
+          }
+        }
+      } finally {
+        find.mockRestore();
+      }
+    }));
+
+test("partial sync preserves an absent portable-field policy across snapshot-v3 decoding", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root, false);
+    const config = await loadConfig();
+    assert.equal(config.localFields, undefined);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "LOCAL\nb\nc\n");
+    await publish(f, { "AGENTS.md": "REMOTE\nb\nc\n" });
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const raw = await f.backend.readSnapshot(head.snapshotRef);
+    assert.equal(raw.version, 3);
+    assert.equal(raw.localFields, undefined);
+    const { encodeSnapshot, decodeSnapshot } = await import("../src/snapshot/snapshot-codec.js");
+    const decoded = await decodeSnapshot(await encodeSnapshot(raw));
+    assert.equal(decoded.localFields, undefined);
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    assert.equal((await readStateForConfig(config)).unresolved?.length, 1);
+  }));

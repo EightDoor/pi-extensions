@@ -88,12 +88,16 @@ function parseDocument(bytes: Buffer, checkSettingsMigration = true): JsonDocume
       position++;
     } else if (text[position] === '"') stringEnd();
     else while (position < text.length && !/[\s,\]}]/u.test(text.charAt(position))) position++;
-    return {
-      start,
-      end: position,
-      value: JSON.parse(text.slice(start, position)) as JsonValue,
-      ...(members ? { members } : {}),
-    };
+    const source = text.slice(start, position);
+    const value = JSON.parse(source) as JsonValue;
+    if (
+      typeof value === "number" &&
+      (!Number.isFinite(value) ||
+        (Number.isInteger(value) && !Number.isSafeInteger(value)) ||
+        decimalIdentity(source) !== decimalIdentity(String(value)))
+    )
+      throw new Error("Numeric settings value cannot round-trip without loss; review required.");
+    return { start, end: position, value, ...(members ? { members } : {}) };
   };
   const root = parse(0);
   if (!root.members) throw new Error("Settings merge requires a JSON object.");
@@ -107,6 +111,19 @@ function parseDocument(bytes: Buffer, checkSettingsMigration = true): JsonDocume
       throw new Error("Legacy settings migration requires review before content merge.");
   }
   return { text, root: { ...root, members: root.members } };
+}
+
+/** Compare decimal literals without expanding exponents or rounding through Number. */
+function decimalIdentity(source: string) {
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/u.exec(source);
+  if (!match) throw new Error("Invalid numeric token.");
+  const fraction = match[3] ?? "";
+  const digits = `${match[2]}${fraction}`.replace(/^0+/u, "");
+  if (!digits) return "0";
+  const coefficient = digits.replace(/0+$/u, "");
+  const exponent = Number(match[4] ?? 0) - fraction.length + digits.length - coefficient.length;
+  if (!Number.isSafeInteger(exponent)) throw new Error("Unsupported numeric exponent.");
+  return `${match[1]}${coefficient}e${exponent}`;
 }
 
 export function jsonEqual(left: JsonValue | undefined, right: JsonValue | undefined): boolean {

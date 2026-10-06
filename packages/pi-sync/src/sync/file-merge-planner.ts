@@ -92,15 +92,18 @@ function validatePath(filePath: string) {
     filePath === ".." ||
     filePath.startsWith("../") ||
     path.posix.isAbsolute(filePath) ||
-    /^[a-z]:/iu.test(filePath) ||
     filePath.includes("\\") ||
-    filePath.includes(":") ||
-    filePath
-      .split("/")
-      .some((segment) => /[ .]$/u.test(segment) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment)) ||
+    (process.platform === "win32" &&
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: Native Windows filename restrictions.
+      (/[<>:"|?*\u0001-\u001f]/u.test(filePath) ||
+        filePath
+          .split("/")
+          .some(
+            (segment) => /[ .]$/u.test(segment) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment),
+          ))) ||
     path.posix.normalize(filePath) !== filePath ||
     // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject unsafe snapshot paths.
-    /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ud800-\udfff]/u.test(filePath) ||
+    /[\u0000\ud800-\udfff]/u.test(filePath) ||
     isDeniedPath(filePath) ||
     (filePath.startsWith("sessions/") && !filePath.endsWith(".jsonl"))
   ) {
@@ -114,7 +117,7 @@ export function mergePathIdentity(filePath: string) {
 }
 
 /** Conservative dependency groups: never accept a case or file/directory transition independently. */
-function collidingPaths(paths: readonly string[]) {
+export function collidingPaths(paths: readonly string[]) {
   const byLower = new Map<string, string[]>();
   for (const filePath of paths) {
     const lower = mergePathIdentity(filePath);

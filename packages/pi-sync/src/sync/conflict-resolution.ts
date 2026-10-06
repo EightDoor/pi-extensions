@@ -74,13 +74,14 @@ export async function resolveReviewedGroup(
         "Selected/current local group still has path collisions; preserve evidence, repair the layout manually and refresh sync.",
       );
   }
+  const selectedFiles = new Map(selected.files.map((file) => [file.path, file]));
   const decisions = plan.decisions.map((item) =>
     paths.has(item.path)
       ? {
           kind: "accepted" as const,
           path: item.path,
           source: resolution.source,
-          file: selected.files.find((file) => file.path === item.path),
+          file: selectedFiles.get(item.path),
         }
       : item,
   );

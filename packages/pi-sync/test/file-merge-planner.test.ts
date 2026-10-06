@@ -188,16 +188,11 @@ for (const unsafe of [
   "lone-low-\udc00.md",
   "../escape",
   "/absolute",
-  "C:/escape",
   "prompts/../settings.json",
   "prompts\\file",
-  "prompts/file:stream",
-  "prompts/CON.md",
-  "prompts/file. ",
-  "prompts/LPT1",
   "sessions/not-jsonl.txt",
   "pi-sync.json",
-  "prompts/\u001bfile",
+  "prompts/\u0000file",
   "state/pi-sync/private",
 ]) {
   test(`file planner rejects unsafe or denied input: ${JSON.stringify(unsafe)}`, () => {
@@ -207,6 +202,29 @@ for (const unsafe of [
     );
   });
 }
+
+for (const nativePath of [
+  "notes:2026.md",
+  "C:/notes.md",
+  "prompts/CON.md",
+  "prompts/file. ",
+  "prompts/LPT1",
+  "prompts/zero\u200bwidth.md",
+  "prompts/bidi\u202e.md",
+  "prompts/control\u001b.md",
+  "prompts/control\u0085.md",
+])
+  test(`file planner preserves native path compatibility: ${JSON.stringify(nativePath)}`, () => {
+    const input = { baseline: {}, local: [file("content", nativePath)], remote: [], selectionCompatible: true };
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: Native Windows filename restrictions.
+    if (process.platform === "win32" && /:|CON|LPT1|[ .]$|[\u0001-\u001f]/u.test(nativePath)) {
+      assert.throws(() => planFileMerge(input), /Unsafe merge path/);
+    } else {
+      const plan = planFileMerge(input);
+      assert.equal(plan.kind, "planned");
+      if (plan.kind === "planned") assert.equal(plan.conflicts.length, 0);
+    }
+  });
 
 test("file planner rejects duplicate paths, damaged hashes and noncanonical base64", () => {
   const input = { baseline: {}, remote: [], selectionCompatible: true };

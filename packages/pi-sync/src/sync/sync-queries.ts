@@ -93,7 +93,7 @@ export async function diff(
     return;
   }
 
-  ctx.ui.notify(`${header}\n\n${formatDiff(local, remote)}`, level);
+  ctx.ui.notify(`${header}\n\n${formatDiff(local, portableSnapshot(remote, remote.localFields))}`, level);
 }
 
 export async function doctor(

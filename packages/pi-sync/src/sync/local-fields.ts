@@ -31,6 +31,7 @@ export function normalizeLocalFields(value: unknown): string[] {
     ["skills", "enableSkillCommands"],
     ["queueMode", "steeringMode"],
     ["websockets", "transport"],
+    ["enableAnalytics", "trackingId"],
   ]) {
     if (value.includes(first) !== value.includes(second))
       throw new Error("Coupled settings fields must be excluded together.");
@@ -43,9 +44,28 @@ export function validateSnapshotFieldPolicy(snapshot: Pick<Snapshot, "version" |
     throw new Error("Unsupported snapshot format.");
   if (snapshot.version === 1 && snapshot.localFields !== undefined)
     throw new Error("Portable field policy requires snapshot version 2.");
-  if (snapshot.version === 2 || snapshot.version === 3) normalizeLocalFields(snapshot.localFields);
+  if (snapshot.version === 2 || snapshot.version === 3) {
+    if (snapshot.version === 2 && snapshot.localFields === undefined)
+      throw new Error("Snapshot version 2 requires explicit localFields rules.");
+    normalizeLocalFields(snapshot.localFields);
+  }
+}
+/** Portable transport images must not carry values declared machine-local. Physical journal images are different. */
+export function validatePortableSnapshot(snapshot: Snapshot) {
+  validateSnapshotFieldPolicy(snapshot);
+  if ((snapshot.version !== 2 && snapshot.version !== 3) || !snapshot.localFields?.length) return;
+  try {
+    for (const entry of snapshot.files) {
+      if (typeof entry?.path !== "string" || entry.path.toLowerCase() !== "settings.json") continue;
+      const document = parseSettingsDocument(Buffer.from(entry.contentBase64, "base64"));
+      if (snapshot.localFields.some((field) => document.root.members.has(field))) throw new Error("Excluded field.");
+    }
+  } catch {
+    throw new Error("Portable snapshot settings.json retains excluded fields or has an unsupported document.");
+  }
 }
 export function sameLocalFields(left: unknown, right: unknown) {
+  if (left === undefined || right === undefined) return left === right;
   return JSON.stringify(normalizeLocalFields(left)) === JSON.stringify(normalizeLocalFields(right));
 }
 function file(content: Buffer): SnapshotFile {
@@ -83,11 +103,15 @@ export function overlayLocalFields(portable: Snapshot, local: Snapshot, fields: 
   const target = portable.files.find((entry) => entry.path === "settings.json");
   const current = local.files.find((entry) => entry.path === "settings.json");
   if (!target && !current) return portable;
-  if (!target) throw new Error("Portable settings deletion requires manual review; local-only fields were preserved.");
-  const incoming = parseSettingsDocument(Buffer.from(target.contentBase64, "base64"));
   const original = current
     ? parseSettingsDocument(Buffer.from(current.contentBase64, "base64"))
     : parseSettingsDocument(Buffer.from("{}"));
+  if (!target) {
+    if (fields.some((field) => original.root.members.has(field)))
+      throw new Error("Portable settings deletion requires manual review; local-only fields were preserved.");
+    return portable;
+  }
+  const incoming = parseSettingsDocument(Buffer.from(target.contentBase64, "base64"));
   const selected = new Map<string, { document: JsonDocument; node: JsonNode }>();
   const excluded = new Set(fields);
   for (const [key, member] of incoming.root.members) {

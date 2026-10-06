@@ -7,7 +7,12 @@ import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
 import { statePathForConfig, syncStateFingerprint } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
-import { portableSnapshot } from "./local-fields.js";
+import {
+  portableSnapshot,
+  sameLocalFields,
+  validatePortableSnapshot,
+  validateSnapshotFieldPolicy,
+} from "./local-fields.js";
 import type { PartialProgress } from "./partial-progress.js";
 import { fileHashMap, sameHashes } from "./sync-state.js";
 
@@ -21,6 +26,8 @@ export interface MergeJournal {
   upload: Snapshot;
   expectedHead: RemoteHead;
   committedHead?: RemoteHead;
+  /** No remote publication was attempted; a stale candidate can retire if local preimages remain intact. */
+  applyOnly?: boolean;
   backup: string;
   stateIdentity: string;
   /** Effective collection/apply root; absent legacy evidence cannot authorize session recovery. */
@@ -29,7 +36,7 @@ export interface MergeJournal {
 }
 
 export function mergeJournalIdentity(config: AnySyncConfig, backendIdentity: string) {
-  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort(), config.localFields ?? []]);
+  return JSON.stringify([config.setupName, backendIdentity, [...config.include].sort(), config.localFields ?? null]);
 }
 
 export function mergeJournalPath(config: AnySyncConfig) {
@@ -53,6 +60,12 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
     typeof journal.identity !== "string" ||
     typeof journal.backup !== "string" ||
     typeof journal.stateIdentity !== "string" ||
+    (journal.applyOnly !== undefined &&
+      (journal.applyOnly !== true ||
+        !journal.committedHead ||
+        journal.committedHead.revision !== journal.expectedHead?.revision ||
+        journal.committedHead.snapshotId !== journal.expectedHead?.snapshotId ||
+        journal.upload?.id !== journal.expectedHead?.snapshotId)) ||
     (journal.sessionRoot !== undefined &&
       (typeof journal.sessionRoot !== "string" ||
         !path.isAbsolute(journal.sessionRoot) ||
@@ -80,6 +93,7 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       journal.upload,
       ...(journal.accepted ? [journal.accepted] : []),
     ]) {
+      validateSnapshotFieldPolicy(snapshot);
       if (
         (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3) ||
         typeof snapshot.id !== "string" ||
@@ -100,14 +114,28 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       )
         throw new Error("Invalid journal collision group.");
     }
+    validatePortableSnapshot(journal.upload);
+    if ((journal.upload.version === 2 || journal.upload.version === 3) && !journal.accepted)
+      throw new Error("Portable merge journal requires an explicit accepted projection.");
+    if (journal.accepted) validatePortableSnapshot(journal.accepted);
   } catch {
     throw new Error("Invalid merge journal paths, metadata, or bytes; preserve evidence for review.");
   }
-  if (
-    journal.accepted &&
-    !sameHashes(fileHashMap(portableSnapshot(journal.after, config.localFields)), fileHashMap(journal.accepted))
-  )
+  // Integrity is intrinsic to the recorded transaction, not the user's current recovery policy.
+  // completeJournal separately checks that the recorded policy matches the current setup.
+  try {
+    if (
+      journal.accepted &&
+      (!sameLocalFields(journal.accepted.localFields, journal.upload.localFields) ||
+        !sameHashes(
+          fileHashMap(portableSnapshot(journal.after, journal.upload.localFields)),
+          fileHashMap(portableSnapshot(journal.accepted, journal.upload.localFields)),
+        ))
+    )
+      throw new Error("Projection mismatch.");
+  } catch {
     throw new Error("Invalid accepted merge projection; preserve journal evidence.");
+  }
   if (journal.progress) {
     const known = new Set([
       ...Object.keys(journal.progress.previous?.lastFileHashes ?? {}),

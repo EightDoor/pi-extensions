@@ -71,6 +71,83 @@ for (const mode of ["default-manager", "explicit-manager", "different-manager", 
       }
     }));
 
+for (const pinnedRoot of ["absent", "default", "custom"] as const)
+  test(`startup restores invalid settings postimage without session targets (pinned root: ${pinnedRoot})`, async () =>
+    withTempHome(async (agentDir) => {
+      const target = path.join(agentDir, "settings.json");
+      const before = '{"theme":"safe"}';
+      const after = '{"sessionDir":true}';
+      const directory = path.join(agentDir, "pi-sync/transactions/interrupted");
+      await fs.mkdir(path.join(directory, "before"), { recursive: true });
+      await fs.writeFile(path.join(directory, "before/0"), before);
+      await fs.writeFile(target, after);
+      await fs.writeFile(
+        path.join(directory, "journal.json"),
+        JSON.stringify({
+          version: 2,
+          root: agentDir,
+          ...(pinnedRoot === "absent"
+            ? {}
+            : {
+                sessionRoot:
+                  pinnedRoot === "default"
+                    ? path.join(agentDir, "sessions")
+                    : path.join(path.dirname(agentDir), "custom-sessions"),
+              }),
+          entries: [
+            {
+              target,
+              backupName: "0",
+              kind: "file",
+              beforeImage: fileImage(before),
+              afterImage: fileImage(after),
+              postFiles: [],
+            },
+          ],
+        }),
+      );
+      const context = createMockContext({ hasUI: false });
+      await startSession(context.ctx, new AbortController().signal);
+      assert.equal(await fs.readFile(target, "utf8"), before);
+      await assert.rejects(fs.access(directory), { code: "ENOENT" });
+    }));
+
+for (const storage of ["external", "nested-agent"] as const)
+  test(`startup with ${storage} session targets refuses invalid settings and retains all evidence`, async () =>
+    withTempHome(async (agentDir) => {
+      const sessionRoot = path.join(storage === "external" ? path.dirname(agentDir) : agentDir, "custom-sessions");
+      const target = path.join(sessionRoot, "conversation.jsonl");
+      const directory = path.join(agentDir, "pi-sync/transactions/interrupted");
+      await fs.mkdir(path.join(directory, "before"), { recursive: true });
+      await fs.mkdir(sessionRoot, { recursive: true });
+      await fs.writeFile(path.join(agentDir, "settings.json"), '{"sessionDir":true}');
+      await fs.writeFile(path.join(directory, "before/0"), "before");
+      await fs.writeFile(target, "after");
+      await fs.writeFile(
+        path.join(directory, "journal.json"),
+        JSON.stringify({
+          version: 2,
+          root: agentDir,
+          sessionRoot,
+          entries: [
+            {
+              target,
+              backupName: "0",
+              kind: "file",
+              beforeImage: fileImage("before"),
+              afterImage: fileImage("after"),
+              postFiles: [],
+            },
+          ],
+        }),
+      );
+      const context = createMockContext({ hasUI: false });
+      await assert.rejects(startSession(context.ctx, new AbortController().signal), { name: "TypeError" });
+      assert.equal(await fs.readFile(target, "utf8"), "after");
+      assert.equal(await fs.readFile(path.join(directory, "before/0"), "utf8"), "before");
+      await fs.access(path.join(directory, "journal.json"));
+    }));
+
 test("startup without recovery does not parse unrelated Pi settings", async () =>
   withTempHome(async (agentDir) => {
     await fs.mkdir(agentDir, { recursive: true });
@@ -192,7 +269,7 @@ for (const preimage of ["file", "directory"] as const)
         }
       }));
 
-test("directory-to-file apply failure immediately restores its complete preimage", async () =>
+test("directory-to-file rename failure retains ambiguous evidence for review", async () =>
   withTempHome(async (agentDir) => {
     const target = path.join(agentDir, "custom");
     const child = path.join(target, "old.md");
@@ -206,10 +283,14 @@ test("directory-to-file apply failure immediately restores its complete preimage
     try {
       await assert.rejects(
         applySnapshotTransaction({ deletes: [target, child], writes: [{ target, content: Buffer.from("after") }] }),
-        /injected directory replacement failure/,
+        /guarded recovery requires review/,
       );
-      assert.equal(await fs.readFile(child, "utf8"), "before");
-      assert.deepEqual(await fs.readdir(path.join(agentDir, "pi-sync/transactions")), []);
+      await assert.rejects(fs.access(target), { code: "ENOENT" });
+      const transactions = path.join(agentDir, "pi-sync/transactions");
+      const entries = await fs.readdir(transactions);
+      assert.equal(entries.length, 1);
+      assert.equal(await fs.readFile(path.join(transactions, entries[0] ?? "", "before/0/old.md"), "utf8"), "before");
+      await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
     } finally {
       spy.mockRestore();
     }
@@ -281,9 +362,85 @@ for (const failure of ["copy", "rename", "cancel", "newer"] as const)
         cpSpy.mockRestore();
         renameSpy.mockRestore();
       }
-      if (failure !== "newer") {
+      if (failure === "rename") {
+        await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
+        await assert.rejects(fs.access(f.target), { code: "ENOENT" });
+        await fs.access(f.directory);
+      } else if (failure !== "newer") {
         await recoverPendingSnapshotTransactions();
         assert.equal(await fs.readFile(path.join(f.target, "old.md"), "utf8"), "before");
         await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
       }
+    }));
+
+test("explicit manager root authorizes recovery without a settings-derived match", async () =>
+  withTempHome(async (root) => {
+    const sessionRoot = path.join(path.dirname(root), "explicit-manager");
+    const target = path.join(sessionRoot, "session.jsonl");
+    await fs.mkdir(sessionRoot, { recursive: true });
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, "settings.json"), "{}");
+    await fs.writeFile(target, "before");
+    const controller = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (to === target) controller.abort();
+    });
+    try {
+      await assert.rejects(
+        applySnapshotTransaction(
+          {
+            writes: [{ target, content: Buffer.from("after") }],
+            deletes: [],
+          },
+          { sessionDir: sessionRoot, signal: controller.signal },
+        ),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const context = createMockContext({ hasUI: false });
+    Object.defineProperties((context.ctx as ExtensionContext).sessionManager, {
+      usesDefaultSessionDir: { value: () => false },
+      getSessionDir: { value: () => sessionRoot },
+    });
+    await startSession(context.ctx, new AbortController().signal);
+    assert.equal(await fs.readFile(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(path.join(root, "pi-sync/transactions")), []);
+  }));
+
+for (const copied of [false, true])
+  test(`restart removes ${copied ? "complete" : "partial"} recovery staging left by a crash`, async () =>
+    withTempHome(async (root) => {
+      const f = await directoryRecoveryFixture(root);
+      const cp = fs.cp.bind(fs);
+      const rm = fs.rm.bind(fs);
+      let staged = "";
+      const copying = vi.spyOn(fs, "cp").mockImplementation(async (...args) => {
+        staged = String(args[1]);
+        const journal = JSON.parse(await fs.readFile(path.join(f.directory, "journal.json"), "utf8"));
+        assert.equal(journal.entries[0].recoveryStaged, true);
+        if (copied) await cp(...args);
+        else {
+          await fs.mkdir(staged);
+          await fs.writeFile(path.join(staged, "partial.md"), "private partial copy");
+        }
+        throw new Error("simulated process crash");
+      });
+      const cleanup = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+        if (String(args[0]) !== staged) await rm(...args);
+      });
+      try {
+        await assert.rejects(recoverPendingSnapshotTransactions(), /simulated process crash/);
+      } finally {
+        copying.mockRestore();
+        cleanup.mockRestore();
+      }
+      await fs.access(staged);
+      assert.equal(await fs.readFile(f.target, "utf8"), "after");
+      await recoverPendingSnapshotTransactions();
+      assert.equal(await fs.readFile(path.join(f.target, "old.md"), "utf8"), "before");
+      await assert.rejects(fs.access(staged), { code: "ENOENT" });
+      await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
     }));

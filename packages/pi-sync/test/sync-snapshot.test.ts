@@ -242,7 +242,7 @@ test("snapshot apply replaces a configured custom file with a remote directory",
   });
 });
 
-test("snapshot apply restores a custom file when directory replacement fails", async () => {
+test("snapshot apply retains a custom-file backup when replacement outcome is ambiguous", async () => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
     const customPath = path.join(agentDir, "custom");
@@ -255,11 +255,17 @@ test("snapshot apply restores a custom file when directory replacement fails", a
       return originalRename(...args);
     }) as typeof fs.rename;
     try {
-      await assert.rejects(applySnapshot(remote, new Set(), { include: ["custom"] }), /injected custom child failure/u);
+      await assert.rejects(
+        applySnapshot(remote, new Set(), { include: ["custom"] }),
+        /guarded recovery requires review/u,
+      );
     } finally {
       fs.rename = originalRename;
     }
-    assert.equal(readFileSync(customPath, "utf8"), "local file\n");
+    assert.deepEqual(await fs.readdir(customPath), []);
+    const transactions = path.join(agentDir, "pi-sync/transactions");
+    const entries = await fs.readdir(transactions);
+    assert.equal(await fs.readFile(path.join(transactions, entries[0] ?? "", "before/0"), "utf8"), "local file\n");
   });
 });
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { backendIdentityCoordinates } from "../backends/backend-identity.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import type { Snapshot, SnapshotFile } from "../snapshot/snapshot-types.js";
-import { planFileMerge } from "../sync/file-merge-planner.js";
+import { collidingPaths, planFileMerge } from "../sync/file-merge-planner.js";
 import { parseSettingsDocument } from "../sync/json-document.js";
 import { validateSession } from "../sync/session-merge.js";
 import { isMergeTextPath, text } from "../sync/text-merge.js";
@@ -61,8 +61,10 @@ export async function stageMergeBaseline(
   accepted: SyncState,
   previous?: SyncState,
 ) {
+  const collisions = collidingPaths(snapshot.files.map((file) => file.path));
   const files = snapshot.files.filter((file) => {
     return (
+      !collisions.has(file.path) &&
       accepted.lastFileHashes[file.path] === file.sha256 &&
       (file.path === "settings.json" || config.mergeContent) &&
       eligible(file)
@@ -77,6 +79,7 @@ export async function stageMergeBaseline(
     }
     for (const ancestor of ancestors)
       if (
+        !collisions.has(ancestor.path) &&
         accepted.lastFileHashes[ancestor.path] === ancestor.sha256 &&
         !files.some((file) => file.path === ancestor.path)
       )
@@ -95,26 +98,37 @@ export async function stageMergeBaseline(
   await writeJson(baselinePath(config, accepted), record, { maxBytes: MAX_BYTES });
 }
 
+async function readBaselineRecord(
+  config: AnySyncConfig,
+  target: string,
+  acceptedState: string,
+  validate: () => void = () => {},
+): Promise<MergeBaseline> {
+  const stat = await fs.lstat(target);
+  validate();
+  if (!stat.isFile() || stat.size > MAX_BYTES || (process.platform !== "win32" && (stat.mode & 0o077) !== 0))
+    throw new Error("Unsafe cache.");
+  const record = JSON.parse(await fs.readFile(target, "utf8")) as MergeBaseline;
+  validate();
+  if (
+    record.version !== 1 ||
+    record.identity !== identity(config) ||
+    record.acceptedState !== acceptedState ||
+    !Array.isArray(record.files) ||
+    record.files.length > 16_384 ||
+    record.files.some((file) => !eligible(file))
+  )
+    throw new Error("Invalid cache identity.");
+  const plan = planFileMerge({ baseline: {}, local: record.files, remote: [], selectionCompatible: true });
+  if (plan.kind !== "planned" || plan.conflicts.length) throw new Error("Invalid cache bytes.");
+  return record;
+}
+
 export async function readMergeAncestors(config: AnySyncConfig, state: SyncState): Promise<SnapshotFile[] | undefined> {
   let record: MergeBaseline;
   try {
     await checkDirectory(config);
-    const target = baselinePath(config, state);
-    const stat = await fs.lstat(target);
-    if (!stat.isFile() || stat.size > MAX_BYTES || (process.platform !== "win32" && (stat.mode & 0o077) !== 0))
-      throw new Error("Unsafe cache.");
-    record = JSON.parse(await fs.readFile(target, "utf8")) as MergeBaseline;
-    if (
-      record.version !== 1 ||
-      record.identity !== identity(config) ||
-      record.acceptedState !== syncStateFingerprint(state) ||
-      !Array.isArray(record.files) ||
-      record.files.length > 16_384 ||
-      record.files.some((file) => !eligible(file))
-    )
-      throw new Error("Invalid cache identity.");
-    const plan = planFileMerge({ baseline: {}, local: record.files, remote: [], selectionCompatible: true });
-    if (plan.kind !== "planned" || plan.conflicts.length) throw new Error("Invalid cache bytes.");
+    record = await readBaselineRecord(config, baselinePath(config, state), syncStateFingerprint(state));
     for (const file of record.files) {
       if (
         state.lastFileHashes[file.path] !== file.sha256 ||
@@ -150,23 +164,8 @@ export async function pruneMergeBaselines(config: AnySyncConfig, state: SyncStat
     validate();
     if (name === keep || !/^[a-f0-9]{64}\.json$/u.test(name)) continue;
     const target = path.join(directory(config), name);
-    const stat = await fs.lstat(target);
-    validate();
-    if (!stat.isFile() || stat.size > MAX_BYTES) continue;
     try {
-      const record = JSON.parse(await fs.readFile(target, "utf8")) as MergeBaseline;
-      validate();
-      if (
-        record.version !== 1 ||
-        record.identity !== identity(config) ||
-        `${record.acceptedState}.json` !== name ||
-        !Array.isArray(record.files) ||
-        record.files.length > 16_384 ||
-        record.files.some((file) => !eligible(file))
-      )
-        continue;
-      const plan = planFileMerge({ baseline: {}, local: record.files, remote: [], selectionCompatible: true });
-      if (plan.kind !== "planned" || plan.conflicts.length) continue;
+      await readBaselineRecord(config, target, name.slice(0, -5), validate);
     } catch {
       validate();
       continue; // Unknown/corrupted evidence is not an owned pruning candidate.

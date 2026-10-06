@@ -60,7 +60,6 @@ function configFromSettings(settings: PiSyncSettingsV3, setupName?: string): Any
     settings.onSwitch,
     settings.skipSecretScan ?? false,
     settings.showStatus ?? true,
-    settings.version,
   );
 }
 
@@ -99,10 +98,9 @@ export function syncSetupReviewIdentity(
   setup: SyncSetupSettings,
   connectionName: string,
   connection: StorageConnectionSettings,
-  settingsVersion: PiSyncSettingsV3["version"],
 ) {
   return syncConfigReviewIdentity(
-    resolveSyncConfig(setupName, setup, connectionName, connection, DEFAULT_ON_SWITCH, false, true, settingsVersion),
+    resolveSyncConfig(setupName, setup, connectionName, connection, DEFAULT_ON_SWITCH, false, true),
   );
 }
 
@@ -153,7 +151,6 @@ function resolveSyncConfig(
   onSwitch: OnSwitchAction,
   skipSecretScan: boolean,
   showStatus: boolean,
-  settingsVersion = 3,
 ): AnySyncConfig {
   const storagePath = normalizeStoragePath(setup.storage.path);
   const namespace = storagePath === "./" ? "root" : storagePath.slice(storagePath.lastIndexOf("/") + 1);
@@ -166,10 +163,7 @@ function resolveSyncConfig(
     include,
     automatic: setup.sync.automatic,
     automaticTransfer: setup.sync.automaticTransfer ?? false,
-    localFields:
-      setup.sync.localFields === undefined && settingsVersion === 3
-        ? undefined
-        : normalizeLocalFields(setup.sync.localFields),
+    localFields: setup.sync.localFields === undefined ? undefined : normalizeLocalFields(setup.sync.localFields),
     mergeSettings: setup.sync.mergeSettings ?? false,
     mergeContent: setup.sync.mergeContent ?? false,
     partialSync: setup.sync.partialSync ?? false,

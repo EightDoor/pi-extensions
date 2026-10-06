@@ -24,6 +24,7 @@ export async function preflightMergedTargets(
   const afterHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(after));
   const paths = [...new Set([...Object.keys(beforeHashes), ...Object.keys(afterHashes)])].sort();
   const changed = new Set(paths.filter((item) => beforeHashes[item] !== afterHashes[item]));
+  await assertCanonicalMergedTargets(root, changed, options);
   await assertDistinctMergedTargets(root, paths, changed, options, protectedTarget, new Set(Object.keys(afterHashes)));
   const removed = replacementPaths(
     new Set(paths.filter((item) => changed.has(item) && !afterHashes[item])),
@@ -44,6 +45,34 @@ function replacementPaths(removed: Set<string>, afterHashes: Readonly<Record<str
     }
   }
   return removed;
+}
+
+/** Snapshot collection canonicalizes top-level names, but merged journals own exact physical paths. */
+async function assertCanonicalMergedTargets(root: string, changed: Iterable<string>, options: SnapshotOptions) {
+  const topLevel = new Map(
+    [...changed].filter((relative) => !relative.includes("/")).map((relative) => [relative.toLowerCase(), relative]),
+  );
+  if (topLevel.size === 0) return;
+  options.signal?.throwIfAborted();
+  options.validateMutation?.();
+  let names: string[];
+  try {
+    names = await fs.readdir(root);
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    options.validateMutation?.();
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return;
+  }
+  options.signal?.throwIfAborted();
+  options.validateMutation?.();
+  for (const name of names) {
+    const canonical = topLevel.get(name.toLowerCase());
+    if (canonical !== undefined && name !== canonical)
+      throw new Error(
+        "Merged target has a noncanonical case variant; normalize selected top-level file spelling before retrying. Journal retained if already committed.",
+      );
+  }
 }
 
 /** Even an unchanged virtual alias must not describe different bytes for a changed physical file. */
@@ -197,6 +226,8 @@ export async function applyMergedSnapshot(
     const target = targets[index];
     if (target) return withFileMutationQueue(target, () => acquire(index + 1));
     await validate();
+    await assertCanonicalMergedTargets(root, changed, options);
+    await validate();
     const current = await createSnapshot(before.profile, options);
     const currentHashes: Record<string, string> = Object.assign(Object.create(null), fileHashMap(current));
     for (const item of changed) {
@@ -230,13 +261,14 @@ export async function applyMergedSnapshot(
     const plan = preflightSnapshotApply(root, after, current, options);
     plan.writes = plan.writes.filter((item) => targetSet.has(item.target));
     plan.deletes = plan.deletes.filter((target) => targetSet.has(target));
-    await preflightSnapshotMutations(root, plan, options.sessionDir);
+    await preflightSnapshotMutations(root, plan, options.sessionDir, options);
     const deletedTargets = new Set(plan.deletes);
     const removed = replacementPaths(
       new Set(paths.filter((relative) => deletedTargets.has(snapshotTarget(root, relative, options.sessionDir)))),
       afterHashes,
     );
     const removedTargets = new Set([...removed].map((item) => snapshotTarget(root, item, options.sessionDir)));
+    await assertCanonicalMergedTargets(root, changed, options);
     await validate();
     const revalidateTarget = async (target: string) => {
       await validate();

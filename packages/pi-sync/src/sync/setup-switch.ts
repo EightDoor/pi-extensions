@@ -63,7 +63,7 @@ export async function useSyncSetup(
     const connection = current.storageConnections[connectionName];
     if (
       !connection ||
-      syncSetupReviewIdentity(normalized, setup, connectionName, connection, current.version) !== reviewedSetupIdentity
+      syncSetupReviewIdentity(normalized, setup, connectionName, connection) !== reviewedSetupIdentity
     ) {
       throw new Error(
         `Sync setup “${safeTerminalText(normalized)}” changed while the switch preview was open; reopen it and review the current destination.`,

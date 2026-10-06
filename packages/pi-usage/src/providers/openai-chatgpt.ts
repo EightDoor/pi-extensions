@@ -44,13 +44,9 @@ export const OPENAI_CHATGPT_ADAPTER: UsageProviderAdapter = {
       buckets: [],
       metrics: [{ id: "plan-auth", label: "ChatGPT plan authentication", value: "Connected (native OAuth)" }],
       notes: [
-        "Numerical usage and reset times are unavailable in pi-usage for native OpenAI OAuth.",
+        "Numerical usage requires a companion /login openai-codex with the same ChatGPT account/workspace; native inference stays on openai.",
         `Manage usage: ${CHATGPT_USAGE_SETTINGS_URL}`,
-        ...(auth.openaiCompanionEnabled
-          ? [
-              "Experimental companion usage requires /login openai-codex with the same ChatGPT account/workspace; native inference stays on openai.",
-            ]
-          : []),
+        "Companion usage uses undocumented ChatGPT endpoints; registration matching is not independent identity proof.",
         "Fast mode and earned reset redemption remain legacy openai-codex features.",
       ],
     };

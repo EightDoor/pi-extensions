@@ -30,7 +30,7 @@ test("indexed exact review retains absent/unavailable ancestors, binary evidence
   const original = JSON.stringify(input);
   const result = conflictPreview(input, ["prompts/0.md", "prompts/absent.md"], "store\u001bpath");
   assert.match(result, /verified ancestor unavailable; sha256/);
-  assert.match(result, /\uFEFF {2}exact\?\n\?\[31mraw/);
+  assert.match(result, /\? {2}exact\?\n\?\[31mraw/);
   assert.match(result, /base64: \/wA=/);
   assert.match(result, /\(absent\)/);
   assert.equal(result.includes("\u001b"), false);

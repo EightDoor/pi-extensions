@@ -19,7 +19,10 @@ import {
 type SyncPolicyConfig = SyncSelectionConfig & { localFields?: string[] };
 
 export function hasLocalChanges(local: Snapshot, state: SyncState, config: SyncPolicyConfig) {
-  return !sameHashes(fileHashMap(portableSnapshot(local, config.localFields)), stateHashMapForConfig(state, config));
+  return (
+    (Boolean(state.lastAppliedSnapshot) && !sameLocalFields(state.localFields, config.localFields)) ||
+    !sameHashes(fileHashMap(portableSnapshot(local, config.localFields)), stateHashMapForConfig(state, config))
+  );
 }
 
 export function remoteChangedSinceState(
@@ -31,7 +34,7 @@ export function remoteChangedSinceState(
   if (!head) return Boolean(state.lastAppliedSnapshot);
   if (head.snapshotId !== state.lastAppliedSnapshot) return true;
   if (state.lastRemoteRevision && !sameRevision(head.revision, state.lastRemoteRevision)) return true;
-  if (syncIncludeChanged(state, config)) return true;
+  if (syncPolicyChanged(state, config)) return true;
   return (
     includeFromSelectionConfig(config).includes("sessions") && !state.include?.includes("sessions") && head.syncSessions
   );
@@ -44,7 +47,12 @@ export function hasRemoteChanges(
   ignoredPaths = new Set<string>(),
 ) {
   if (remote.id === state.lastAppliedSnapshot && !syncPolicyChanged(state, config)) return false;
-  return !snapshotHashesMatchState(filterSnapshotForConfigPolicy(remote, config), state, config, ignoredPaths);
+  return !snapshotHashesMatchState(
+    portableSnapshot(filterSnapshotForConfigPolicy(remote, config), remote.localFields),
+    state,
+    config,
+    ignoredPaths,
+  );
 }
 
 export function sameHashes(left: Record<string, string>, right: Record<string, string>) {

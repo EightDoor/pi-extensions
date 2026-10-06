@@ -72,7 +72,14 @@ test("unowned roots, missing backups and malformed private journals fail without
     const f = await journalFixture(agentDir);
     const file = path.join(f.directory, "journal.json");
     const original = JSON.parse(await fs.readFile(file, "utf8"));
-    await fs.writeFile(file, JSON.stringify({ ...original, sessionRoot: path.dirname(agentDir) }));
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        ...original,
+        sessionRoot: path.dirname(agentDir),
+        entries: [{ ...original.entries[0], target: path.join(path.dirname(agentDir), "unowned-session.jsonl") }],
+      }),
+    );
     await assert.rejects(recoverPendingSnapshotTransactions(), /not owned/);
     await fs.writeFile(file, JSON.stringify(original));
     await fs.rm(path.join(f.directory, "before/0"));
@@ -323,7 +330,7 @@ test("directional directory-to-file replacement does not re-delete descendants",
   }));
 
 for (const fail of [false, true])
-  test(`file-to-directory ${fail ? "rollback" : "apply"} retains safe structure`, async () =>
+  test(`file-to-directory ${fail ? "interruption review" : "apply"} retains safe structure`, async () =>
     withTempHome(async (agentDir) => {
       await fs.mkdir(agentDir, { recursive: true });
       const root = path.join(agentDir, "custom");
@@ -344,8 +351,16 @@ for (const fail of [false, true])
           ],
         });
         if (fail) {
-          await assert.rejects(operation, /injected/);
-          assert.equal(await fs.readFile(root, "utf8"), "original root");
+          await assert.rejects(operation, /guarded recovery requires review/);
+          assert.equal(await fs.readFile(first, "utf8"), "first");
+          await assert.rejects(fs.access(second), { code: "ENOENT" });
+          await assert.rejects(recoverPendingSnapshotTransactions(), /newer bytes/);
+          const transactions = path.join(agentDir, "pi-sync/transactions");
+          const entries = await fs.readdir(transactions);
+          assert.equal(
+            await fs.readFile(path.join(transactions, entries[0] ?? "", "before/0"), "utf8"),
+            "original root",
+          );
         } else {
           await operation;
           assert.equal(await fs.readFile(first, "utf8"), "first");

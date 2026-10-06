@@ -9,160 +9,155 @@ import {
   type PublishSnapshotOptions,
   SyncBackendConflictError,
 } from "../src/backends/sync-backend.js";
-import type { CommandOptions } from "../src/commands/command-types.js";
-import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { createSnapshot, regenerateSnapshotIdentity } from "../src/snapshot/snapshot.js";
 import type { Snapshot } from "../src/snapshot/snapshot-types.js";
 import { readMergeAncestor, stageMergeBaseline } from "../src/state/merge-baseline-store.js";
-import { readStateForConfig, statePathForConfig, syncStateFingerprint } from "../src/state/sync-state-store.js";
+import {
+  readStateForConfig,
+  statePathForConfig,
+  syncStateFingerprint,
+  writeStateForConfig,
+} from "../src/state/sync-state-store.js";
 import {
   mergeJournalIdentity,
   mergeJournalPath,
   readMergeJournal,
   writeMergeJournal,
 } from "../src/sync/merge-journal.js";
-import { push, syncBoth } from "../src/sync/sync-mutations.js";
+import { SyncDecisionRequiredError } from "../src/sync/sync-errors.js";
+import { push, rollback, syncBoth } from "../src/sync/sync-mutations.js";
 import { fileHashMap } from "../src/sync/sync-state.js";
 import { snapshot, v3S3Settings, withTempHome } from "./helpers.js";
 import { MemorySyncBackend } from "./memory-sync-backend.js";
+import { createMergeFixture as fixture, mergeOptions as options } from "./merged-sync-fixture.js";
 
-const options: CommandOptions = {
-  args: [],
-  yes: true,
-  force: false,
-  stale: false,
-  silent: false,
-  reload: false,
-  auto: false,
-};
+for (const mode of ["manual-review", "manual-yes", "automatic"] as const)
+  test(`legacy remote selection requires review in ${mode}`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      if (mode === "automatic") {
+        const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+        settings.syncSetups.home.sync.automaticTransfer = true;
+        await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+      }
+      const legacy = structuredClone(f.base);
+      delete legacy.selection;
+      await f.backend.publishSnapshot(regenerateSnapshotIdentity(legacy), {
+        kind: "revision",
+        revision: f.baseHead.revision,
+      });
+      await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local"}');
+      const state = await readStateForConfig(f.config);
+      const head = await f.backend.readHead();
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        await assert.rejects(
+          syncBoth(f.ctx, { ...options, yes: mode !== "manual-review", auto: mode === "automatic" }, () => f.backend),
+          (error: unknown) => {
+            assert.ok(error instanceof SyncDecisionRequiredError);
+            assert.equal(error.decision.kind, "remote-or-policy-changed");
+            assert.match(error.decision.review, /legacy snapshot/);
+            assert.match(error.decision.review, /explicit direction adopts/);
+            return true;
+          },
+        );
+        assert.equal(publish.mock.calls.length, 0);
+        assert.deepEqual(await f.backend.readHead(), head);
+        assert.deepEqual(await readStateForConfig(f.config), state);
+        assert.equal(await readMergeJournal(f.config), undefined);
+        assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"local"}');
+      } finally {
+        publish.mockRestore();
+      }
+    }));
 
-async function fixture(agentDir: string, backend = new MemorySyncBackend(), sessions = false) {
-  await fs.mkdir(agentDir, { recursive: true });
-  const settings = v3S3Settings({ include: ["settings.json", "AGENTS.md", "prompts"] });
-  Object.assign(settings.syncSetups.home.sync, { mergeSettings: true });
-  if (sessions) {
-    settings.syncSetups.home.sync.include.push("sessions");
-    Object.assign(settings.syncSetups.home.sync, { automaticTransfer: true });
-    await fs.mkdir(path.join(agentDir, "sessions/project"), { recursive: true });
-    await fs.writeFile(path.join(agentDir, "sessions/project/unchanged.jsonl"), '{"session":"preserved"}\n');
-  }
-  await fs.writeFile(localConfigPath(), JSON.stringify(settings));
-  await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"original"}\n');
-  await fs.writeFile(path.join(agentDir, "AGENTS.md"), "original instructions\n");
-  const { ctx, notifications } = createMockContext({ hasUI: true });
-  await push(ctx, options, undefined, () => backend);
-  const baseHead = await backend.readHead();
-  assert.ok(baseHead);
-  const base = await backend.readSnapshot(baseHead.snapshotRef);
-  async function remoteEdit(filePath: string, content?: string) {
-    const head = await backend.readHead();
-    assert.ok(head);
-    const current = await backend.readSnapshot(head.snapshotRef);
-    const changed = snapshot(content === undefined ? [] : [{ path: filePath, content: Buffer.from(content) }]).files;
-    return backend.publishSnapshot(
-      regenerateSnapshotIdentity({
-        ...current,
-        files: [...current.files.filter((file) => file.path !== filePath), ...changed],
-      }),
-      { kind: "revision", revision: head.revision },
-    );
-  }
-  return { backend, ctx, notifications, base, baseHead, remoteEdit, config: await loadConfig() };
-}
+for (const accepted of [false, true])
+  test(`legacy apply-only journal ${accepted ? "retires a completed baseline" : "requires selection review before apply"}`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      const state = await readStateForConfig(f.config);
+      const legacy = structuredClone(f.base);
+      delete legacy.selection;
+      legacy.files = [
+        ...legacy.files.filter((file) => file.path !== "AGENTS.md"),
+        ...snapshot([{ path: "AGENTS.md", content: Buffer.from("legacy remote instructions") }]).files,
+      ];
+      const after = regenerateSnapshotIdentity(legacy);
+      const committed = await f.backend.publishSnapshot(after, { kind: "revision", revision: f.baseHead.revision });
+      await writeMergeJournal(f.config, {
+        version: 1,
+        identity: mergeJournalIdentity(f.config, f.backend.identity),
+        before: f.base,
+        after,
+        upload: after,
+        expectedHead: committed.head,
+        committedHead: committed.head,
+        applyOnly: true,
+        backup: "retained-private-backup",
+        stateIdentity: syncStateFingerprint(state),
+      });
+      if (accepted) {
+        await fs.writeFile(path.join(agentDir, "AGENTS.md"), "legacy remote instructions");
+        await writeStateForConfig(f.config, {
+          version: 1,
+          profile: f.config.snapshotIdentity,
+          lastAppliedSnapshot: committed.head.snapshotId,
+          lastRemoteRevision: committed.head.revision,
+          lastFileHashes: fileHashMap(after),
+          include: [...f.config.include],
+        });
+      }
+      const baseline = await readStateForConfig(f.config);
+      if (accepted) {
+        assert.equal(await syncBoth(f.ctx, options, () => f.backend), "applied");
+        assert.equal(await readMergeJournal(f.config), undefined);
+      } else {
+        await assert.rejects(
+          syncBoth(f.ctx, options, () => f.backend),
+          /unavailable remote selection metadata/,
+        );
+        assert.ok(await readMergeJournal(f.config));
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
+      }
+      assert.deepEqual(await readStateForConfig(f.config), baseline);
+      assert.deepEqual(await f.backend.readHead(), committed.head);
+    }));
 
-test("identical remote publications prune older ancestors while preserving accepted and unknown evidence", async () =>
-  withTempHome(async (agentDir) => {
-    const f = await fixture(agentDir);
-    const directory = `${statePathForConfig(f.config)}.ancestors`;
-    const unknown = `${"f".repeat(64)}.json`;
-    await fs.writeFile(path.join(directory, unknown), "unknown evidence");
-    for (let index = 0; index < 3; index++) {
-      const previous = await readStateForConfig(f.config);
-      await f.backend.publishSnapshot(
-        { ...f.base, id: `identical-${index}` },
-        { kind: "revision", revision: (await f.backend.readHead())?.revision ?? "" },
-      );
-      await syncBoth(f.ctx, options, () => f.backend);
-      const accepted = await readStateForConfig(f.config);
-      assert.equal(await readMergeAncestor(f.config, previous, "settings.json"), undefined);
-      assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
-      assert.deepEqual(
-        (await fs.readdir(directory)).sort(),
-        [unknown, `${syncStateFingerprint(accepted)}.json`].sort(),
-      );
-    }
-  }));
-
-test("already accepted journal recovery prunes old ancestors without replaying local bytes", async () =>
-  withTempHome(async (agentDir) => {
-    const f = await fixture(agentDir);
-    const accepted = await readStateForConfig(f.config);
-    const old = { ...accepted, lastRemoteRevision: "old-revision" };
-    await stageMergeBaseline(f.config, f.base, old);
-    await writeMergeJournal(f.config, {
-      version: 1,
-      identity: mergeJournalIdentity(f.config, f.backend.identity),
-      before: f.base,
-      after: f.base,
-      accepted: f.base,
-      upload: f.base,
-      expectedHead: f.baseHead,
-      committedHead: f.baseHead,
-      backup: "retained-backup",
-      stateIdentity: syncStateFingerprint(old),
-    });
-    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"newer"}\n');
-    await syncBoth(f.ctx, options, () => f.backend);
-    assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"newer"}\n');
-    assert.equal(await readMergeJournal(f.config), undefined);
-    assert.equal(await readMergeAncestor(f.config, old, "settings.json"), undefined);
-    assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
-  }));
-
-test("settings conflicts merge against an accepted private ancestor", async () =>
-  withTempHome(async (agentDir) => {
-    const f = await fixture(agentDir);
-    await syncBoth(f.ctx, options, () => f.backend); // Accepted equality captures the ancestor.
-    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local"}\n');
-    await f.remoteEdit("settings.json", '{"theme":"original","defaultModel":"remote-model"}\n');
-    await syncBoth(f.ctx, options, () => f.backend);
-    assert.deepEqual(JSON.parse(await fs.readFile(path.join(agentDir, "settings.json"), "utf8")), {
-      theme: "local",
-      defaultModel: "remote-model",
-    });
-    const head = await f.backend.readHead();
-    assert.ok(head);
-    const remote = await f.backend.readSnapshot(head.snapshotRef);
-    assert.deepEqual(
-      JSON.parse(
-        Buffer.from(
-          remote.files.find((file) => file.path === "settings.json")?.contentBase64 ?? "",
-          "base64",
-        ).toString(),
-      ),
-      { theme: "local", defaultModel: "remote-model" },
-    );
-  }));
-
-test("divergent settings field retains whole-transfer review and names no credential values", async () =>
-  withTempHome(async (agentDir) => {
-    const f = await fixture(agentDir);
-    await syncBoth(f.ctx, options, () => f.backend);
-    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local-private-value"}\n');
-    await f.remoteEdit("settings.json", '{"theme":"remote-private-value"}\n');
-    const publication = vi.spyOn(f.backend, "publishSnapshot");
-    await assert.rejects(
-      syncBoth(f.ctx, options, () => f.backend),
-      (error) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /Settings fields: theme/);
-        assert.doesNotMatch(error.message, /local-private-value|remote-private-value/);
-        return true;
-      },
-    );
-    assert.equal(publication.mock.calls.length, 0);
-  }));
+for (const force of [false, true])
+  test(`rollback cannot bypass a pending merge journal (force: ${force})`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      const state = await readStateForConfig(f.config);
+      await writeMergeJournal(f.config, {
+        version: 1,
+        identity: mergeJournalIdentity(f.config, f.backend.identity),
+        before: f.base,
+        after: f.base,
+        upload: f.base,
+        expectedHead: f.baseHead,
+        backup: "retained-private-backup",
+        stateIdentity: syncStateFingerprint(state),
+      });
+      const journal = await fs.readFile(mergeJournalPath(f.config));
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "newer local instructions");
+      const read = vi.spyOn(f.backend, "readSnapshot");
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        await assert.rejects(
+          rollback(f.ctx, { ...options, args: [f.base.id], force }, () => f.backend),
+          /merged transfer needs recovery/,
+        );
+        assert.equal(read.mock.calls.length, 0);
+        assert.equal(publish.mock.calls.length, 0);
+        assert.deepEqual(await fs.readFile(mergeJournalPath(f.config)), journal);
+        assert.deepEqual(await readStateForConfig(f.config), state);
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "newer local instructions");
+      } finally {
+        read.mockRestore();
+        publish.mockRestore();
+      }
+    }));
 
 for (const auto of [false, true])
   for (const transition of ["default-to-custom", "custom-to-custom", "custom-to-default"])
@@ -241,6 +236,93 @@ for (const unsafe of [false, true])
         publish.mockRestore();
       }
     }));
+
+for (const invalid of ["{private-token", '{"sessionDir":true}', "[]"])
+  test(`merge refuses invalid remote session settings ${invalid} before publication`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir, new MemorySyncBackend(), true);
+      const state = await readStateForConfig(f.config);
+      await f.remoteEdit("settings.json", invalid);
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "independent local");
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        await assert.rejects(
+          syncBoth(f.ctx, options, () => f.backend),
+          (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.doesNotMatch(error.message, /private-token/);
+            return true;
+          },
+        );
+        assert.equal(publish.mock.calls.length, 0);
+        assert.deepEqual(await readStateForConfig(f.config), state);
+        assert.equal(await readMergeJournal(f.config), undefined);
+      } finally {
+        publish.mockRestore();
+      }
+    }));
+
+test("invalid UTF-8 session settings are withheld before publication", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir, new MemorySyncBackend(), true);
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const original = await f.backend.readSnapshot(head.snapshotRef);
+    const invalid = snapshot([{ path: "settings.json", content: Buffer.from([0x7b, 0xff, 0x7d]) }]).files[0];
+    assert.ok(invalid);
+    await f.backend.publishSnapshot(
+      regenerateSnapshotIdentity({
+        ...original,
+        files: [...original.files.filter((file) => file.path !== invalid.path), invalid],
+      }),
+      { kind: "revision", revision: head.revision },
+    );
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /cannot be parsed/,
+    );
+    assert.equal(await readMergeJournal(f.config), undefined);
+  }));
+
+test("established sync avoids a second planning download", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const read = vi.spyOn(f.backend, "readSnapshot");
+    await syncBoth(f.ctx, options, () => f.backend);
+    // One planning read and one post-publication verification, never a duplicate planning read.
+    assert.equal(read.mock.calls.length, 2);
+    read.mockRestore();
+  }));
+
+test("no-op established sync downloads once", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const read = vi.spyOn(f.backend, "readSnapshot");
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.equal(read.mock.calls.length, 1);
+    read.mockRestore();
+  }));
+
+test("no-op acceptance refuses a concurrently advanced head", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const state = await readStateForConfig(f.config);
+    const original = f.backend.readHead.bind(f.backend);
+    let reads = 0;
+    const read = vi.spyOn(f.backend, "readHead").mockImplementation(async (...args) => {
+      if (++reads === 2) {
+        read.mockRestore();
+        await f.remoteEdit("AGENTS.md", "newer remote");
+      }
+      return original(...args);
+    });
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Remote changed before baseline acceptance/,
+    );
+    assert.deepEqual(await readStateForConfig(f.config), state);
+  }));
 
 test("an older committed session-root transition journal requires directional recovery", async () =>
   withTempHome(async (agentDir) => {
@@ -365,6 +447,224 @@ for (const boundary of ["backup", "journal"] as const)
         publish.mockRestore();
       }
     }));
+
+test("apply-only candidate retires when the remote advances during journal publication", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const state = await readStateForConfig(f.config);
+    const rename = fs.rename.bind(fs);
+    let advanced = false;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (!advanced && to === mergeJournalPath(f.config)) {
+        advanced = true;
+        await f.remoteEdit("AGENTS.md", "newer remote instructions");
+      }
+    });
+    try {
+      assert.equal(await syncBoth(f.ctx, options, () => f.backend), "cancelled");
+      assert.equal(advanced, true);
+      assert.equal(await readMergeJournal(f.config), undefined);
+      assert.deepEqual(await readStateForConfig(f.config), state);
+      assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
+    } finally {
+      renameSpy.mockRestore();
+    }
+  }));
+
+test("remote advance after apply retains an apply-only journal instead of accepting a stale baseline", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await f.remoteEdit("AGENTS.md", "remote instructions");
+    const state = await readStateForConfig(f.config);
+    const original = f.backend.readHead.bind(f.backend);
+    const read = vi.spyOn(f.backend, "readHead").mockImplementation(async (...args) => {
+      if ((await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8")) === "remote instructions") {
+        read.mockRestore();
+        await f.remoteEdit("AGENTS.md", "newer remote instructions");
+      }
+      return original(...args);
+    });
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Remote changed during merged apply/,
+    );
+    assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "remote instructions");
+    assert.deepEqual(await readStateForConfig(f.config), state);
+    assert.ok(await readMergeJournal(f.config));
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Apply-only remote head advanced/,
+    );
+    assert.ok(await readMergeJournal(f.config));
+  }));
+
+for (const applyOnly of [false, true])
+  test(`accepted ${applyOnly ? "apply-only" : "published"} merge retires its journal after a newer remote revision`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await fixture(agentDir);
+      const originalState = await readStateForConfig(f.config);
+      const before = await createSnapshot(f.config.snapshotIdentity, { include: f.config.include });
+      const committed = await f.remoteEdit("AGENTS.md", "accepted remote\n");
+      const after = await f.backend.readSnapshot(committed.head.snapshotRef);
+      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "accepted remote\n");
+      await writeMergeJournal(f.config, {
+        version: 1,
+        identity: mergeJournalIdentity(f.config, f.backend.identity),
+        before,
+        after,
+        upload: after,
+        expectedHead: applyOnly ? committed.head : f.baseHead,
+        committedHead: committed.head,
+        ...(applyOnly ? { applyOnly: true } : {}),
+        backup: "retained-private-backup",
+        stateIdentity: syncStateFingerprint(originalState),
+      });
+      const accepted = {
+        version: 1 as const,
+        profile: f.config.snapshotIdentity,
+        lastAppliedSnapshot: committed.head.snapshotId,
+        lastRemoteRevision: committed.head.revision,
+        lastFileHashes: fileHashMap(after),
+        include: [...f.config.include],
+      };
+      await writeStateForConfig(f.config, accepted);
+      await f.remoteEdit("AGENTS.md", "newer remote\n");
+      const currentHead = await f.backend.readHead();
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        assert.equal(await syncBoth(f.ctx, options, () => f.backend), "applied");
+        assert.equal(await readMergeJournal(f.config), undefined);
+        assert.deepEqual(await readStateForConfig(f.config), accepted);
+        assert.deepEqual(await f.backend.readHead(), currentHead);
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "accepted remote\n");
+        assert.equal(publish.mock.calls.length, 0);
+      } finally {
+        publish.mockRestore();
+      }
+    }));
+
+test("newer remote revision retains an unaccepted published journal", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const originalState = await readStateForConfig(f.config);
+    const before = await createSnapshot(f.config.snapshotIdentity, { include: f.config.include });
+    const committed = await f.remoteEdit("AGENTS.md", "committed remote\n");
+    const after = await f.backend.readSnapshot(committed.head.snapshotRef);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before,
+      after,
+      upload: after,
+      expectedHead: f.baseHead,
+      committedHead: committed.head,
+      backup: "retained-private-backup",
+      stateIdentity: syncStateFingerprint(originalState),
+    });
+    await f.remoteEdit("AGENTS.md", "newer remote\n");
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      /Publication outcome cannot be reconciled/,
+    );
+    assert.ok(await readMergeJournal(f.config));
+    assert.deepEqual(await readStateForConfig(f.config), originalState);
+    assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "original instructions\n");
+  }));
+
+test("identical remote publications prune older ancestors while preserving accepted and unknown evidence", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const directory = `${statePathForConfig(f.config)}.ancestors`;
+    const unknown = `${"f".repeat(64)}.json`;
+    await fs.writeFile(path.join(directory, unknown), "unknown evidence");
+    for (let index = 0; index < 3; index++) {
+      const previous = await readStateForConfig(f.config);
+      await f.backend.publishSnapshot(
+        { ...f.base, id: `identical-${index}` },
+        { kind: "revision", revision: (await f.backend.readHead())?.revision ?? "" },
+      );
+      await syncBoth(f.ctx, options, () => f.backend);
+      const accepted = await readStateForConfig(f.config);
+      assert.equal(await readMergeAncestor(f.config, previous, "settings.json"), undefined);
+      assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+      assert.deepEqual(
+        (await fs.readdir(directory)).sort(),
+        [unknown, `${syncStateFingerprint(accepted)}.json`].sort(),
+      );
+    }
+  }));
+
+test("already accepted journal recovery prunes old ancestors without replaying local bytes", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const accepted = await readStateForConfig(f.config);
+    const old = { ...accepted, lastRemoteRevision: "old-revision" };
+    await stageMergeBaseline(f.config, f.base, old);
+    await writeMergeJournal(f.config, {
+      version: 1,
+      identity: mergeJournalIdentity(f.config, f.backend.identity),
+      before: f.base,
+      after: f.base,
+      accepted: f.base,
+      upload: f.base,
+      expectedHead: f.baseHead,
+      committedHead: f.baseHead,
+      backup: "retained-backup",
+      stateIdentity: syncStateFingerprint(old),
+    });
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"newer"}\n');
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.equal(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"), '{"theme":"newer"}\n');
+    assert.equal(await readMergeJournal(f.config), undefined);
+    assert.equal(await readMergeAncestor(f.config, old, "settings.json"), undefined);
+    assert.ok(await readMergeAncestor(f.config, accepted, "settings.json"));
+  }));
+
+test("settings conflicts merge against an accepted private ancestor", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await syncBoth(f.ctx, options, () => f.backend); // Accepted equality captures the ancestor.
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local"}\n');
+    await f.remoteEdit("settings.json", '{"theme":"original","defaultModel":"remote-model"}\n');
+    await syncBoth(f.ctx, options, () => f.backend);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(agentDir, "settings.json"), "utf8")), {
+      theme: "local",
+      defaultModel: "remote-model",
+    });
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    const remote = await f.backend.readSnapshot(head.snapshotRef);
+    assert.deepEqual(
+      JSON.parse(
+        Buffer.from(
+          remote.files.find((file) => file.path === "settings.json")?.contentBase64 ?? "",
+          "base64",
+        ).toString(),
+      ),
+      { theme: "local", defaultModel: "remote-model" },
+    );
+  }));
+
+test("divergent settings field retains whole-transfer review and names no credential values", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    await syncBoth(f.ctx, options, () => f.backend);
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"local-private-value"}\n');
+    await f.remoteEdit("settings.json", '{"theme":"remote-private-value"}\n');
+    const publication = vi.spyOn(f.backend, "publishSnapshot");
+    await assert.rejects(
+      syncBoth(f.ctx, options, () => f.backend),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Settings fields: theme/);
+        assert.doesNotMatch(error.message, /local-private-value|remote-private-value/);
+        return true;
+      },
+    );
+    assert.equal(publication.mock.calls.length, 0);
+  }));
 
 test("merged sync publishes both independent edits and applies remote bytes without reload", async () =>
   withTempHome(async (agentDir) => {

@@ -50,7 +50,6 @@ export interface UsageReport {
 export interface ResolvedUsageAuth {
   /** Native registration metadata stays local; only companion headers reach ChatGPT. */
   openaiClientId?: string;
-  openaiCompanionEnabled?: boolean;
   openaiCompanion?: { headers: Record<string, string> };
   apiKey?: string;
   headers: Record<string, string>;

@@ -28,9 +28,38 @@ const options: CommandOptions = {
 const image = (value: unknown) => snapshot([{ path: "settings.json", content: Buffer.from(JSON.stringify(value)) }]);
 const object = (value: ReturnType<typeof image>) =>
   JSON.parse(Buffer.from(value.files[0]?.contentBase64 ?? "", "base64").toString());
-for (const rules of ["x", ["x", "x"], ["__proto__"], ["bad\nfield"], ["defaultModel"], ["skills"], [1]]) {
+for (const rules of [
+  "x",
+  ["x", "x"],
+  ["__proto__"],
+  ["bad\nfield"],
+  ["defaultModel"],
+  ["skills"],
+  ["enableAnalytics"],
+  ["trackingId"],
+  [1],
+]) {
   test(`invalid explicit exclusion: ${JSON.stringify(rules)}`, () => assert.throws(() => normalizeLocalFields(rules)));
 }
+test("analytics exclusions require both coupled fields in settings and portable snapshots", () => {
+  for (const onlyOne of [["enableAnalytics"], ["trackingId"]]) {
+    const settings = v3S3Settings();
+    Object.assign(settings.syncSetups.home.sync, { localFields: onlyOne });
+    assert.throws(() => validateSettingsDocument({ ...settings, version: 4 }), /excluded together/);
+    assert.throws(
+      () => portableSnapshot(image({ enableAnalytics: true, trackingId: "private" }), onlyOne),
+      /excluded together/,
+    );
+  }
+  const fields = ["enableAnalytics", "trackingId"];
+  const projected = portableSnapshot(image({ enableAnalytics: true, trackingId: "private", theme: "dark" }), fields);
+  assert.deepEqual(object(projected), { theme: "dark" });
+  assert.deepEqual(
+    object(overlayLocalFields(projected, image({ enableAnalytics: false, trackingId: "local" }), fields)),
+    { theme: "dark", enableAnalytics: false, trackingId: "local" },
+  );
+});
+
 test("portable projection omits exact fields and local overlay preserves values and absence", () => {
   const remote = portableSnapshot(image({ theme: "dark", machine: "remote-secret" }), ["machine"]);
   assert.deepEqual(object(remote), { theme: "dark" });
@@ -45,6 +74,41 @@ test("portable projection omits exact fields and local overlay preserves values 
     /deletion requires manual review/,
   );
 });
+for (const include of [[], ["AGENTS.md"], ["sessions"], ["custom.json"], ["settings.json"], [" Settings.JSON "]]) {
+  for (const localFields of [undefined, [], ["machine"]]) {
+    test(`field policy requires managed settings: ${JSON.stringify(include)} / ${JSON.stringify(localFields)}`, () => {
+      const settings = v3S3Settings({ include });
+      if (localFields !== undefined) Object.assign(settings.syncSetups.home.sync, { localFields });
+      const document = { ...settings, version: 4 };
+      if (localFields?.length && !include.some((item) => item.trim().toLowerCase() === "settings.json"))
+        assert.throws(() => validateSettingsDocument(document), /requires settings.json in sync.include/);
+      else assert.equal(validateSettingsDocument(document).version, 4);
+    });
+  }
+}
+
+test("invalid unmanaged field-policy save preserves settings and unknown fields", async () =>
+  withTempHome(async (root) => {
+    await fs.mkdir(root, { recursive: true });
+    const settings = { ...v3S3Settings(), version: 4, future: { keep: true } };
+    Object.assign(settings.syncSetups.home.sync, { localFields: ["machine"] });
+    const bytes = JSON.stringify(settings);
+    await fs.writeFile(localConfigPath(), bytes);
+    const { updateLocalConfig } = await import("../src/settings/settings-store.js");
+    await assert.rejects(
+      updateLocalConfig((current) => {
+        const setup = current.syncSetups.home!;
+        return {
+          ...current,
+          syncSetups: { ...current.syncSetups, home: { ...setup, sync: { ...setup.sync, include: [] } } },
+        };
+      }),
+      /requires settings.json/,
+    );
+    assert.equal(await fs.readFile(localConfigPath(), "utf8"), bytes);
+    assert.deepEqual((await loadConfig()).localFields, ["machine"]);
+  }));
+
 test("version 3 cannot silently enable machine-local policy", () => {
   const settings = v3S3Settings();
   Object.assign(settings.syncSetups.home.sync, { localFields: ["machine"] });
@@ -98,10 +162,13 @@ for (const localFields of [undefined, [], ["machine"]]) {
       } else settings.syncSetups.home.sync.localFields = localFields;
       await fs.writeFile(localConfigPath(), JSON.stringify(settings));
       const backend = new MemorySyncBackend();
-      const remote = portableSnapshot(image({ theme: "base" }), localFields);
+      const config = await loadConfig();
+      const remote = portableSnapshot(
+        { ...image({ theme: "base" }), selection: { version: 1, include: config.include } },
+        localFields,
+      );
       await backend.publishSnapshot(remote, { kind: "missing" });
       await syncBoth(ctx, options, () => backend);
-      const config = await loadConfig();
       const state = await readStateForConfig(config);
       assert.deepEqual(state.localFields, localFields);
       assert.equal(
