@@ -94,12 +94,7 @@ export function createHarness(
 }
 
 export function createContext(
-  options: {
-    mode?: ExtensionContext["mode"];
-    hasUI?: boolean;
-    branch?: SessionEntry[];
-    terminalRows?: number;
-  } = {},
+  options: { mode?: ExtensionContext["mode"]; hasUI?: boolean; branch?: SessionEntry[]; terminalRows?: number } = {},
 ) {
   const widgets: Array<{
     key: string;
