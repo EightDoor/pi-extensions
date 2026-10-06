@@ -32,9 +32,14 @@ for (const fixture of [
   { toolMode: "lazy", native: false },
   { toolMode: "direct", native: false },
   { toolMode: "lazy", native: true },
+  { toolMode: "lazy", native: true, allowlist: true },
+  { toolMode: "lazy", native: false, allowlist: true },
+  { toolMode: "direct", native: false, allowlist: true },
+  { toolMode: "codemode", native: false, allowlist: true },
 ] as const) {
   const { toolMode, native } = fixture;
-  test(`Jiti runtime enforces ${toolMode ?? "old-file default"}${native ? " native" : ""} mode and discovery without an active-only mock`, async () => {
+  const allowlist = "allowlist" in fixture && fixture.allowlist;
+  test(`Jiti runtime enforces ${toolMode ?? "old-file default"}${native ? " native" : ""}${allowlist ? " allowlisted" : ""} mode and discovery without an active-only mock`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-firecrawl-runtime-"));
     const agentDir = join(root, "agent");
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -95,16 +100,23 @@ for (const fixture of [
         settingsManager,
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(root),
+        ...(allowlist ? { tools: ["read", "bash", "codemode", "firecrawl_load", ...capabilities] } : {}),
       });
       session = created.session;
       initTheme("dark", false);
       let uiLines: string[] = [];
+      let toggleSearch = false;
       const context = createMockContext({
         mode: "tui",
         hasUI: true,
         custom: async (factory: unknown) => {
           const harness = createCustomSelectorHarness(factory);
           uiLines = harness.render();
+          if (toggleSearch) {
+            for (let row = 0; row < 5; row++) harness.handleInput("\x1b[B");
+            harness.handleInput("\r");
+            await harness.waitForPending();
+          }
           harness.handleInput("\x03");
           return harness.resultPromise;
         },
@@ -160,6 +172,46 @@ for (const fixture of [
         );
         await session.extensionRunner.emit({ type: "session_start", reason: "reload" });
         assert.deepEqual(session.getActiveToolNames(), [...prior, "firecrawl_scrape"]);
+      }
+      if (allowlist) {
+        // A registration refresh activates every allowlisted declarable tool, not just the changed one.
+        // Native mode must retain the loaded scrape while removing those collateral activations.
+        if (codemode) {
+          session.setActiveToolsByName([...session.getActiveToolNames(), "firecrawl_scrape"]);
+          assert.ok(session.getActiveToolNames().includes("firecrawl_scrape"));
+        }
+        const prior = session.getActiveToolNames();
+        const priorPrompt = session.systemPrompt;
+        toggleSearch = true;
+        await session.prompt("/firecrawl settings");
+        assert.deepEqual(
+          session.getActiveToolNames(),
+          prior.filter((name) => name !== "firecrawl_search"),
+        );
+        assert.equal(session.getAllTools().find((tool) => tool.name === "firecrawl_search")?.exposure, "hidden");
+        await session.prompt("/firecrawl settings");
+        toggleSearch = false;
+        assert.deepEqual(session.getActiveToolNames(), prior);
+        assert.equal(session.systemPrompt, priorPrompt);
+        assert.equal(
+          session.getAllTools().find((tool) => tool.name === "firecrawl_search")?.exposure,
+          codemode ? "codemode" : "direct",
+        );
+        if (native) {
+          assert.deepEqual(
+            session.getCallableToolNames().filter((name) => capabilities.includes(name)),
+            ["firecrawl_scrape"],
+          );
+          faux.setResponses([
+            fauxModule.fauxAssistantMessage(fauxModule.fauxToolCall("firecrawl_load", { query: "web search" })),
+            fauxModule.fauxAssistantMessage("search loaded"),
+          ]);
+          await session.prompt("load the newly enabled search");
+          assert.deepEqual(session.getActiveToolNames(), [...prior, "firecrawl_search"]);
+          assert.equal(session.systemPrompt, priorPrompt);
+          await session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+          assert.deepEqual(session.getActiveToolNames(), [...prior, "firecrawl_search"]);
+        }
       }
       let networkCalls = 0;
       globalThis.fetch = async (_url, options) => {

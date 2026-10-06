@@ -139,6 +139,8 @@ export function applyAvailableFirecrawlTools(
   sessionOwner?: object,
 ) {
   const mode = firecrawlToolMode(pi);
+  // Host allowlists can activate direct tools during registration despite defaultActive:false.
+  const previouslyActive = new Set(pi.getActiveTools());
   registerExposure(pi, availableTools, mode);
   const available = setAvailableTools(pi, availableTools, sessionOwner);
   const lazyExposure = lazyExposureByApi.get(pi) === true;
@@ -146,9 +148,11 @@ export function applyAvailableFirecrawlTools(
     .getActiveTools()
     .filter(
       (name) =>
-        name !== FIRECRAWL_LOAD_TOOL_NAME &&
+        (name !== FIRECRAWL_LOAD_TOOL_NAME || mode === "lazy") &&
         (!FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) ||
-          ((mode === "codemode" || lazyExposure) && available.has(name as FirecrawlToolName))),
+          ((mode === "codemode" || lazyExposure) &&
+            previouslyActive.has(name) &&
+            available.has(name as FirecrawlToolName))),
     );
   const eagerTools =
     mode === "codemode" || lazyExposure ? [] : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
