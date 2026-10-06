@@ -79,6 +79,8 @@ export type SyncSetupStorageSettings =
 export interface SyncPolicySettings {
   include: string[];
   automatic: boolean;
+  /** Explicit opt-in, separate from the legacy observe/shutdown policy. */
+  automaticTransfer?: boolean;
   [key: string]: unknown;
 }
 
@@ -107,6 +109,7 @@ export interface SyncConfig<Backend extends ResolvedSyncBackend = ResolvedS3Back
   snapshotIdentity: string;
   include: string[];
   automatic: boolean;
+  automaticTransfer?: boolean;
   onSwitch: OnSwitchAction;
   skipSecretScan: boolean;
   showStatus: boolean;
@@ -124,6 +127,7 @@ export interface PartialConfig {
   storagePath: string;
   include: string[];
   automatic: boolean;
+  automaticTransfer?: boolean;
   onSwitch: OnSwitchAction;
   showStatus: boolean;
   bucket?: string;

@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createSyncBackend, type SyncBackendFactory } from "../backends/backend-factory.js";
 import {
@@ -11,21 +9,18 @@ import {
 import type { CommandOptions } from "../commands/command-types.js";
 import { loadConfig } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
-import { sessionDirForApply, sessionDirFromContext, snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import { sessionDirForApply, snapshotOptionsForContext } from "../snapshot/session-paths.js";
 import {
   createSnapshot,
   filterSnapshotForConfigPolicy,
   mergeRemotePreservedFiles,
   regenerateSnapshotIdentity,
   scanSnapshot,
-  sessionSnapshotPathFromAbsolute,
   snapshotIncludesSessions,
   snapshotWithoutSessions,
 } from "../snapshot/snapshot.js";
 import { applySnapshot } from "../snapshot/snapshot-apply.js";
-import { encodeSnapshot } from "../snapshot/snapshot-codec.js";
-import type { Snapshot, SnapshotOptions } from "../snapshot/snapshot-types.js";
-import { stateDir } from "../state/state-directory.js";
+import type { Snapshot } from "../snapshot/snapshot-types.js";
 import type { SyncState } from "../state/state-types.js";
 import { readStateForConfig, writeStateForConfig } from "../state/sync-state-store.js";
 import {
@@ -35,10 +30,14 @@ import {
   formatRollbackSummary,
 } from "../ui/sync-format.js";
 import { setSyncStatus } from "../ui/sync-status.js";
+import { readMergeJournal, requireNoMergeJournal, retireMergeJournal } from "./merge-journal.js";
+import { mergeSync } from "./merged-sync.js";
 import { readRemoteSnapshot, readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
 import { throwIfAborted } from "./signals.js";
 import { createSyncDecision } from "./sync-decision.js";
 import { errorMessage } from "./sync-errors.js";
+
+import { backupLocal, captureMutationOwner, protectedSessionPaths } from "./sync-local.js";
 import { inspectRemoteSelection } from "./sync-policy.js";
 import {
   canPullRemoteSessionsOnFirstSync,
@@ -99,6 +98,7 @@ export async function push(
 ) {
   const config = input?.config ?? (await loadConfig(options.setup));
   throwIfAborted(options.signal);
+  await requireNoMergeJournal(config, options);
   setSyncStatus(ctx, `pushing ${config.setupName}`);
   const backend = input?.backend ?? (await factory(config));
   const state = input?.state ?? (await readStateForConfig(config));
@@ -174,6 +174,11 @@ export async function push(
     }
   }
 
+  if (await readMergeJournal(config)) {
+    const current = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    if (!sameHashes(fileHashMap(current), fileHashMap(local)))
+      throw new Error("Local content changed during recovery review; retry from current bytes.");
+  }
   const result = await backend.publishSnapshot(upload, expectedRemoteHead(head), {
     signal: options.signal,
     onCommit: options.onCommit,
@@ -190,6 +195,7 @@ export async function push(
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error);
   }
+  await retireMergeJournal(config);
   if (options.signal?.aborted) return;
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
@@ -211,8 +217,10 @@ export async function pull(
   options: CommandOptions,
   factory: SyncBackendFactory = createSyncBackend,
 ) {
+  const validateMutation = captureMutationOwner(ctx, options.signal);
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
+  await requireNoMergeJournal(config, options);
   setSyncStatus(ctx, `pulling ${config.setupName}`);
   const backend = await factory(config);
   const state = await readStateForConfig(config);
@@ -262,14 +270,30 @@ export async function pull(
   }
 
   throwIfAborted(options.signal);
+  const recoveringMerge = Boolean(await readMergeJournal(config));
+  const requireFreshRecovery = async () => {
+    validateMutation();
+    const currentHead = await backend.readHead(options.signal);
+    validateMutation();
+    const current = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    validateMutation();
+    if (!sameHashes(fileHashMap(current), fileHashMap(local)) || !sameRemoteHead(backend, head, currentHead)) {
+      throw new Error("Local or remote content changed during recovery review; retry from a fresh diff.");
+    }
+  };
+  if (recoveringMerge) await requireFreshRecovery();
   const backup = await backupLocal(config.snapshotIdentity, snapshotOptionsForContext(ctx, config), options.signal);
   const applySessionDir = await sessionDirForApply(ctx, remote);
-  throwIfAborted(options.signal);
+  if (recoveringMerge) await requireFreshRecovery();
+  validateMutation();
   options.onCommit?.();
   const lastFileHashes = await applySnapshot(remote, protectedSessionPaths(ctx), {
     include: config.include,
     sessionDir: applySessionDir,
+    signal: options.signal,
+    validateMutation,
   });
+  validateMutation();
   await writeStateForConfig(config, {
     version: VERSION,
     profile: config.snapshotIdentity,
@@ -278,7 +302,9 @@ export async function pull(
     lastFileHashes,
     include: [...config.include],
   });
+  await retireMergeJournal(config);
   if (options.signal?.aborted) return "applied" as const;
+  validateMutation();
   setSyncStatus(ctx, undefined);
   if (!options.silent) {
     ctx.ui.notify(`Pulled ${remote.files.length} files from ${remote.id}. Backup: ${backup}`, "info");
@@ -288,7 +314,7 @@ export async function pull(
       "warning",
     );
   }
-  if (options.reload) await maybeReload(ctx, options.signal);
+  if (options.reload) await maybeReload(ctx, options.signal, validateMutation);
   return "applied" as const;
 }
 
@@ -299,9 +325,13 @@ export async function syncBoth(
 ) {
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
-  const backend = await factory(config);
+  if (config.include.length > 0 && options.auto && config.automaticTransfer) return mergeSync(ctx, options, factory);
+  if (!options.auto && config.include.length > 0 && (await readMergeJournal(config)))
+    return mergeSync(ctx, options, factory);
   const state = await readStateForConfig(config);
   throwIfAborted(options.signal);
+  if (!options.auto && config.include.length > 0 && state.lastAppliedSnapshot) return mergeSync(ctx, options, factory);
+  const backend = await factory(config);
   const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
   throwIfAborted(options.signal);
   if (config.include.length === 0) {
@@ -318,6 +348,7 @@ export async function syncBoth(
   const localChanged = hasLocalChanges(local, state, config);
   const remoteChanged = remote ? hasRemoteChanges(remote, state, config, protectedSessionPaths(ctx)) : false;
   const firstSync = !state.lastAppliedSnapshot;
+  if (options.auto) throw new Error("Automatic transfer is not authorized by the current settings.");
 
   if (firstSync && remote && remote.files.length > 0 && local.files.length > 0) {
     if (!canPullRemoteSettingsOnFirstSync(local, remote)) {
@@ -412,6 +443,7 @@ export async function rollback(
   factory: SyncBackendFactory = createSyncBackend,
   expectedSelection?: { backendIdentity: string; setup?: string },
 ) {
+  const validateMutation = captureMutationOwner(ctx, options.signal);
   const target = options.args[0];
   if (!target) throw new Error("Usage: /sync rollback <snapshot-id> [--yes]");
 
@@ -424,6 +456,8 @@ export async function rollback(
   ) {
     throw new Error("Sync setup or storage location changed while history was open; reopen history and retry.");
   }
+  // --force is only a rollback compatibility flag, not a reviewed merge-recovery direction.
+  await requireNoMergeJournal(config);
   const decoded = await backend.readSnapshot(target, options.signal);
   const selected = filterSnapshotForConfigPolicy(
     config.include.includes("sessions") ? decoded : snapshotWithoutSessions(decoded),
@@ -453,7 +487,10 @@ export async function rollback(
   const lastFileHashes = await applySnapshot(remote, protectedSessionPaths(ctx), {
     include: config.include,
     sessionDir: applySessionDir,
+    signal: options.signal,
+    validateMutation,
   });
+  validateMutation();
   let result: PublishSnapshotResult;
   try {
     const completionSignal = AbortSignal.timeout(POST_LOCAL_COMMIT_TIMEOUT_MS);
@@ -478,7 +515,9 @@ export async function rollback(
   } catch (error) {
     throw new PublicationStatePersistenceError(result.head, error, backup);
   }
+  await retireMergeJournal(config);
   if (options.signal?.aborted) return;
+  validateMutation();
   ctx.ui.notify(
     [
       `Rolled back sync setup “${config.setupName}” to ${target}; latest: ${result.head.snapshotId}. Backup: ${backup}`,
@@ -488,21 +527,16 @@ export async function rollback(
       .join("\n"),
     result.warnings.length > 0 ? "warning" : "info",
   );
-  await maybeReload(ctx, options.signal);
+  await maybeReload(ctx, options.signal, validateMutation);
 }
 
-function protectedSessionPaths(ctx: ExtensionCommandContext | ExtensionContext) {
-  const getSessionFile = ctx.sessionManager.getSessionFile;
-  if (typeof getSessionFile !== "function") return new Set<string>();
-  const sessionFile = getSessionFile.call(ctx.sessionManager) as string | undefined;
-  const snapshotPath = sessionFile
-    ? sessionSnapshotPathFromAbsolute(sessionFile, sessionDirFromContext(ctx))
-    : undefined;
-  return snapshotPath ? new Set([snapshotPath]) : new Set<string>();
-}
-
-async function maybeReload(ctx: ExtensionCommandContext | ExtensionContext, signal?: AbortSignal) {
+async function maybeReload(
+  ctx: ExtensionCommandContext | ExtensionContext,
+  signal?: AbortSignal,
+  validateMutation = captureMutationOwner(ctx, signal),
+) {
   if (signal?.aborted || !("reload" in ctx)) return;
+  validateMutation();
   if (
     ctx.hasUI &&
     (await ctx.ui.confirm(
@@ -511,6 +545,7 @@ async function maybeReload(ctx: ExtensionCommandContext | ExtensionContext, sign
     ))
   ) {
     if (signal?.aborted) return;
+    validateMutation();
     await ctx.reload();
   }
 }
@@ -584,16 +619,4 @@ function sameRemoteHead(backend: SyncBackend, left: RemoteHead | undefined, righ
   return backend.sameRevision(left.revision, right.revision);
 }
 
-export async function backupLocal(profile: string, options: SnapshotOptions = {}, signal?: AbortSignal) {
-  throwIfAborted(signal);
-  const snapshot = await createSnapshot(profile, options);
-  throwIfAborted(signal);
-  const backupDirectory = path.join(stateDir(), "backups");
-  await fs.mkdir(backupDirectory, { recursive: true });
-  throwIfAborted(signal);
-  const backupPath = path.join(backupDirectory, `${snapshot.id}.json.gz`);
-  const encoded = await encodeSnapshot(snapshot);
-  throwIfAborted(signal);
-  await fs.writeFile(backupPath, encoded, { signal });
-  return backupPath;
-}
+export { backupLocal } from "./sync-local.js";
