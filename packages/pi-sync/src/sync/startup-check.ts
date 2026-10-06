@@ -158,7 +158,8 @@ export function createStartupCheck(loaders: SyncLoaders, attention: SyncAttentio
             );
           } finally {
             clearTimeout(timer);
-            if (isCurrent() && checking) await attention.publish(ctx, sessionSignal);
+            if (isCurrent() && checking && (!signal.aborted || controller.signal.reason?.name === "TimeoutError"))
+              await attention.publish(ctx, sessionSignal);
             if (active === task) active = undefined;
           }
         })

@@ -151,13 +151,15 @@ export async function applyMergedSnapshot(
       }
     }
     const plan = preflightSnapshotApply(root, after, current, options);
-    plan.writes = plan.writes.filter((item) => targets.includes(item.target));
-    plan.deletes = plan.deletes.filter((target) => targets.includes(target));
+    const targetSet = new Set(targets);
+    const relativeByTarget = new Map(targets.map((target, index) => [target, changed[index]]));
+    plan.writes = plan.writes.filter((item) => targetSet.has(item.target));
+    plan.deletes = plan.deletes.filter((target) => targetSet.has(target));
     await preflightSnapshotMutations(root, plan, options.sessionDir, options);
     await validate();
     const revalidateTarget = async (target: string) => {
       await validate();
-      const relative = changed[targets.indexOf(target)];
+      const relative = relativeByTarget.get(target);
       if (!relative) throw new Error("Unowned merge target.");
       await assertFilesystemTarget(root, relative, options);
       await validate();

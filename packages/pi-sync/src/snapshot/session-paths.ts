@@ -52,14 +52,23 @@ export function requireStableMergeSessionRoot(before: Snapshot, after: Snapshot)
 function sessionDirFromSnapshot(snapshot: Snapshot) {
   const settingsFile = snapshot.files.find((file) => file.path === "settings.json");
   if (!settingsFile) return undefined;
+  let settings: unknown;
   try {
-    const settings = JSON.parse(decodeBase64Strict(settingsFile.contentBase64, settingsFile.path).toString("utf8")) as {
-      sessionDir?: string;
-    };
-    return settings.sessionDir ? expandHome(settings.sessionDir) : undefined;
+    settings = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        decodeBase64Strict(settingsFile.contentBase64, settingsFile.path),
+      ),
+    );
   } catch {
-    return undefined;
+    // JSON parser errors can quote private settings values; never surface their payload.
+    throw new Error("Merged settings cannot be parsed; review a directional recovery.");
   }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    throw new Error("Merged settings must be a JSON object; review a directional recovery.");
+  const sessionDir = (settings as { sessionDir?: unknown }).sessionDir;
+  if (sessionDir !== undefined && typeof sessionDir !== "string")
+    throw new Error("Merged sessionDir must be a string; review a directional recovery.");
+  return sessionDir ? expandHome(sessionDir) : undefined;
 }
 
 function decodeBase64Strict(value: string, filePath: string) {
