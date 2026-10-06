@@ -10,7 +10,7 @@ import {
   SyncBackendPublicationOutcomeUnknownError,
 } from "../src/backends/sync-backend.js";
 import type { Snapshot } from "../src/snapshot/snapshot-types.js";
-import { validateSnapshotFieldPolicy } from "../src/sync/local-fields.js";
+import { validatePortableSnapshot } from "../src/sync/local-fields.js";
 
 export class MemorySyncBackend implements SyncBackend {
   readonly identity: string;
@@ -49,7 +49,7 @@ export class MemorySyncBackend implements SyncBackend {
     options: PublishSnapshotOptions = {},
   ): Promise<PublishSnapshotResult> {
     throwIfAborted(options.signal);
-    validateSnapshotFieldPolicy(snapshot);
+    validatePortableSnapshot(snapshot);
     if (!matchesExpected(this.head, expected)) {
       throw new SyncBackendConflictError("Remote changed while publishing.");
     }

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { decodeSnapshot, encodeSnapshot } from "../../snapshot/snapshot-codec.js";
 import type { Snapshot } from "../../snapshot/snapshot-types.js";
-import { validateSnapshotFieldPolicy } from "../../sync/local-fields.js";
+import { validatePortableSnapshot } from "../../sync/local-fields.js";
 import { syncErrorGuidance } from "../../sync/sync-error-guidance.js";
 import { portableSnapshotSelection } from "../../sync/sync-policy.js";
 import type { LatestPointer, RemoteObject, ResolvedWebDavBackend } from "../backend-types.js";
@@ -501,7 +501,7 @@ function remoteHistoryEntry(pointer: LatestPointer): RemoteHistoryEntry {
 }
 
 function assertSnapshotIdentity(snapshot: Snapshot, namespace: string) {
-  validateSnapshotFieldPolicy(snapshot);
+  validatePortableSnapshot(snapshot);
   if (
     snapshot.profile !== namespace ||
     !isSafeReference(snapshot.id) ||

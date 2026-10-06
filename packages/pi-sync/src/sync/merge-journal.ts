@@ -7,7 +7,7 @@ import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { readJsonIfExists, syncDirectory, writeJson } from "../state/json-file.js";
 import { statePathForConfig } from "../state/sync-state-store.js";
 import { planFileMerge } from "./file-merge-planner.js";
-import { portableSnapshot, validateSnapshotFieldPolicy } from "./local-fields.js";
+import { portableSnapshot, validatePortableSnapshot, validateSnapshotFieldPolicy } from "./local-fields.js";
 import { fileHashMap, sameHashes } from "./sync-state.js";
 
 export interface MergeJournal {
@@ -102,6 +102,10 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       const plan = planFileMerge({ baseline: {}, local: snapshot.files, remote: [], selectionCompatible: true });
       if (plan.kind !== "planned" || plan.conflicts.length) throw new Error("Invalid journal collision group.");
     }
+    validatePortableSnapshot(journal.upload);
+    if (journal.upload.version === 2 && !journal.accepted)
+      throw new Error("Portable merge journal requires an explicit accepted projection.");
+    if (journal.accepted) validatePortableSnapshot(journal.accepted);
   } catch {
     throw new Error("Invalid merge journal paths, metadata, or bytes; preserve evidence for review.");
   }

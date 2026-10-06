@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Snapshot, SnapshotSelection } from "../../snapshot/snapshot-types.js";
-import { sameLocalFields, validateSnapshotFieldPolicy } from "../../sync/local-fields.js";
+import { sameLocalFields, validatePortableSnapshot, validateSnapshotFieldPolicy } from "../../sync/local-fields.js";
 import { portableSnapshotSelection, snapshotSelectionInclude } from "../../sync/sync-policy.js";
 
 export const GIT_MANIFEST_VERSION = 2;
@@ -149,7 +149,7 @@ export function validateGitSnapshot(snapshot: Snapshot, manifest: GitManifest, n
 
 export function prepareGitSnapshot(snapshot: Snapshot, namespace: string) {
   snapshotSelectionInclude(snapshot);
-  validateSnapshotFieldPolicy(snapshot);
+  validatePortableSnapshot(snapshot);
   if (
     typeof snapshot.id !== "string" ||
     !snapshot.id ||

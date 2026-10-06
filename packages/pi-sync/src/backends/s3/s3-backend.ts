@@ -3,7 +3,7 @@ import { encodeKey, posixJoin } from "../../paths.js";
 import { sessionTokenWarnings } from "../../settings/config.js";
 import { decodeSnapshot, encodeSnapshot } from "../../snapshot/snapshot-codec.js";
 import type { Snapshot } from "../../snapshot/snapshot-types.js";
-import { validateSnapshotFieldPolicy } from "../../sync/local-fields.js";
+import { validatePortableSnapshot } from "../../sync/local-fields.js";
 import { syncErrorGuidance } from "../../sync/sync-error-guidance.js";
 import { portableSnapshotSelection } from "../../sync/sync-policy.js";
 import type { LatestPointer, RemoteObject, ResolvedS3Backend } from "../backend-types.js";
@@ -410,7 +410,7 @@ function requireHistory(value: { version: number; snapshots: LatestPointer[] } |
 }
 
 function assertSnapshotIdentity(snapshot: Snapshot, expectedProfile: string) {
-  validateSnapshotFieldPolicy(snapshot);
+  validatePortableSnapshot(snapshot);
   if (
     snapshot.profile !== expectedProfile ||
     !isSafeSnapshotReference(snapshot.id) ||

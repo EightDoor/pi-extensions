@@ -47,6 +47,20 @@ export function validateSnapshotFieldPolicy(snapshot: Pick<Snapshot, "version" |
     normalizeLocalFields(snapshot.localFields);
   }
 }
+/** Portable transport images must not carry values declared machine-local. Physical journal images are different. */
+export function validatePortableSnapshot(snapshot: Snapshot) {
+  validateSnapshotFieldPolicy(snapshot);
+  if (snapshot.version !== 2 || !snapshot.localFields?.length) return;
+  try {
+    for (const entry of snapshot.files) {
+      if (typeof entry?.path !== "string" || entry.path.toLowerCase() !== "settings.json") continue;
+      const document = parseSettingsDocument(Buffer.from(entry.contentBase64, "base64"));
+      if (snapshot.localFields.some((field) => document.root.members.has(field))) throw new Error("Excluded field.");
+    }
+  } catch {
+    throw new Error("Portable snapshot settings.json retains excluded fields or has an unsupported document.");
+  }
+}
 export function sameLocalFields(left: unknown, right: unknown) {
   if (left === undefined || right === undefined) return left === right;
   return JSON.stringify(normalizeLocalFields(left)) === JSON.stringify(normalizeLocalFields(right));

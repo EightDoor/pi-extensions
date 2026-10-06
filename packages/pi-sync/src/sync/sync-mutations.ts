@@ -32,7 +32,7 @@ import {
 } from "../ui/sync-format.js";
 import { setSyncStatus } from "../ui/sync-status.js";
 import { confirmFieldMigration } from "./field-migration.js";
-import { overlayLocalFields, portableSnapshot, sameLocalFields } from "./local-fields.js";
+import { overlayLocalFields, portableSnapshot, sameLocalFields, validatePortableSnapshot } from "./local-fields.js";
 import { readMergeJournal, requireNoMergeJournal, retireMergeJournal } from "./merge-journal.js";
 import { mergeSync } from "./merged-sync.js";
 import { readRemoteSnapshot, readSnapshotForHead, requireCompatibleRemoteSelection } from "./remote-snapshot.js";
@@ -415,6 +415,9 @@ export async function syncBoth(
 
   const portableLocal = portableSnapshot(local, config.localFields);
   const acceptMatchingState = async (snapshot: Snapshot) => {
+    requireCompatibleRemoteSelection(config, snapshot);
+    if (state.lastAppliedSnapshot && !sameLocalFields(state.localFields, config.localFields))
+      throw new Error("Local-field rules changed; review and confirm a directional migration first.");
     await writeStateForConfig(
       config,
       {
@@ -522,6 +525,7 @@ export async function rollback(
   // --force is only a rollback compatibility flag, not a reviewed merge-recovery direction.
   await requireNoMergeJournal(config);
   const decoded = await backend.readSnapshot(target, options.signal);
+  validatePortableSnapshot(decoded);
   const selected = filterSnapshotForConfigPolicy(
     config.include.includes("sessions") ? decoded : snapshotWithoutSessions(decoded),
     config,
@@ -649,7 +653,7 @@ async function readRemoteSnapshotForUpload(
   ) {
     return undefined;
   }
-  return backend.readSnapshot(head.snapshotRef, signal);
+  return readSnapshotForHead(backend, head, signal);
 }
 
 async function snapshotForUpload(
@@ -665,7 +669,7 @@ async function snapshotForUpload(
   let snapshot = remote;
   if (!snapshot) {
     try {
-      snapshot = await backend.readSnapshot(head.snapshotRef, signal);
+      snapshot = await readSnapshotForHead(backend, head, signal);
     } catch (error) {
       if (options.ignoreUnreadableRemote) return local;
       throw error;

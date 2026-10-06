@@ -90,6 +90,29 @@ export function registerSyncBackendContractSuite(name: string, create: BackendFa
     });
   }
 
+  test(`${name} contract: excluded root values never enter portable storage`, async () => {
+    await withBackend(create, async (backend) => {
+      const clean = {
+        ...snapshot([{ path: "settings.json", content: Buffer.from('{"theme":"base"}') }]),
+        version: 2,
+        localFields: ["machine"],
+      };
+      const head = (await backend.publishSnapshot(clean, { kind: "missing" })).head;
+      for (const filePath of ["settings.json", "Settings.json"]) {
+        const invalid = {
+          ...clean,
+          files: snapshot([{ path: filePath, content: Buffer.from('{"machine":"DO_NOT_DISCLOSE"}') }]).files,
+        };
+        await assert.rejects(
+          backend.publishSnapshot(invalid, expectedRemoteHead(head)),
+          (error) =>
+            error instanceof Error && /Portable snapshot/.test(error.message) && !/DO_NOT_DISCLOSE/.test(error.message),
+        );
+        assert.deepEqual(await backend.readHead(), head);
+      }
+    });
+  });
+
   test(`${name} contract: stale and missing-head expectations are typed conflicts`, async () => {
     await withBackend(create, async (backend) => {
       const first = snapshot([{ path: "settings.json", content: Buffer.from("first") }]);
