@@ -3,48 +3,84 @@ import { parseJsonObjectDocument } from "./json-document.js";
 import { text } from "./text-merge.js";
 
 const id = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/u.test(value);
-const content = (value: unknown): boolean =>
+const content = (value: unknown, types = ["text", "image", "thinking", "toolCall"]): boolean =>
   typeof value === "string" ||
   (Array.isArray(value) &&
     value.every(
       (block) =>
         object(block) &&
+        types.includes(String(block.type)) &&
         ((block.type === "text" && typeof block.text === "string") ||
           (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") ||
           (block.type === "thinking" && typeof block.thinking === "string") ||
-          (block.type === "toolCall" && id(block.id) && typeof block.name === "string" && object(block.arguments))),
+          (block.type === "toolCall" &&
+            typeof block.id === "string" &&
+            typeof block.name === "string" &&
+            object(block.arguments))),
     ));
 const message = (value: unknown) => {
   if (!object(value) || typeof value.timestamp !== "number" || !Number.isFinite(value.timestamp)) return false;
   switch (value.role) {
+    case "system":
+      return (
+        content(value.content, ["text"]) &&
+        (value.sections === undefined ||
+          (object(value.sections) &&
+            Object.values(value.sections).every((section) => section === null || typeof section === "string"))) &&
+        (value.toolsAdded === undefined ||
+          (Array.isArray(value.toolsAdded) &&
+            value.toolsAdded.every(
+              (tool) =>
+                object(tool) &&
+                typeof tool.name === "string" &&
+                typeof tool.description === "string" &&
+                object(tool.parameters),
+            ))) &&
+        (value.toolsRemoved === undefined ||
+          (Array.isArray(value.toolsRemoved) &&
+            value.toolsRemoved.every((tool) => object(tool) && typeof tool.name === "string")))
+      );
     case "user":
-      return content(value.content);
+      return content(value.content, ["text", "image"]);
     case "assistant":
       return (
         Array.isArray(value.content) &&
-        content(value.content) &&
+        content(value.content, ["text", "thinking", "toolCall"]) &&
         typeof value.api === "string" &&
         typeof value.provider === "string" &&
         typeof value.model === "string" &&
         object(value.usage) &&
-        ["stop", "length", "toolUse", "error", "aborted"].includes(String(value.stopReason))
+        ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(String(value.stopReason))
       );
     case "toolResult":
       return (
-        id(value.toolCallId) &&
+        typeof value.toolCallId === "string" &&
         typeof value.toolName === "string" &&
         Array.isArray(value.content) &&
-        content(value.content) &&
+        content(value.content, ["text", "image"]) &&
         typeof value.isError === "boolean"
       );
     case "custom":
-      return typeof value.customType === "string" && content(value.content) && typeof value.display === "boolean";
+      return (
+        typeof value.customType === "string" &&
+        content(value.content, ["text", "image"]) &&
+        typeof value.display === "boolean"
+      );
     case "bashExecution":
       return (
         typeof value.command === "string" &&
         typeof value.output === "string" &&
         typeof value.cancelled === "boolean" &&
         typeof value.truncated === "boolean"
+      );
+    case "branchSummary":
+      return typeof value.summary === "string" && (value.fromId === null || typeof value.fromId === "string");
+    case "compactionSummary":
+      return (
+        typeof value.summary === "string" &&
+        typeof value.tokensBefore === "number" &&
+        Number.isFinite(value.tokensBefore) &&
+        value.tokensBefore >= 0
       );
     default:
       return false;
@@ -86,8 +122,7 @@ export function validateSession(bytes: Buffer) {
       ids.has(row.id) ||
       typeof row.timestamp !== "string" ||
       !Number.isFinite(Date.parse(row.timestamp)) ||
-      (row.parentId !== null && !known(row.parentId)) ||
-      (row.parentId === null && ids.size > 0)
+      (row.parentId !== null && !known(row.parentId))
     )
       throw new Error("Invalid session graph.");
     const strings = (...keys: string[]) => keys.every((key) => typeof row[key] === "string");
@@ -108,19 +143,21 @@ export function validateSession(bytes: Buffer) {
       case "compaction":
         valid =
           strings("summary") &&
-          known(row.firstKeptEntryId) &&
+          (known(row.firstKeptEntryId) || row.firstKeptEntryId === row.id) &&
+          (row.systemMessage === undefined ||
+            (object(row.systemMessage) && row.systemMessage.role === "system" && message(row.systemMessage))) &&
           typeof row.tokensBefore === "number" &&
           Number.isFinite(row.tokensBefore) &&
           row.tokensBefore >= 0;
         break;
       case "branch_summary":
-        valid = strings("summary") && known(row.fromId);
+        valid = strings("summary") && (known(row.fromId) || row.fromId === "root");
         break;
       case "custom":
         valid = strings("customType");
         break;
       case "custom_message":
-        valid = strings("customType") && typeof row.display === "boolean" && content(row.content);
+        valid = strings("customType") && typeof row.display === "boolean" && content(row.content, ["text", "image"]);
         break;
       case "context_edit":
         valid =

@@ -149,10 +149,15 @@ export async function mergeSync(
         remote: rawRemote.files,
         selectionCompatible: true,
       });
+      const managedPaths = new Set([
+        ...Object.keys(state.lastFileHashes),
+        ...[...local.files, ...(remote?.files ?? [])].map((file) => file.path),
+      ]);
       if (
-        !config.partialSync &&
         validation.kind === "planned" &&
-        validation.conflicts.some((item) => item.reason === "path-collision")
+        validation.conflicts.some(
+          (item) => item.reason === "path-collision" && (!config.partialSync || !managedPaths.has(item.path)),
+        )
       )
         throw new Error("Remote snapshot contains path collisions; review a directional recovery before merging.");
     }
@@ -191,7 +196,14 @@ export async function mergeSync(
       }
     }
     await validate();
-    plan = await resolveContentConflicts(config, state, local, remote, resolved.plan, protectedSessionPaths(ctx));
+    plan = await resolveContentConflicts(
+      config,
+      state,
+      local,
+      remote,
+      resolved.plan,
+      protectedSessionPaths(ctx, sessionRoot),
+    );
     await validate();
     if (resolution) {
       plan = await resolveReviewedGroup(
@@ -203,11 +215,11 @@ export async function mergeSync(
         head,
         plan,
         resolution,
-        protectedSessionPaths(ctx),
+        protectedSessionPaths(ctx, sessionRoot),
       );
       await validate();
     }
-    if (plan.kind !== "planned" || (plan.conflicts.length && !config.partialSync)) {
+    if (plan.kind !== "planned" || (plan.conflicts.length && (!config.partialSync || options.auto))) {
       throw review(
         `Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.${resolved.fields.length ? ` Settings fields: ${resolved.fields.map(safeTerminalText).join(", ")}` : ""}`,
       );
@@ -215,8 +227,10 @@ export async function mergeSync(
     if (plan.kind !== "planned") throw new Error("Cannot partition an unverified merge plan.");
     const groups = conflictGroups(plan, config);
     const withheld = new Set(groups.flatMap((group) => group.paths));
-    let progress: PartialProgress | undefined;
-    if (groups.length) {
+    // Transfer plans defer artifact writes until approved review and freshness guards pass.
+    // A no-transfer manual inspection can persist referenced conflict state directly.
+    const persistProgress = async (): Promise<PartialProgress | undefined> => {
+      if (!groups.length) return;
       let ancestors: import("../snapshot/snapshot-types.js").SnapshotFile[] = [];
       try {
         ancestors = ((await readMergeAncestors(config, state)) ?? []).filter((file) => withheld.has(file.path));
@@ -266,11 +280,12 @@ export async function mergeSync(
           captureMutationOwner(ctx, options.signal),
         );
       await validate();
-      progress = {
+      return {
         previous: state,
         groups: pending.map((item) => ({ paths: item.group.paths, artifact: item.artifact ?? artifact ?? "" })),
       };
-    }
+    };
+    let progress: PartialProgress | undefined;
     const accepted = regenerateSnapshotIdentity({
       ...local,
       files: plan.decisions.flatMap((decision) =>
@@ -297,6 +312,7 @@ export async function mergeSync(
       Boolean(config.partialSync && rawRemote.version !== 3);
     const apply = !sameHashes(fileHashMap(localRaw), fileHashMap(after));
     if (!publish && !apply) {
+      progress = await persistProgress();
       await validate();
       await writeAcceptedState(config, head, accepted, validate, progress);
       await pruneMergeBaselines(
@@ -356,6 +372,13 @@ export async function mergeSync(
       throw new Error("Local content changed during review; no merged transfer was performed.");
     if (syncStateFingerprint(await readStateForConfig(config)) !== syncStateFingerprint(state))
       throw new Error("Sync baseline changed during review; retry from a fresh observation.");
+    await validate();
+    const refreshedHead = await backend.readHead(options.signal);
+    await validate();
+    if (!refreshedHead || !backend.sameRevision(refreshedHead.revision, head.revision))
+      throw new Error("Remote changed during review; no merged transfer was performed.");
+    progress = await persistProgress();
+    await validate();
     const backup = await backupLocal(config.snapshotIdentity, snapshotOptions, options.signal);
     await validate();
     const journal: MergeJournal = {

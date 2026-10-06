@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 import { expectedRemoteHead } from "../src/backends/sync-backend.js";
@@ -430,3 +431,230 @@ test("missing ancestor withholds that conflict without inventing a base or block
     assert.equal(await readMergeAncestor(f.config, state, "AGENTS.md"), undefined);
     assert.equal(await fs.readFile(path.join(root, "prompts/safe.md"), "utf8"), "incoming\n");
   }));
+
+test("deleted managed collision participants remain represented in withheld baseline groups", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    await fs.writeFile(path.join(root, "prompts/OLD.md"), "ancestor\n");
+    await push(f.context.ctx, { ...options, force: true }, undefined, () => f.backend);
+    const baseline = await readStateForConfig(f.config);
+    const oldHead = await f.backend.readHead();
+    assert.ok(oldHead);
+    const before = await f.backend.readSnapshot(oldHead.snapshotRef);
+    await fs.unlink(path.join(root, "prompts/OLD.md"));
+    await f.backend.publishSnapshot(
+      {
+        ...before,
+        id: "managed-deleted-alias",
+        files: [
+          ...before.files.filter((file) => !["prompts/OLD.md", "AGENTS.md"].includes(file.path)),
+          snapshotFile("prompts/old.md", Buffer.from("new alias\n")),
+          snapshotFile("AGENTS.md", Buffer.from("incoming independent\n")),
+        ],
+      },
+      expectedRemoteHead(oldHead),
+    );
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const state = await readStateForConfig(f.config);
+    assert.ok(
+      state.unresolved?.some(
+        (group) => group.paths.includes("prompts/OLD.md") && group.paths.includes("prompts/old.md"),
+      ),
+    );
+    assert.equal(state.lastFileHashes["prompts/OLD.md"], baseline.lastFileHashes["prompts/OLD.md"]);
+    assert.equal(await fs.readFile(path.join(root, "AGENTS.md"), "utf8"), "incoming independent\n");
+    await assert.rejects(fs.access(path.join(root, "prompts/old.md")));
+    const head = await f.backend.readHead();
+    assert.ok(head);
+    assert.ok((await f.backend.readSnapshot(head.snapshotRef)).files.some((file) => file.path === "prompts/old.md"));
+  }));
+
+async function artifactNames(config: Awaited<ReturnType<typeof loadConfig>>) {
+  return fs.readdir(conflictDirectory(config)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+}
+test("cancelled partial transfer creates no unreferenced artifact and preserves existing evidence", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "LOCAL\nb\nc\n");
+    await publish(f, { "AGENTS.md": "REMOTE\nb\nc\n", "prompts/safe.md": "incoming\n" });
+    const rpc = createMockContext({ mode: "rpc", hasUI: true, select: async () => undefined });
+    const state = syncStateFingerprint(await readStateForConfig(f.config));
+    const head = await f.backend.readHead();
+    const publication = vi.spyOn(f.backend, "publishSnapshot");
+    for (const local of ["LOCAL", "CHANGED"]) {
+      await fs.writeFile(path.join(root, "AGENTS.md"), `${local}\nb\nc\n`);
+      assert.equal(await mergeSync(rpc.ctx, { ...options, yes: false }, () => f.backend), "cancelled");
+      assert.deepEqual(await artifactNames(f.config), []);
+      assert.equal(syncStateFingerprint(await readStateForConfig(f.config)), state);
+      assert.deepEqual(await f.backend.readHead(), head);
+      assert.equal(await readMergeJournal(f.config), undefined);
+    }
+    assert.equal(publication.mock.calls.length, 0);
+    await mergeSync(f.context.ctx, options, () => f.backend);
+    const retained = await artifactNames(f.config);
+    const accepted = syncStateFingerprint(await readStateForConfig(f.config));
+    await publish(f, { "AGENTS.md": "NEW REMOTE\nb\nc\n", "prompts/safe.md": "new incoming\n" });
+    assert.equal(await mergeSync(rpc.ctx, { ...options, yes: false }, () => f.backend), "cancelled");
+    assert.deepEqual(await artifactNames(f.config), retained);
+    assert.equal(syncStateFingerprint(await readStateForConfig(f.config)), accepted);
+  }));
+
+for (const changed of ["local", "remote"] as const)
+  test(`approved partial review rejects stale ${changed} before persisting artifacts`, async () =>
+    withTempHome(async (root) => {
+      const f = await fixture(root);
+      await fs.writeFile(path.join(root, "AGENTS.md"), "LOCAL\nb\nc\n");
+      await publish(f, { "AGENTS.md": "REMOTE\nb\nc\n", "prompts/safe.md": "incoming\n" });
+      const state = syncStateFingerprint(await readStateForConfig(f.config));
+      const rpc = createMockContext({
+        mode: "rpc",
+        hasUI: true,
+        select: async (_title: string, choices: string[]) => {
+          if (choices.includes("Next")) return "Next";
+          if (changed === "local") await fs.writeFile(path.join(root, "AGENTS.md"), "newer local");
+          else await publish(f, { "AGENTS.md": "newer remote" });
+          return "Apply merged transfer";
+        },
+      });
+      await assert.rejects(
+        mergeSync(rpc.ctx, { ...options, yes: false }, () => f.backend),
+        /changed during review/,
+      );
+      assert.deepEqual(await artifactNames(f.config), []);
+      assert.equal(syncStateFingerprint(await readStateForConfig(f.config)), state);
+      assert.equal(await readMergeJournal(f.config), undefined);
+    }));
+
+test("automatic transfer refuses partial conflicts without publication, apply, state or artifacts", async () =>
+  withTempHome(async (root) => {
+    const f = await fixture(root);
+    const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+    settings.syncSetups.home.sync.automaticTransfer = true;
+    await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+    await fs.writeFile(path.join(root, "AGENTS.md"), "LOCAL\nb\nc\n");
+    await publish(f, { "AGENTS.md": "REMOTE\nb\nc\n", "prompts/safe.md": "incoming\n" });
+    const head = await f.backend.readHead();
+    const publication = vi.spyOn(f.backend, "publishSnapshot");
+    await assert.rejects(
+      mergeSync(f.context.ctx, { ...options, auto: true }, () => f.backend),
+      /require review/,
+    );
+    assert.equal(publication.mock.calls.length, 0);
+    assert.deepEqual(await f.backend.readHead(), head);
+    assert.equal(syncStateFingerprint(await readStateForConfig(f.config)), syncStateFingerprint(f.state));
+    assert.equal(await fs.readFile(path.join(root, "prompts/safe.md"), "utf8"), "base\n");
+    assert.deepEqual(await artifactNames(f.config), []);
+    assert.equal(await readMergeJournal(f.config), undefined);
+  }));
+
+for (const source of ["local", "remote"] as const)
+  test(`effective external session root protects prefix merge and reviewed ${source} resolution`, async () =>
+    withTempHome(async (root) => {
+      const f = await fixture(root);
+      const external = path.join(path.dirname(root), "external-sessions");
+      await fs.mkdir(external, { recursive: true });
+      const manager = SessionManager.inMemory(root);
+      manager.appendMessage({ role: "system", content: "instructions", timestamp: 1 });
+      manager.appendMessage({ role: "user", content: "base", timestamp: 2 });
+      const log = () =>
+        Buffer.from(`${[manager.getHeader(), ...manager.getEntries()].map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const base = log();
+      manager.appendMessage({ role: "user", content: "remote suffix", timestamp: 3 });
+      const remote = log();
+      manager.appendMessage({ role: "user", content: "local suffix", timestamp: 4 });
+      const local = log();
+      const activeFile = path.join(external, "active.jsonl");
+      await fs.writeFile(activeFile, base);
+      await fs.writeFile(path.join(root, "settings.json"), JSON.stringify({ sessionDir: external }));
+      const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+      settings.syncSetups.home.sync.include.push("sessions");
+      await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+      await push(f.context.ctx, { ...options, force: true }, undefined, () => f.backend);
+      const config = await loadConfig();
+      const baseline = await readStateForConfig(config);
+      const oldHead = await f.backend.readHead();
+      assert.ok(oldHead);
+      const before = await f.backend.readSnapshot(oldHead.snapshotRef);
+      assert.ok(before.files.some((file) => file.path === "sessions/active.jsonl"));
+      await fs.writeFile(activeFile, local);
+      await f.backend.publishSnapshot(
+        {
+          ...before,
+          id: "active-both-changed",
+          files: before.files.map((file) =>
+            file.path === "sessions/active.jsonl" ? snapshotFile(file.path, remote) : file,
+          ),
+        },
+        expectedRemoteHead(oldHead),
+      );
+      const loaded = SessionManager.create(root);
+      loaded.setSessionFile(activeFile);
+      assert.equal(loaded.usesDefaultSessionDir(), true);
+      const ctx = createMockContext({ hasUI: true, sessionManager: loaded }).ctx;
+      await mergeSync(ctx, options, () => f.backend);
+      const state = await readStateForConfig(config);
+      assert.equal(state.lastFileHashes["sessions/active.jsonl"], baseline.lastFileHashes["sessions/active.jsonl"]);
+      assert.deepEqual(await fs.readFile(activeFile), local);
+      const head = await f.backend.readHead();
+      assert.ok(head);
+      assert.equal(
+        (await f.backend.readSnapshot(head.snapshotRef)).files.find((file) => file.path === "sessions/active.jsonl")
+          ?.sha256,
+        snapshotFile("sessions/active.jsonl", remote).sha256,
+      );
+      const group = state.unresolved?.find((item) => item.paths.includes("sessions/active.jsonl"));
+      assert.ok(group);
+      const artifact = await readConflictArtifact(config, f.backend.identity, group.artifact);
+      const publication = vi.spyOn(f.backend, "publishSnapshot");
+      await assert.rejects(
+        mergeSync(ctx, options, () => f.backend, {
+          token: group.artifact,
+          group: artifact.groups.findIndex((item) => item.paths.includes("sessions/active.jsonl")),
+          source,
+          stateIdentity: syncStateFingerprint(state),
+          artifactIdentity: conflictArtifactFingerprint(artifact),
+        }),
+        /Current session conflict/,
+      );
+      assert.equal(publication.mock.calls.length, 0);
+      assert.deepEqual(await fs.readFile(activeFile), local);
+      assert.deepEqual(await f.backend.readHead(), head);
+      assert.equal(syncStateFingerprint(await readStateForConfig(config)), syncStateFingerprint(state));
+    }));
+
+for (const paths of [
+  ["legacy/Foo.md", "legacy/foo.md"],
+  ["legacy/item", "legacy/item/child.md"],
+  ["AGENTS.md", "agents.md"],
+] as const)
+  test(`partial sync rejects unmanaged/cross-policy collision ${paths.join(" / ")} without deleting remote bytes`, async () =>
+    withTempHome(async (root) => {
+      const f = await fixture(root);
+      const originalHead = await f.backend.readHead();
+      assert.ok(originalHead);
+      const original = await f.backend.readSnapshot(originalHead.snapshotRef);
+      const remote = {
+        ...original,
+        id: "unmanaged-collision",
+        files: [
+          ...original.files.filter((file) => !new Set<string>(paths).has(file.path)),
+          ...paths.map((filePath, index) => snapshotFile(filePath, Buffer.from(`retained ${index}\n`))),
+        ],
+      };
+      const head = (await f.backend.publishSnapshot(remote, expectedRemoteHead(originalHead))).head;
+      await fs.writeFile(path.join(root, "prompts/safe.md"), "independent local\n");
+      const publication = vi.spyOn(f.backend, "publishSnapshot");
+      await assert.rejects(
+        mergeSync(f.context.ctx, options, () => f.backend),
+        /path collisions/,
+      );
+      assert.equal(publication.mock.calls.length, 0);
+      assert.deepEqual(await f.backend.readHead(), head);
+      assert.deepEqual(await f.backend.readSnapshot(head.snapshotRef), remote);
+      assert.equal(syncStateFingerprint(await readStateForConfig(f.config)), syncStateFingerprint(f.state));
+      assert.deepEqual(await artifactNames(f.config), []);
+      assert.equal(await readMergeJournal(f.config), undefined);
+    }));

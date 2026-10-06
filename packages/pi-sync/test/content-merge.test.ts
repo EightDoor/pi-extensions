@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { mergeSession, validateSession } from "../src/sync/session-merge.js";
 import { isMergeTextPath, mergeText } from "../src/sync/text-merge.js";
@@ -58,7 +59,6 @@ for (const [name, bytes] of [
   ["future version", log({ ...header, version: 4 }, entry("root", null))],
   ["duplicate", log(header, entry("root", null), entry("root", "root"))],
   ["missing parent", log(header, entry("root", null), entry("next", "missing"))],
-  ["second root", log(header, entry("root", null), entry("next", null))],
   ["unknown kind", log(header, { ...entry("root", null), type: "future" })],
 ] as const)
   test(`session refuses ${name}`, () => {
@@ -70,3 +70,132 @@ test("identity or immutable prefix change never joins sessions", () => {
   assert.equal(mergeSession(base, longer, log({ ...header, id: "other" }, entry("root", null))), undefined);
   assert.equal(mergeSession(base, longer, log({ ...header, cwd: "/changed" }, entry("root", null))), undefined);
 });
+
+test("public Pi writer produces accepted system, retain-none compaction and re-edit roots", () => {
+  const manager = SessionManager.inMemory("/tmp");
+  manager.appendMessage({
+    role: "system",
+    content: "base instructions",
+    sections: { resources: "tail" },
+    timestamp: 1,
+  });
+  manager.appendMessage({ role: "user", content: "hello", timestamp: 2 });
+  const before = log(manager.getHeader(), ...manager.getEntries());
+  manager.appendCompaction("summary", null, 42);
+  const compacted = log(manager.getHeader(), ...manager.getEntries());
+  manager.resetLeaf();
+  manager.appendMessage({ role: "user", content: "re-edit", timestamp: 3 });
+  manager.branchWithSummary(null, "abandoned");
+  const extended = log(manager.getHeader(), ...manager.getEntries());
+  assert.equal(validateSession(before), manager.getSessionId());
+  assert.equal(validateSession(compacted), manager.getSessionId());
+  assert.equal(validateSession(extended), manager.getSessionId());
+  assert.deepEqual(mergeSession(before, compacted, extended), extended);
+  assert.equal(
+    mergeSession(
+      before,
+      compacted,
+      log(
+        manager.getHeader(),
+        ...manager.getEntries().slice(0, 2),
+        entry("diverged", manager.getEntries()[1]?.id ?? null),
+      ),
+    ),
+    undefined,
+  );
+});
+
+const system = {
+  role: "system",
+  content: [{ type: "text", text: "instructions" }],
+  timestamp: 1,
+  sections: { resources: "new", removed: null },
+  toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object", properties: {} } }],
+  toolsRemoved: [{ name: "old" }],
+};
+for (const [name, payload] of [
+  ["system tool transition", system],
+  ["user image", { role: "user", content: [{ type: "image", data: "AA==", mimeType: "image/png" }], timestamp: 1 }],
+  ...["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].map((stopReason) => [
+    `assistant ${stopReason}`,
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "reason" },
+        { type: "toolCall", id: "call/with:provider|suffix", name: "read", arguments: {} },
+      ],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage: {},
+      stopReason,
+      timestamp: 1,
+    },
+  ]),
+  [
+    "tool result",
+    {
+      role: "toolResult",
+      toolCallId: "call/with:provider|suffix",
+      toolName: "read",
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+      timestamp: 1,
+    },
+  ],
+  ["custom", { role: "custom", customType: "test", content: "text", display: false, timestamp: 1 }],
+  ["bash", { role: "bashExecution", command: "true", output: "", cancelled: false, truncated: false, timestamp: 1 }],
+  ["branch summary", { role: "branchSummary", summary: "summary", fromId: null, timestamp: 1 }],
+  ["compaction summary", { role: "compactionSummary", summary: "summary", tokensBefore: 1, timestamp: 1 }],
+] as const)
+  test(`builtin session message ${name}`, () => {
+    const extended = log(header, entry("root", null), { ...entry("next", "root"), message: payload });
+    assert.deepEqual(mergeSession(base, base, extended), extended);
+  });
+for (const [name, payload] of [
+  ["thinking_level_change", { thinkingLevel: "high" }],
+  ["model_change", { provider: "test", modelId: "test" }],
+  ["usage", { kind: "cache_warm", provider: "test", model: "test", usage: {} }],
+  ["compaction", { summary: "summary", firstKeptEntryId: "next", tokensBefore: 1, systemMessage: system }],
+  ["branch_summary", { summary: "summary", fromId: "root" }],
+  ["custom", { customType: "test", data: { preserved: true } }],
+  ["custom_message", { customType: "test", content: "text", display: false }],
+  ["context_edit", { targetId: "root", replacement: { content: "replacement" } }],
+  ["label", { targetId: "root", label: "label" }],
+  ["session_info", { name: "name" }],
+] as const)
+  test(`builtin session entry ${name}`, () => {
+    const extended = log(header, entry("root", null), {
+      type: name,
+      id: "next",
+      parentId: "root",
+      timestamp: header.timestamp,
+      ...payload,
+    });
+    assert.deepEqual(mergeSession(base, base, extended), extended);
+  });
+for (const payload of [
+  { type: "compaction", summary: "summary", firstKeptEntryId: "future", tokensBefore: 1 },
+  {
+    type: "compaction",
+    summary: "summary",
+    firstKeptEntryId: "next",
+    tokensBefore: 1,
+    systemMessage: { ...system, sections: [] },
+  },
+  { type: "message", message: { ...system, content: [{ type: "image", data: "AA==", mimeType: "image/png" }] } },
+  { type: "message", message: { ...system, toolsRemoved: [{ name: 1 }] } },
+  { type: "message", message: { ...system, toolsAdded: [{ name: "broken" }] } },
+  { type: "message", message: { ...system, sections: { bad: 1 } } },
+  { type: "context_edit", targetId: "future", replacement: null },
+])
+  test(`malformed builtin payload stays withheld: ${JSON.stringify(payload)}`, () => {
+    const extended = log(header, entry("root", null), {
+      id: "next",
+      parentId: "root",
+      timestamp: header.timestamp,
+      ...payload,
+    });
+    assert.throws(() => validateSession(extended));
+    assert.equal(mergeSession(base, base, extended), undefined);
+  });

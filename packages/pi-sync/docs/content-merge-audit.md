@@ -10,6 +10,16 @@ Authoritative session sources are installed Pi `core/session-manager.js`/`.d.ts`
 
 Text allowlist: `AGENTS.md`, and Markdown/text below `prompts/` or `skills/`. UTF-8 round-trip validation and NUL refusal precede bounded line-preserving LCS hunks. Equal edits deduplicate; disjoint edits apply deterministically; overlapping replacement, delete/modify, ambiguous insertion boundaries, unsupported encoding, 1 MiB inputs/outputs, or four-million-cell work bounds withhold the whole file. JSON/keybindings/executable code is not generic text. Syntax-level merging cannot establish semantic correctness.
 
+## Review regression audit
+
+The review follow-up rechecked all six findings against the installed Pi runtime and the current PR head, not their severity badges. Session fixtures enumerate every builtin message/entry discriminant, system/tool transitions, pending/deferred assistant records and provider-scoped tool IDs. Public `SessionManager` fixtures verify retain-none compaction self-references, re-edit root entries and branch-summary root sentinels; forward references, damaged payloads and divergent byte histories still remain withheld.
+
+Partial artifact persistence now follows approved review and fresh local, baseline, owner/config and remote-head checks. Cancelled or stale transfer reviews do not create new conflict artifacts and preserve existing evidence. A manual no-transfer inspection may still persist referenced conflict state; uncertain failures after approved persistence retain evidence rather than pruning unproven records. Automatic new-transfer plans stop at unresolved conflicts even when partial sync is enabled. All content and reviewed-resolution protection checks use the already resolved session root.
+
+Raw collision participants must all be represented in the managed plan (including accepted-baseline paths now absent on both sides) before partial withholding is allowed. Unmanaged case aliases, unmanaged ancestor/descendant paths and cross-policy collisions remain barriers. Managed collision groups still preserve both sides, including explicit absence. The conflicts route now completes `--setup` and known setup values, but does not offer unsupported bypass flags.
+
+Verification: `content-merge.test.ts`, `partial-sync.test.ts` and `sync.test.ts`; the new regressions produced 23 failures on the reviewed source and pass with the fixes. Semantic audits cover cancellation, after-await ownership/freshness, immutable prefix/reference handling, the full collision path set, portable acceptance ordering and retained evidence. No default, model-visible prefix, resource activation or automatic session-resume behavior changes.
+
 ## Concurrent stack integration
 
 Phase 3 includes the latest Phase 2 portability fixes and the latest Phase 1 target-identity/session-root/recovery hardening, without rewriting either other feature branch. Physical pre-publication/recovery guards compare raw local images, while accepted cache/state remains a portable projection. Version-5 setup/connection CRUD and menus preserve the new schema; all transport validators, including Git manifests, accept the deliberate snapshot-v3 barrier. Shared backend-contract fixtures now exercise both v2 and v3 round trips on Git (both publication paths), S3 and WebDAV, and settings-manager fixtures exercise versions 3, 4 and 5.

@@ -46,6 +46,7 @@ const SYNC_FLAG_COMPLETIONS: Record<string, readonly CommandArgumentCompletion[]
   files: [SETUP_FLAG_COMPLETION],
   status: [SETUP_FLAG_COMPLETION],
   diff: [SETUP_FLAG_COMPLETION],
+  conflicts: [SETUP_FLAG_COMPLETION],
   doctor: [SETUP_FLAG_COMPLETION],
   push: [
     ...YES_FLAG_COMPLETIONS,
