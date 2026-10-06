@@ -49,7 +49,8 @@
     "skills": [
       "./packages/pi-herdr/skills",
       "./packages/pi-starship/skills",
-      "./packages/pi-typesafe/skills"
+      "./packages/pi-typesafe/skills",
+      "./packages/pi-web-search/skills"
     ]
   },
   "scripts": {

@@ -90,6 +90,14 @@ Titleless results display their URL once; the structured `truncated` flag descri
 Structured title and description fields are bounded, and URLs must be HTTP(S).
 The extension does not fetch result pages, synthesize answers, retry failed requests, switch providers, or fall back to another billing source.
 
+## 🧠 Skills
+
+The bundled [pi-web-search-setup skill](./skills/pi-web-search-setup/SKILL.md) is manual-only.
+Run `/skill:pi-web-search-setup` to get Cloudflare setup guidance or request changes to `pi-web-search.json`, for example `/skill:pi-web-search-setup set limit to 3`.
+Pi excludes it from automatic model selection; ordinary searches and search failures do not activate it.
+Agent-assisted edits preserve existing credentials and unknown fields through the package settings store without displaying the raw file.
+Insert or replace API tokens locally, never in a prompt; live searches and billing changes require separate approval.
+
 ## ⚙️ Settings
 
 All extension settings are stored in one canonical user file:
@@ -173,6 +181,7 @@ packages/pi-web-search/
 │   ├── settings.ts       # Validation and private atomic persistence
 │   ├── settings-ui.ts    # Pi SettingsList and input submenus
 │   └── client.ts         # Cloudflare requests and bounded result formatting
+├── skills/               # Manual-only setup and safe settings-editing skill
 ├── test/                 # Storage, client, UI, lifecycle and Pi runtime tests
 ├── package.json
 ├── tsconfig.json

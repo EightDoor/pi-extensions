@@ -113,10 +113,12 @@ async function ensurePrivateDirectory(path: string, signal?: AbortSignal): Promi
 
 export class SettingsStore {
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(
-    readonly path = settingsFilePath(),
-    private readonly publish = rename,
-  ) {}
+  readonly path: string;
+  private readonly publish: typeof rename;
+  constructor(path = settingsFilePath(), publish = rename) {
+    this.path = path;
+    this.publish = publish;
+  }
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     // Register immediately so every store observes invocation order. Keep flush
     // waiting for earlier work even if a later queue registration fails early.
