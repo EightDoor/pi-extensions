@@ -135,7 +135,9 @@ export async function mergeSync(
         );
       }
     }
-    const remote = rawRemote ? filterSnapshotForConfigPolicy(rawRemote, config) : undefined;
+    const remote = rawRemote
+      ? portableSnapshot(filterSnapshotForConfigPolicy(rawRemote, config), rawRemote.localFields)
+      : undefined;
     if (rawRemote) {
       requireCompatibleRemoteSelection(config, rawRemote);
       const validation = planFileMerge({
@@ -191,12 +193,15 @@ export async function mergeSync(
         decision.decision.review += `\n\n${formatRemoteSelectionStatus(selectionState)}\nAn explicit direction adopts this setup's included-content policy; no automatic merge was performed.`;
       throw decision;
     }
-    const accepted = regenerateSnapshotIdentity({
-      ...local,
-      files: plan.decisions.flatMap((decision) =>
-        decision.kind === "accepted" && decision.file ? [decision.file] : [],
-      ),
-    });
+    const accepted = portableSnapshot(
+      regenerateSnapshotIdentity({
+        ...local,
+        files: plan.decisions.flatMap((decision) =>
+          decision.kind === "accepted" && decision.file ? [decision.file] : [],
+        ),
+      }),
+      config.localFields,
+    );
     const after = overlayLocalFields(accepted, localRaw, config.localFields);
     if (config.include.includes("sessions")) requireStableMergeSessionRoot(localRaw, after);
     const upload = mergeRemotePreservedFiles(accepted, rawRemote, config);
@@ -380,10 +385,7 @@ async function completeJournal(
   if (journal.committedHead && (!head || !backend.sameRevision(head.revision, journal.committedHead.revision))) {
     const state = await readStateForConfig(config);
     await validate();
-    if (
-      syncStateFingerprint(state) ===
-      syncStateFingerprint(acceptedState(config, journal.committedHead, journal.accepted ?? journal.after))
-    ) {
+    if (matchesAcceptedState(state, config, journal.committedHead, journal.accepted ?? journal.after)) {
       await clearMergeJournal(config);
       await validate();
       await pruneMergeBaselines(config, state, captureMutationOwner(ctx, signal));
@@ -421,9 +423,7 @@ async function completeJournal(
   )
     throw new Error("Remote snapshot does not match the recorded merge publication.");
   const state = await readStateForConfig(config);
-  if (
-    syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, journal.accepted ?? journal.after))
-  ) {
+  if (matchesAcceptedState(state, config, head, journal.accepted ?? journal.after)) {
     await validate();
     await clearMergeJournal(config);
     await validate();
@@ -471,13 +471,26 @@ async function completeJournal(
   return true;
 }
 
-function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot) {
+// Older valid journals may have accepted noncanonical JSON before projection normalization.
+function matchesAcceptedState(
+  state: Awaited<ReturnType<typeof readStateForConfig>>,
+  config: AnySyncConfig,
+  head: RemoteHead,
+  snapshot: Snapshot,
+) {
+  return [true, false].some(
+    (canonical) =>
+      syncStateFingerprint(state) === syncStateFingerprint(acceptedState(config, head, snapshot, canonical)),
+  );
+}
+
+function acceptedState(config: AnySyncConfig, head: RemoteHead, snapshot: Snapshot, canonical = true) {
   return {
     version: 1,
     profile: config.snapshotIdentity,
     lastAppliedSnapshot: head.snapshotId,
     lastRemoteRevision: head.revision,
-    lastFileHashes: fileHashMap(snapshot),
+    lastFileHashes: fileHashMap(canonical ? portableSnapshot(snapshot, config.localFields) : snapshot),
     include: [...config.include],
     ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
   };
@@ -489,8 +502,9 @@ async function writeAcceptedState(
   snapshot: Snapshot,
   validate: () => Promise<void>,
 ) {
-  const state = acceptedState(config, head, snapshot);
-  await stageMergeBaseline(config, snapshot, state);
+  const accepted = portableSnapshot(snapshot, config.localFields);
+  const state = acceptedState(config, head, accepted);
+  await stageMergeBaseline(config, accepted, state);
   await validate();
   await writeStateForConfig(config, state);
   await validate();

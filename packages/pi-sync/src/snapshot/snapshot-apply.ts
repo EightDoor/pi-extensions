@@ -29,7 +29,14 @@ export async function applySnapshot(
   protectedRelativePaths = new Set<string>(),
   options: Pick<
     SnapshotOptions,
-    "include" | "sessionDir" | "syncFiles" | "syncSessions" | "extraFiles" | "signal" | "validateMutation"
+    | "include"
+    | "sessionDir"
+    | "syncFiles"
+    | "syncSessions"
+    | "extraFiles"
+    | "signal"
+    | "validateMutation"
+    | "expectedFileHashes"
   > = {},
 ) {
   const root = agentDir();
@@ -39,6 +46,12 @@ export async function applySnapshot(
     signal: options.signal,
     validateMutation: options.validateMutation,
     protectedTargets: [...protectedRelativePaths].map((relative) => snapshotTarget(root, relative, sessionDir)),
+    expectedPreimages: new Map(
+      Object.entries(options.expectedFileHashes ?? {}).map(([relative, hash]) => [
+        snapshotTarget(root, relative, sessionDir),
+        hash === null ? "missing" : `file:${hash}`,
+      ]),
+    ),
   };
   options.validateMutation?.();
   await recoverPendingSnapshotTransactions(transactionOptions);

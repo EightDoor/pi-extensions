@@ -122,7 +122,7 @@ export async function readMergeJournal(config: AnySyncConfig): Promise<MergeJour
       (!sameLocalFields(journal.accepted.localFields, journal.upload.localFields) ||
         !sameHashes(
           fileHashMap(portableSnapshot(journal.after, journal.upload.localFields)),
-          fileHashMap(journal.accepted),
+          fileHashMap(portableSnapshot(journal.accepted, journal.upload.localFields)),
         ))
     )
       throw new Error("Projection mismatch.");

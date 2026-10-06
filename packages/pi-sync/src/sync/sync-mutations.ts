@@ -347,6 +347,9 @@ export async function pull(
     sessionDir: applySessionDir,
     signal: options.signal,
     validateMutation,
+    expectedFileHashes: config.localFields?.length
+      ? { "settings.json": fileHashMap(local)["settings.json"] ?? null }
+      : undefined,
   });
   // Local installation is complete; user cancellation must not leave the baseline stale.
   validateCommittedOwner();
@@ -419,6 +422,7 @@ export async function syncBoth(
   const portableLocal = portableSnapshot(local, config.localFields);
   const acceptMatchingState = async (snapshot: Snapshot) => {
     requireCompatibleRemoteSelection(config, snapshot);
+    const accepted = portableSnapshot(snapshot, config.localFields);
     if (state.lastAppliedSnapshot && !sameLocalFields(state.localFields, config.localFields))
       throw new Error("Local-field rules changed; review and confirm a directional migration first.");
     await writeStateForConfig(
@@ -428,11 +432,11 @@ export async function syncBoth(
         profile: config.snapshotIdentity,
         lastAppliedSnapshot: snapshot.id,
         lastRemoteRevision: head?.revision,
-        lastFileHashes: fileHashMap(snapshot),
+        lastFileHashes: fileHashMap(accepted),
         include: [...config.include],
         ...(config.localFields !== undefined ? { localFields: config.localFields } : {}),
       },
-      snapshot,
+      accepted,
       validateMutation,
     );
     await pruneMergeBaselines(config, await readStateForConfig(config), validateMutation);
@@ -440,7 +444,8 @@ export async function syncBoth(
   };
   if (firstSync && remote && remote.files.length > 0 && local.files.length > 0) {
     requireCompatibleRemoteSelection(config, remote);
-    if (!canPullRemoteSettingsOnFirstSync(portableLocal, remote)) {
+    const portableRemote = portableSnapshot(remote, config.localFields);
+    if (!canPullRemoteSettingsOnFirstSync(portableLocal, portableRemote)) {
       throw createSyncDecision({
         kind: "first-sync-settings-diverged",
         config,
@@ -453,8 +458,8 @@ export async function syncBoth(
           "Remote settings exist and this machine has different local Pi settings. Run /sync diff, then manually choose /sync pull or /sync push.",
       });
     }
-    if (!sameHashes(fileHashMap(portableLocal), fileHashMap(remote))) {
-      if (!canPullRemoteSessionsOnFirstSync(portableLocal, remote)) {
+    if (!sameHashes(fileHashMap(portableLocal), fileHashMap(portableRemote))) {
+      if (!canPullRemoteSessionsOnFirstSync(portableLocal, portableRemote)) {
         throw createSyncDecision({
           kind: "first-sync-sessions-diverged",
           config,
@@ -474,7 +479,12 @@ export async function syncBoth(
     if (!options.silent) ctx.ui.notify("pi-sync state initialized; local settings already match remote.", "info");
     return;
   }
-  if (localChanged && remoteChanged && remote && snapshotsMatch(portableLocal, remote)) {
+  if (
+    localChanged &&
+    remoteChanged &&
+    remote &&
+    snapshotsMatch(portableLocal, portableSnapshot(remote, remote.localFields))
+  ) {
     requireCompatibleRemoteSelection(config, remote);
     await acceptMatchingState(remote);
     if (!options.silent) ctx.ui.notify("pi-sync is already up to date.", "info");
@@ -578,6 +588,9 @@ export async function rollback(
     sessionDir: applySessionDir,
     signal: options.signal,
     validateMutation,
+    expectedFileHashes: config.localFields?.length
+      ? { "settings.json": fileHashMap(local)["settings.json"] ?? null }
+      : undefined,
   });
   // The local transaction is retired; finish publication despite caller cancellation.
   validateCommittedOwner();

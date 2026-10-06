@@ -47,7 +47,12 @@ export function hasRemoteChanges(
   ignoredPaths = new Set<string>(),
 ) {
   if (remote.id === state.lastAppliedSnapshot && !syncPolicyChanged(state, config)) return false;
-  return !snapshotHashesMatchState(filterSnapshotForConfigPolicy(remote, config), state, config, ignoredPaths);
+  return !snapshotHashesMatchState(
+    portableSnapshot(filterSnapshotForConfigPolicy(remote, config), remote.localFields),
+    state,
+    config,
+    ignoredPaths,
+  );
 }
 
 export function sameHashes(left: Record<string, string>, right: Record<string, string>) {
