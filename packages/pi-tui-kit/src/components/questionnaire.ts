@@ -7,8 +7,11 @@ import {
   type EditorTheme,
   type Focusable,
   isFocusable,
+  isKeyRelease,
+  isKeyRepeat,
   Key,
   matchesKey,
+  parseKey,
   sliceByColumn,
   type TUI,
   type TuiMouseEvent,
@@ -51,6 +54,7 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   private readonly selectedOptions: number[];
   private page = 0;
   private editorKind: "answer" | "note" | undefined;
+  private readonly editorOwnedKeys = new Set<string>();
   private message: string | undefined;
   private finished = false;
   private disposed = false;
@@ -87,7 +91,7 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   }
 
   get wantsKeyRelease(): boolean | undefined {
-    return this.editorKind ? this.editor.wantsKeyRelease : undefined;
+    return this.editor.wantsKeyRelease || this.editorOwnedKeys.size > 0 || undefined;
   }
 
   get focused(): boolean {
@@ -142,6 +146,23 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
     if (this.editorKind && (this.editor.isPasting || data.includes(BRACKETED_PASTE_START))) {
       this.editor.handleInput(data);
       this.options.tui.requestRender();
+      return;
+    }
+    const key = editorKeyIdentity(data);
+    const release = key !== undefined && isKeyRelease(data);
+    if (
+      release ||
+      (key !== undefined &&
+        isKeyRepeat(data) &&
+        (this.editorOwnedKeys.has(key) || (this.editorKind && this.editor.wantsKeyRelease)))
+    ) {
+      // A key cycle stays with the editor that received its press, even after submission.
+      // Selector-owned opening releases/repeats never become editor input.
+      if (key !== undefined && this.editorOwnedKeys.has(key)) {
+        if (release) this.editorOwnedKeys.delete(key);
+        this.editor.handleInput(data);
+        this.options.tui.requestRender();
+      }
       return;
     }
     if (matchesKey(data, Key.ctrl("c"))) {
@@ -214,12 +235,15 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
     this.disposed = true;
     this.finished = true;
     this.clearMouseLayout();
+    this.editorOwnedKeys.clear();
     this.editor.dispose();
   }
 
   private handleEditorInput(data: string): void {
     if (this.options.editorFactory) {
       // Custom editors own their editing and submission semantics; only hard Close is intercepted.
+      const key = editorKeyIdentity(data);
+      if (this.editor.wantsKeyRelease && key !== undefined) this.editorOwnedKeys.add(key);
       this.editor.handleInput(data);
       return;
     }
@@ -594,14 +618,28 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   }
 }
 
+function editorKeyIdentity(data: string): string | undefined {
+  // Pi's parser normalizes named keys across CSI-u, legacy, arrows and functional keys.
+  // Modifier state may change before release. Preserve unnamed CSI keys by codepoint/suffix.
+  const withoutModifiers = data.replace(/;\d+(?::[123])?([u~ABCDHF])$/u, ";1$1");
+  const named = parseKey(data) ?? parseKey(withoutModifiers);
+  if (named !== undefined) return named.replace(/^(?:(?:shift|ctrl|alt|super)\+)+/u, "");
+  const csi = withoutModifiers.startsWith("\u001b[")
+    ? withoutModifiers.slice(2).match(/^(\d+)(?::\d*)?(?::(\d+))?(?:;\d+)?(?::[123])?([u~ABCDHF])$/u)
+    : undefined;
+  return csi ? `${csi[3]}:${csi[2] ?? csi[1]}` : undefined;
+}
+
 class RawPreservingEditor implements Focusable {
   private readonly editor: EditorComponent & { dispose?(): void };
   private readonly rawByMarker = new Map<string, string>();
   private markerCodePoint = 0xe000;
   private pasteBuffer: string | undefined;
   private inputDraft: string | undefined;
+  private readonly preserveDraft: boolean;
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, factory?: EditorFactory) {
+    this.preserveDraft = !factory;
     this.editor = factory ? factory(tui, theme, keybindings) : new Editor(tui, theme, { paddingX: 0 });
   }
 
@@ -637,8 +675,8 @@ class RawPreservingEditor implements Focusable {
   set onSubmit(handler: ((value: string) => void) | undefined) {
     this.editor.onSubmit = handler
       ? (value) => {
-          // Pi's Editor trims and clears before onSubmit. Preserve the expanded raw draft when
-          // the callback represents that draft, without overriding a custom editor's transformed result.
+          // Only the questionnaire's default Editor needs trim/clear compensation.
+          // A custom editor's onSubmit value is authoritative, even when it equals draft.trim().
           handler(
             this.decode(this.inputDraft !== undefined && value === this.inputDraft.trim() ? this.inputDraft : value),
           );
@@ -671,7 +709,7 @@ class RawPreservingEditor implements Focusable {
   }
 
   private forwardInput(data: string): void {
-    this.inputDraft = this.editor.getExpandedText?.() ?? this.editor.getText();
+    this.inputDraft = this.preserveDraft ? (this.editor.getExpandedText?.() ?? this.editor.getText()) : undefined;
     try {
       this.editor.handleInput(data);
     } finally {

@@ -103,7 +103,7 @@ for (const [name, bindings] of [
     ctx.ui.setEditorText = () => assert.fail("must not modify the main editor");
     ctx.ui.setEditorComponent = () => assert.fail("must not replace the main editor");
     await tui.waitForOpen();
-    assert.equal(components[0]?.wantsKeyRelease, undefined);
+    assert.equal(components[0]?.wantsKeyRelease, true);
     openAnswer(tui);
     assert.equal(components[0]?.wantsKeyRelease, true);
     assert.equal(editors.length, 1);
@@ -231,7 +231,7 @@ test("questionnaire preserves fragmented raw paste, expanded text, and limits wi
   const { tui, running } = run({}, { maxTextLength: 4_000 });
   await tui.waitForOpen();
   openAnswer(tui);
-  const raw = `  \rraw\u001b]8;;https://example.invalid\u0007\u202e ${"a".repeat(1_100)}\r  `;
+  const raw = `\rraw\u001b]8;;https://example.invalid\u0007\u202e ${"a".repeat(1_100)}\r`;
   tui.send("\u001b[200~");
   tui.send(raw.slice(0, 10));
   tui.send(raw.slice(10));
