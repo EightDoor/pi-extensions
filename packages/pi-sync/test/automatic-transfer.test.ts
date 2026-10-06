@@ -378,6 +378,49 @@ test("turning off a queued policy before idle performs no transfer", async () =>
     assert.equal(transfers, 0);
   }));
 
+for (const mode of ["tui", "rpc"] as const)
+  for (const automaticTransfer of [false, true])
+    for (const change of ["none", "local", "remote"] as const)
+      test(`${mode} legacy ${change} observation with transfer=${automaticTransfer} explains its review barrier`, async () =>
+        withTempHome(async (agentDir) => {
+          await configure(agentDir);
+          const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+          settings.syncSetups.home.sync.automatic = true;
+          settings.syncSetups.home.sync.automaticTransfer = automaticTransfer;
+          await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+          const mock = createMockPi();
+          let transfers = 0;
+          sync(mock.pi, {
+            loadSyncInspection: async () => ({
+              inspectSync: (config) =>
+                inspectionFixture(config, {
+                  selectionState: { kind: "legacy", discovered: [] },
+                  localChanged: change === "local",
+                  remoteChanged: change === "remote",
+                }),
+            }),
+            loadSyncOperations: async () => {
+              transfers++;
+              throw new Error("Legacy automatic transfer must not run");
+            },
+          });
+          const context = createMockContext({ mode });
+          const done = observeCheckCompletion(context.ctx);
+          await mock.events.get("session_start")?.[0]?.({}, context.ctx);
+          await done.completed;
+          assert.equal(transfers, 0);
+          assert.equal(context.statuses.get("sync") === "sync ⇕", automaticTransfer);
+          assert.equal(
+            typeof context.widgets.get("sync:attention") === "function",
+            automaticTransfer && mode === "tui",
+          );
+          assert.equal(
+            context.notifications.some((item) => /explicit direction.*adopt policy/.test(item.message)),
+            automaticTransfer && mode === "rpc",
+          );
+          await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, context.ctx);
+        }));
+
 for (const barrier of ["firstSync", "missingRemote", "selection"] as const)
   test(`${barrier} remains a startup review barrier`, async () =>
     withTempHome(async (agentDir) => {

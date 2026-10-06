@@ -101,6 +101,7 @@ export function createStartupCheck(loaders: SyncLoaders, attention: SyncAttentio
               configIdentity: identity,
               checkedAt: new Date().toISOString(),
               inspection,
+              automaticTransfer: captured.automaticTransfer,
             });
             if (
               captured.automaticTransfer &&
@@ -140,6 +141,7 @@ export function createStartupCheck(loaders: SyncLoaders, attention: SyncAttentio
               configIdentity: identity,
               checkedAt: new Date().toISOString(),
               inspection,
+              automaticTransfer: captured.automaticTransfer,
             });
             if (ctx.mode === "rpc") attention.notifyObservation(ctx);
           } catch (error) {

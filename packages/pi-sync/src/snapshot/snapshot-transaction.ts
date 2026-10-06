@@ -12,6 +12,12 @@ import { mergePathIdentity } from "../sync/file-merge-planner.js";
 import { agentDir, configuredSessionDir } from "./session-paths.js";
 import { caseReplacementSpelling, coalesceCaseReplacements, isCaseReplacement } from "./snapshot-case-replacement.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
+import {
+  prepareSessionRootTransition,
+  resolveTransitionSessionRoot,
+  type SessionRootTransition,
+  validateSessionRootTransition,
+} from "./snapshot-root-transition.js";
 import { fileImage, indexTransactionPlan } from "./snapshot-transaction-plan.js";
 import type { SnapshotApplyPlan } from "./snapshot-types.js";
 
@@ -37,6 +43,8 @@ interface TransactionJournal {
   completed?: boolean;
   root: string;
   sessionRoot?: string;
+  /** Version 7: reviewed settings images authorize recovery from either transition root. */
+  sessionRootTransition?: SessionRootTransition;
   entries: TransactionEntry[];
 }
 interface TransactionOptions {
@@ -212,6 +220,21 @@ export async function recoverPendingSnapshotTransactions(options: TransactionOpt
     }
     options.validateMutation?.();
     options.signal?.throwIfAborted();
+    if (journal.sessionRootTransition && !journal.completed) {
+      // Validate every path before consulting backup evidence under the recorded root.
+      validateJournal(directory, journal, journal.sessionRoot);
+      sessionDir = await resolveTransitionSessionRoot(
+        directory,
+        journal.root,
+        journal.sessionRoot as string,
+        journal.sessionRootTransition,
+        journal.entries,
+        path.resolve(sessionStorageRoot(journal.root, sessionDir)),
+        options,
+      );
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+    }
     validateJournal(directory, journal, sessionDir);
     if (journal.completed) {
       await removeTransaction(directory);
@@ -299,7 +322,22 @@ async function prepareTransaction(
   }
   // File fsync does not persist the name linking each backup into this directory.
   await syncDirectory(backupDirectory);
-  const journal: TransactionJournal = { version: replacements.size ? 5 : JOURNAL_VERSION, root, sessionRoot, entries };
+  const effectiveRoot = sessionRoot ?? path.join(root, "sessions");
+  const sessionRootTransition = await prepareSessionRootTransition(
+    directory,
+    root,
+    effectiveRoot,
+    entries,
+    plan,
+    options,
+  );
+  const journal: TransactionJournal = {
+    version: sessionRootTransition ? 7 : replacements.size ? 5 : JOURNAL_VERSION,
+    root,
+    sessionRoot: sessionRootTransition ? effectiveRoot : sessionRoot,
+    sessionRootTransition,
+    entries,
+  };
   options.signal?.throwIfAborted();
   options.validateMutation?.();
   await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
@@ -614,16 +652,21 @@ async function ownedPostTree(target: string, files: { relative: string; image: s
 
 function validateJournal(directory: string, journal: TransactionJournal, sessionDir?: string) {
   if (
-    ![1, 2, 3, 4, 5, 6].includes(journal.version) ||
+    ![1, 2, 3, 4, 5, 6, 7].includes(journal.version) ||
     !Array.isArray(journal.entries) ||
     journal.entries.length > 16_384
   )
     throw new Error("Unsupported pi-sync transaction journal; preserve evidence for review.");
-  if (journal.completed !== undefined && (journal.version !== 6 || journal.completed !== true))
+  if (journal.completed !== undefined && (![6, 7].includes(journal.version) || journal.completed !== true))
     throw new Error("Invalid transaction completion evidence.");
   const root = path.resolve(agentDir());
   if (typeof journal.root !== "string" || path.resolve(journal.root) !== root)
     throw new Error("Transaction root no longer matches the Pi agent directory.");
+  if (journal.sessionRootTransition !== undefined) {
+    if (journal.version !== 7 || typeof journal.sessionRoot !== "string")
+      throw new Error("Invalid session root-transition version.");
+    validateSessionRootTransition(journal.sessionRootTransition);
+  } else if (journal.version === 7) throw new Error("Missing session root-transition evidence.");
   const trustedSessionRoot = sessionDir
     ? path.resolve(sessionStorageRoot(root, sessionDir))
     : path.join(root, "sessions");
@@ -650,7 +693,7 @@ function validateJournal(directory: string, journal: TransactionJournal, session
     assertAllowedTarget(root, journal.sessionRoot, entry.target);
     if (
       entry.afterTarget !== undefined &&
-      (![5, 6].includes(journal.version) ||
+      (![5, 6, 7].includes(journal.version) ||
         typeof entry.afterTarget !== "string" ||
         !isCaseReplacement(root, entry.target, entry.afterTarget) ||
         path.resolve(entry.afterTarget) !== entry.afterTarget ||
@@ -789,7 +832,7 @@ async function completeTransaction(directory: string, journal: TransactionJourna
   // may only retry cleanup, never roll back already accepted files.
   await writeJson(
     path.join(directory, "journal.json"),
-    { ...journal, version: 6, completed: true },
+    { ...journal, version: journal.sessionRootTransition ? 7 : 6, completed: true },
     {
       maxBytes: 32 * 1024 * 1024,
     },

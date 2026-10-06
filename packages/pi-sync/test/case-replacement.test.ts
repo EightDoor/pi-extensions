@@ -6,14 +6,18 @@ import path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { coalesceCaseReplacements } from "../src/snapshot/snapshot-case-replacement.js";
-import { applySnapshotTransaction, recoverPendingSnapshotTransactions } from "../src/snapshot/snapshot-transaction.js";
+import {
+  applySnapshotTransaction,
+  recoverPendingSnapshotTransactions,
+  recoverSnapshotTransactionsOnStartup,
+} from "../src/snapshot/snapshot-transaction.js";
 import { withTempHome } from "./helpers.js";
 import { deferred } from "./startup-check-helpers.js";
 
 const image = (value: string) => `file:${createHash("sha256").update(value).digest("hex")}`;
 
 /** Emulate only top-level case-insensitive lookup; names and durable I/O remain real. */
-function caseInsensitiveLookup(root: string) {
+function caseInsensitiveLookup(root: string, onRename?: (source: unknown, destination: unknown) => void) {
   const readdir = fs.readdir.bind(fs);
   const spies: { mockRestore(): void }[] = [];
   async function resolve(target: unknown) {
@@ -34,11 +38,10 @@ function caseInsensitiveLookup(root: string) {
   }
   const rename = fs.rename.bind(fs);
   spies.push(
-    vi
-      .spyOn(fs, "rename")
-      .mockImplementation(async (source, destination) =>
-        rename((await resolve(source)) as string, (await resolve(destination)) as string),
-      ),
+    vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      await rename((await resolve(source)) as string, (await resolve(destination)) as string);
+      onRename?.(source, destination);
+    }),
   );
   // Pi imports named built-in functions; keep its actual queue lookup on this fixture.
   syncBuiltinESMExports();
@@ -47,6 +50,65 @@ function caseInsensitiveLookup(root: string) {
     syncBuiltinESMExports();
   };
 }
+
+for (const phase of ["prepared", "session", "settings"])
+  test(`case-coalesced settings authorize root-transition recovery after ${phase}`, async () =>
+    withTempHome(async (root) => {
+      await fs.mkdir(root, { recursive: true });
+      const original = path.join(root, "SETTINGS.JSON");
+      const canonical = path.join(root, "settings.json");
+      const oldRoot = path.join(path.dirname(root), "old-sessions");
+      const newRoot = path.join(path.dirname(root), "new-sessions");
+      const before = JSON.stringify({ sessionDir: oldRoot });
+      const after = JSON.stringify({ sessionDir: newRoot });
+      await fs.writeFile(original, before);
+      await fs.mkdir(newRoot, { recursive: true });
+      const target = path.join(newRoot, "conversation.jsonl");
+      await fs.writeFile(target, "before-session");
+      const controller = new AbortController();
+      let injecting = true;
+      const restoreLookup = caseInsensitiveLookup(root, (_from, to) => {
+        if (
+          injecting &&
+          ((phase === "prepared" && String(to).endsWith("journal.json")) ||
+            (phase === "session" && to === target) ||
+            (phase === "settings" && to === canonical))
+        )
+          controller.abort();
+      });
+      try {
+        await assert.rejects(
+          applySnapshotTransaction(
+            {
+              deletes: [original],
+              writes: [
+                { target, content: Buffer.from("after-session") },
+                { target: canonical, content: Buffer.from(after) },
+              ],
+            },
+            { sessionDir: newRoot, signal: controller.signal },
+          ),
+          /cancel|abort/i,
+        );
+        injecting = false;
+        assert.equal(controller.signal.aborted, true, "the requested interruption was reached");
+        if (phase === "session") {
+          await assert.rejects(fs.access(canonical), { code: "ENOENT" });
+          // Arming the case replacement makes its missing settings image ambiguous.
+          await assert.rejects(recoverSnapshotTransactionsOnStartup(), /not owned|newer bytes/);
+          assert.equal(await fs.readFile(target, "utf8"), "after-session");
+          await assert.rejects(fs.access(canonical), { code: "ENOENT" });
+          assert.equal((await fs.readdir(path.join(root, "pi-sync/transactions"))).length, 1);
+          return;
+        }
+        await recoverSnapshotTransactionsOnStartup();
+        assert.equal(await fs.readFile(original, "utf8"), before);
+        assert.equal(await fs.readFile(target, "utf8"), "before-session");
+        assert.ok((await fs.readdir(root)).includes("SETTINGS.JSON"));
+      } finally {
+        restoreLookup();
+      }
+    }));
 
 test("native case-insensitive filesystem installs and recovers a case replacement", async ({ skip }) =>
   withTempHome(async (root) => {
