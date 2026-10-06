@@ -40,18 +40,20 @@ export function normalizeLocalFields(value: unknown): string[] {
 }
 /** Shared transport contract: older snapshots cannot carry portable policy metadata. */
 export function validateSnapshotFieldPolicy(snapshot: Pick<Snapshot, "version" | "localFields">) {
-  if (snapshot.version !== 1 && snapshot.version !== 2) throw new Error("Unsupported snapshot format.");
+  if (snapshot.version !== 1 && snapshot.version !== 2 && snapshot.version !== 3)
+    throw new Error("Unsupported snapshot format.");
   if (snapshot.version === 1 && snapshot.localFields !== undefined)
     throw new Error("Portable field policy requires snapshot version 2.");
-  if (snapshot.version === 2) {
-    if (snapshot.localFields === undefined) throw new Error("Snapshot version 2 requires explicit localFields rules.");
+  if (snapshot.version === 2 || snapshot.version === 3) {
+    if (snapshot.version === 2 && snapshot.localFields === undefined)
+      throw new Error("Snapshot version 2 requires explicit localFields rules.");
     normalizeLocalFields(snapshot.localFields);
   }
 }
 /** Portable transport images must not carry values declared machine-local. Physical journal images are different. */
 export function validatePortableSnapshot(snapshot: Snapshot) {
   validateSnapshotFieldPolicy(snapshot);
-  if (snapshot.version !== 2 || !snapshot.localFields?.length) return;
+  if ((snapshot.version !== 2 && snapshot.version !== 3) || !snapshot.localFields?.length) return;
   try {
     for (const entry of snapshot.files) {
       if (typeof entry?.path !== "string" || entry.path.toLowerCase() !== "settings.json") continue;

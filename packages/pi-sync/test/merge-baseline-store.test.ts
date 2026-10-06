@@ -137,3 +137,21 @@ test("pruning respects cancellation and unsupported formats never become ancesto
     await stageMergeBaseline(f.config, unsupported, state);
     assert.equal(await readMergeAncestor(f.config, state, "settings.json"), undefined);
   }));
+
+for (const paths of [
+  ["prompts/Foo.md", "prompts/foo.md"],
+  ["prompts/Foo.md", "prompts/FOO.md/child.md"],
+])
+  test(`colliding accepted paths are unavailable ancestors: ${paths.join(", ")}`, async () =>
+    withTempHome(async (root) => {
+      const f = await fixture(root);
+      f.config.mergeContent = true;
+      const image = snapshot([
+        ...paths.map((path) => ({ path, content: Buffer.from("eligible text\n") })),
+        { path: "prompts/safe.md", content: Buffer.from("safe\n") },
+      ]);
+      const state = { ...f.state, lastFileHashes: fileHashMap(image) };
+      await stageMergeBaseline(f.config, image, state);
+      for (const path of paths) assert.equal(await readMergeAncestor(f.config, state, path), undefined);
+      assert.equal((await readMergeAncestor(f.config, state, "prompts/safe.md"))?.toString(), "safe\n");
+    }));

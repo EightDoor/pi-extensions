@@ -84,6 +84,8 @@ export interface SyncPolicySettings {
   /** Version 4: settings.json root fields never uploaded. */
   localFields?: string[];
   mergeSettings?: boolean;
+  mergeContent?: boolean;
+  partialSync?: boolean;
   [key: string]: unknown;
 }
 
@@ -94,7 +96,7 @@ export interface SyncSetupSettings {
 }
 
 export interface PiSyncSettingsV3 {
-  version: 3 | 4;
+  version: 3 | 4 | 5;
   activeSyncSetup?: string;
   onSwitch: OnSwitchAction;
   skipSecretScan?: boolean;
@@ -115,6 +117,8 @@ export interface SyncConfig<Backend extends ResolvedSyncBackend = ResolvedS3Back
   automaticTransfer?: boolean;
   localFields?: string[];
   mergeSettings?: boolean;
+  mergeContent?: boolean;
+  partialSync?: boolean;
   onSwitch: OnSwitchAction;
   skipSecretScan: boolean;
   showStatus: boolean;

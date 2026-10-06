@@ -51,44 +51,42 @@ export function registerSyncBackendContractSuite(name: string, create: BackendFa
     });
   });
 
-  for (const localFields of [[], ["machine"]]) {
-    test(`${name} contract: portable snapshot round trip (${localFields.join(",") || "empty policy"})`, async () => {
-      await withBackend(create, async (backend) => {
-        const portable = {
-          ...snapshot([{ path: "settings.json", content: Buffer.from('{"theme":"dark"}\n') }]),
-          version: 2,
-          localFields,
-          selection: { version: 1 as const, include: ["settings.json"] },
-        };
-        const result = await backend.publishSnapshot(portable, { kind: "missing" });
-        assert.deepEqual(await backend.readSnapshot(result.head.snapshotRef), portable);
-        const restored = { ...portable, id: "portable-restored" };
-        const next = await backend.publishSnapshot(restored, expectedRemoteHead(result.head));
-        assert.deepEqual(await backend.readSnapshot(next.head.snapshotRef), restored);
-        assert.deepEqual(
-          (await backend.listHistory()).map((entry) => entry.snapshotId),
-          [portable.id, restored.id],
-        );
-        await assert.rejects(
-          backend.publishSnapshot({ ...portable, version: 1 }, expectedRemoteHead(next.head)),
-          /version 2/,
-        );
-        await assert.rejects(
-          backend.publishSnapshot({ ...portable, localFields: ["__proto__"] }, expectedRemoteHead(next.head)),
-          /localFields/,
-        );
-        await assert.rejects(
-          backend.publishSnapshot({ ...portable, localFields: undefined }, expectedRemoteHead(next.head)),
-          /explicit localFields/,
-        );
-        await assert.rejects(
-          backend.publishSnapshot({ ...portable, version: 999 }, expectedRemoteHead(next.head)),
-          /snapshot/i,
-        );
-        assert.equal((await backend.readHead())?.snapshotId, restored.id);
+  for (const version of [2, 3])
+    for (const localFields of [...(version === 3 ? [undefined] : []), [], ["machine"]]) {
+      test(`${name} contract: portable snapshot v${version} round trip (${localFields?.join(",") || "empty policy"})`, async () => {
+        await withBackend(create, async (backend) => {
+          const portable = {
+            ...snapshot([{ path: "settings.json", content: Buffer.from('{"theme":"dark"}\n') }]),
+            version,
+            ...(localFields !== undefined ? { localFields } : {}),
+            selection: { version: 1 as const, include: ["settings.json"] },
+          };
+          const result = await backend.publishSnapshot(portable, { kind: "missing" });
+          assert.deepEqual(await backend.readSnapshot(result.head.snapshotRef), portable);
+          const restored = { ...portable, id: "portable-restored" };
+          const next = await backend.publishSnapshot(restored, expectedRemoteHead(result.head));
+          assert.deepEqual(await backend.readSnapshot(next.head.snapshotRef), restored);
+          assert.deepEqual(
+            (await backend.listHistory()).map((entry) => entry.snapshotId),
+            [portable.id, restored.id],
+          );
+          if (localFields !== undefined)
+            await assert.rejects(
+              backend.publishSnapshot({ ...portable, version: 1 }, expectedRemoteHead(next.head)),
+              /version 2/,
+            );
+          await assert.rejects(
+            backend.publishSnapshot({ ...portable, localFields: ["__proto__"] }, expectedRemoteHead(next.head)),
+            /localFields/,
+          );
+          await assert.rejects(
+            backend.publishSnapshot({ ...portable, version: 999 }, expectedRemoteHead(next.head)),
+            /snapshot/i,
+          );
+          assert.equal((await backend.readHead())?.snapshotId, restored.id);
+        });
       });
-    });
-  }
+    }
 
   test(`${name} contract: excluded root values never enter portable storage`, async () => {
     await withBackend(create, async (backend) => {

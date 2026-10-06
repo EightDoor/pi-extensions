@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isPathInside } from "../paths.js";
+import { syncDirectory } from "../state/json-file.js";
 import { expandSessionDir } from "./session-paths.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
 import { fileImage } from "./snapshot-transaction-plan.js";
@@ -9,7 +10,9 @@ import type { SnapshotApplyPlan } from "./snapshot-types.js";
 export interface SessionRootTransition {
   beforeRoot: string;
   /** null is a verified missing postimage, never an empty settings file. */
-  settingsAfterBase64: string | null;
+  settingsAfterBase64?: string | null;
+  /** Reviewed bytes live in a private fsynced sidecar, pinned by the entry afterImage. */
+  settingsAfterFile?: true;
 }
 interface TransitionGuards {
   signal?: AbortSignal;
@@ -49,7 +52,7 @@ async function beforeRoot(directory: string, root: string, entry: SettingsEntry,
   const backup = path.join(directory, "before", entry.backupName);
   const stat = await fs.lstat(backup);
   validateOwner(guards);
-  if (!stat.isFile() || stat.size > 32 * 1024 * 1024) throw new Error("Invalid settings root-transition backup.");
+  if (!stat.isFile()) throw new Error("Invalid settings root-transition backup.");
   const bytes = await fs.readFile(backup);
   validateOwner(guards);
   if (fileImage(bytes) !== entry.beforeImage) throw new Error("Changed settings root-transition backup.");
@@ -76,7 +79,21 @@ export async function prepareSessionRootTransition(
   const previous = await beforeRoot(directory, root, entry, guards);
   if (previous === sessionRoot) return undefined;
   if (write && fileImage(write.content) !== entry.afterImage) throw new Error("Changed settings transition postimage.");
-  return { beforeRoot: previous, settingsAfterBase64: write ? write.content.toString("base64") : null };
+  if (!write) return { beforeRoot: previous, settingsAfterBase64: null };
+  validateOwner(guards);
+  const handle = await fs.open(path.join(directory, "settings-after"), "wx", 0o600);
+  try {
+    validateOwner(guards);
+    await handle.writeFile(write.content);
+    validateOwner(guards);
+    await handle.sync();
+    validateOwner(guards);
+  } finally {
+    await handle.close();
+  }
+  await syncDirectory(directory);
+  validateOwner(guards);
+  return { beforeRoot: previous, settingsAfterFile: true };
 }
 
 export function validateSessionRootTransition(value: SessionRootTransition) {
@@ -85,10 +102,13 @@ export function validateSessionRootTransition(value: SessionRootTransition) {
     typeof value.beforeRoot !== "string" ||
     !path.isAbsolute(value.beforeRoot) ||
     path.resolve(value.beforeRoot) !== value.beforeRoot ||
-    (value.settingsAfterBase64 !== null &&
-      (typeof value.settingsAfterBase64 !== "string" ||
-        value.settingsAfterBase64.length > 32 * 1024 * 1024 ||
-        Buffer.from(value.settingsAfterBase64, "base64").toString("base64") !== value.settingsAfterBase64))
+    (value.settingsAfterFile !== undefined && value.settingsAfterFile !== true) ||
+    (value.settingsAfterFile === true
+      ? value.settingsAfterBase64 !== undefined
+      : value.settingsAfterBase64 !== null &&
+        (typeof value.settingsAfterBase64 !== "string" ||
+          value.settingsAfterBase64.length > 32 * 1024 * 1024 ||
+          Buffer.from(value.settingsAfterBase64, "base64").toString("base64") !== value.settingsAfterBase64))
   )
     throw new Error("Invalid session root-transition evidence.");
 }
@@ -106,8 +126,22 @@ export async function resolveTransitionSessionRoot(
   const settingsTarget = path.join(root, "settings.json");
   const entry = entries.find((item) => item.target === settingsTarget || item.afterTarget === settingsTarget);
   if (!entry) throw new Error("Missing settings root-transition evidence.");
-  const after =
-    transition.settingsAfterBase64 === null ? undefined : Buffer.from(transition.settingsAfterBase64, "base64");
+  let after: Buffer | undefined;
+  if (transition.settingsAfterFile) {
+    const file = path.join(directory, "settings-after");
+    const stat = await fs.lstat(file);
+    validateOwner(guards);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.nlink !== 1 ||
+      (process.platform !== "win32" && (stat.mode & 0o077) !== 0)
+    )
+      throw new Error("Unsafe settings root-transition postimage.");
+    after = await fs.readFile(file);
+    validateOwner(guards);
+  } else if (transition.settingsAfterBase64 !== null)
+    after = Buffer.from(transition.settingsAfterBase64 as string, "base64");
   if (
     (after ? fileImage(after) : "missing") !== entry.afterImage ||
     (after ? rootFromSettings(root, after) : path.join(root, "sessions")) !== sessionRoot ||

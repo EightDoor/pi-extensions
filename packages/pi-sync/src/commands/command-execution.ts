@@ -125,6 +125,12 @@ export async function executeCommand(
         await operations.diff(ctx, options);
         return { kind: "completed" };
       }
+      case "conflicts": {
+        const { showConflicts } = await import("../sync/conflict-review.js");
+        throwIfAborted(options.signal);
+        await withLock("sync", () => showConflicts(ctx, options));
+        return { kind: "completed" };
+      }
       case "doctor": {
         const operations = await loaders.operations();
         throwIfAborted(options.signal);

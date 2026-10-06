@@ -72,6 +72,9 @@ test("argument completion retains prior tokens and completes known setup names",
   assert.ok(completeSyncArguments("")?.some((item) => item.value === "status"));
   assert.ok(completeSyncArguments("status --s")?.some((item) => item.value === "status --setup"));
   assert.ok(completeSyncArguments("status --setup w")?.some((item) => item.value === "status --setup work"));
+  assert.ok(completeSyncArguments("conflicts --s")?.some((item) => item.value === "conflicts --setup"));
+  assert.ok(completeSyncArguments("conflicts --setup w")?.some((item) => item.value === "conflicts --setup work"));
+  assert.equal(completeSyncArguments("conflicts --force"), null);
   assert.ok(completeSyncArguments("use h")?.some((item) => item.value === "use home"));
   assert.equal(completeSyncArguments("use home "), null);
 });

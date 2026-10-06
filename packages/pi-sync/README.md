@@ -104,7 +104,7 @@ After the same no-other-sync verification, `/sync unlock --stale` provides a det
 
 ### Resolve conflicts in the manager
 
-**Sync now** merges independent file additions, edits, and deletions against an established baseline. Equal concurrent edits are accepted. With experimental settings field merge enabled, supported `settings.json` fields can also merge using a verified accepted ancestor; arrays, nested objects and coupled fields remain atomic. Other divergent file edits, delete/modify conflicts, protected-session changes, selection changes, and case/file-directory collisions still require review; one unresolved path stops the entire merged transfer. Explicit push and pull remain directional.
+**Sync now** merges independent file additions, edits, and deletions against an established baseline. Equal concurrent edits are accepted. With experimental settings field merge enabled, supported `settings.json` fields can also merge using a verified accepted ancestor; arrays, nested objects and coupled fields remain atomic. Other divergent file edits, delete/modify conflicts, protected-session changes, selection changes, and case/file-directory collisions still require review; one unresolved path stops the entire merged transfer unless experimental partial sync is explicitly enabled. Explicit push and pull remain directional.
 
 When **Sync now**, **Pull from remote…**, or **Push to remote…** requires a direction choice, the manager opens **Resolve sync conflict**.
 The flow names the current setup and explains whether local content, remote content, or the included-content policy changed.
@@ -174,6 +174,10 @@ Successful transfers show one summary. They do not reload resources, activate ex
 
 **Settings → Machine-local settings fields** edits explicit `sync.localFields` root field names for global `settings.json` (default none). Excluded values and absence stay local; future portable snapshots omit them. Enabling rules opts into settings version 4 / snapshot version 2, which older clients must refuse. All receiving machines must configure compatible rules. Additions/removals require a separately confirmed force-direction migration, even with `--yes`; old remote history is **not erased**. See [settings merge and local fields](./docs/settings.md#settings-field-merge-and-machine-local-fields) for formats, compatibility and recovery.
 
+**Settings → Content / partial sync (experimental)** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into settings version 5; partial publications use snapshot version 3, rejected by older readers. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
+
+Partial sync keeps each side's unresolved versions, preserves their previous accepted hashes/ancestors, and advances only independent paths. Resource/collision dependency groups are withheld together, including local-only files, never represented as deletion. **More… → History & recovery… → Review unresolved conflicts**, or `/sync conflicts`, opens exact private versions on request and resolves one freshly validated whole group. Automatic pushes, non-forced push/pull, and rollback refuse unresolved groups; use group review or an explicit manual push/pull force direction instead. Artifacts remain below the denied state root, with stable conflict identity and at most 32 proven-completed records retained; unresolved or unrecognized evidence is never automatically pruned. Failed attempts release only newly created artifacts whose inode/content ownership and lack of state/journal references are verified. See [content merge and partial recovery](./docs/content-merge-audit.md).
+
 **Settings → Show status (all setups)** defaults to **On**. Turning it Off immediately clears and suppresses pi-sync status text for background checks, transfers, and review attention; widgets and notifications remain available.
 
 **Settings → Skip secret scan (all setups)** defaults to **Off**; enable it only after reviewing the destination and selected content because it disables push scanning for every setup.
@@ -232,6 +236,7 @@ Read the [settings reference](./docs/settings.md) for complete S3/R2, Git, and W
 | `/sync files` | List included local files. |
 | `/sync status` | Compare local and remote snapshot state. |
 | `/sync diff` | Show local and remote differences. |
+| `/sync conflicts` | Review private unresolved dependency groups and choose local or remote group versions after fresh validation. |
 | `/sync doctor` | Check configuration, connectivity, and backend safety. |
 | `/sync push` | Publish local content to remote storage. |
 | `/sync pull` | Back up local content, then apply the remote snapshot. |
@@ -245,7 +250,7 @@ All routes support TUI and RPC; RPC settings and included-content screens are re
 Print and JSON modes reject `/sync`.
 Unknown commands or flags, trailing values, and missing setup/snapshot values are rejected, including the former version 2 setup-addressing flag.
 
-- `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
+- `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `conflicts`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
 - `--yes` (alias: `-y`) skips confirmation on `push`, `pull`, `sync`, `rollback`, and `migrate-state`; use only after reviewing the affected content.
 - `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback` for compatibility. Explicit forced directions can also resolve an interrupted merge after a fresh review, archiving its old journal instead of restoring old bytes.
 - `--stale` is accepted only by `unlock` and is required to remove a stale lock.

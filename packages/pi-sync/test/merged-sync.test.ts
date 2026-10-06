@@ -479,9 +479,8 @@ test("remote advance after apply retains an apply-only journal instead of accept
     await f.remoteEdit("AGENTS.md", "remote instructions");
     const state = await readStateForConfig(f.config);
     const original = f.backend.readHead.bind(f.backend);
-    let reads = 0;
     const read = vi.spyOn(f.backend, "readHead").mockImplementation(async (...args) => {
-      if (++reads === 3) {
+      if ((await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8")) === "remote instructions") {
         read.mockRestore();
         await f.remoteEdit("AGENTS.md", "newer remote instructions");
       }

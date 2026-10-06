@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { backendIdentityCoordinates } from "../backends/backend-identity.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import type { Snapshot, SnapshotFile } from "../snapshot/snapshot-types.js";
-import { planFileMerge } from "../sync/file-merge-planner.js";
+import { collidingPaths, planFileMerge } from "../sync/file-merge-planner.js";
 import { parseSettingsDocument } from "../sync/json-document.js";
+import { validateSession } from "../sync/session-merge.js";
+import { isMergeTextPath, text } from "../sync/text-merge.js";
 import { syncDirectory, writeJson } from "./json-file.js";
 import type { SyncState } from "./state-types.js";
 import { statePathForConfig, syncStateFingerprint } from "./sync-state-store.js";
@@ -15,7 +18,19 @@ interface MergeBaseline {
   acceptedState: string;
   files: SnapshotFile[];
 }
-const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_BYTES = 192 * 1024 * 1024;
+function eligible(file: SnapshotFile) {
+  try {
+    const bytes = Buffer.from(file.contentBase64, "base64");
+    if (file.path === "settings.json") parseSettingsDocument(bytes);
+    else if (isMergeTextPath(file.path)) text(bytes);
+    else if (file.path.startsWith("sessions/") && file.path.endsWith(".jsonl")) validateSession(bytes);
+    else return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function identity(config: AnySyncConfig) {
   return JSON.stringify([
@@ -40,16 +55,39 @@ function baselinePath(config: AnySyncConfig, state: SyncState) {
 }
 
 /** Stage before accepted state, retain its previous ancestor until journal retirement. Never bootstrap from current edits. */
-export async function stageMergeBaseline(config: AnySyncConfig, snapshot: Snapshot, accepted: SyncState) {
+export async function stageMergeBaseline(
+  config: AnySyncConfig,
+  snapshot: Snapshot,
+  accepted: SyncState,
+  previous?: SyncState,
+) {
+  const collisions = collidingPaths(snapshot.files.map((file) => file.path));
   const files = snapshot.files.filter((file) => {
-    if (file.path !== "settings.json" || accepted.lastFileHashes[file.path] !== file.sha256) return false;
-    try {
-      parseSettingsDocument(Buffer.from(file.contentBase64, "base64"));
-      return true;
-    } catch {
-      return false;
-    }
+    return (
+      !collisions.has(file.path) &&
+      accepted.lastFileHashes[file.path] === file.sha256 &&
+      (file.path === "settings.json" || config.mergeContent) &&
+      eligible(file)
+    );
   });
+  if (previous) {
+    const stagedPaths = new Set(files.map((file) => file.path));
+    let ancestors: SnapshotFile[] = [];
+    try {
+      ancestors = (await readMergeAncestors(config, previous)) ?? [];
+    } catch {
+      /* Keep unknown evidence; missing bytes are never invented. */
+    }
+    for (const ancestor of ancestors)
+      if (
+        !collisions.has(ancestor.path) &&
+        accepted.lastFileHashes[ancestor.path] === ancestor.sha256 &&
+        !stagedPaths.has(ancestor.path)
+      ) {
+        files.push(ancestor);
+        stagedPaths.add(ancestor.path);
+      }
+  }
   const plan = planFileMerge({ baseline: {}, local: files, remote: [], selectionCompatible: true });
   if (plan.kind !== "planned" || plan.conflicts.length)
     throw new Error("Cannot stage unverified merge ancestor bytes.");
@@ -63,7 +101,6 @@ export async function stageMergeBaseline(config: AnySyncConfig, snapshot: Snapsh
   await writeJson(baselinePath(config, accepted), record, { maxBytes: MAX_BYTES });
 }
 
-/** Reader and pruning must agree on which records are safe, owned and byte-valid. */
 async function readBaselineRecord(
   config: AnySyncConfig,
   target: string,
@@ -81,8 +118,8 @@ async function readBaselineRecord(
     record.identity !== identity(config) ||
     record.acceptedState !== acceptedState ||
     !Array.isArray(record.files) ||
-    record.files.length > 1 ||
-    record.files.some((file) => file?.path !== "settings.json")
+    record.files.length > 16_384 ||
+    record.files.some((file) => !eligible(file))
   )
     throw new Error("Invalid cache identity.");
   const plan = planFileMerge({ baseline: {}, local: record.files, remote: [], selectionCompatible: true });
@@ -90,22 +127,26 @@ async function readBaselineRecord(
   return record;
 }
 
-export async function readMergeAncestor(
-  config: AnySyncConfig,
-  state: SyncState,
-  filePath: string,
-): Promise<Buffer | undefined> {
+export async function readMergeAncestors(config: AnySyncConfig, state: SyncState): Promise<SnapshotFile[] | undefined> {
   let record: MergeBaseline;
   try {
     await checkDirectory(config);
     record = await readBaselineRecord(config, baselinePath(config, state), syncStateFingerprint(state));
-    for (const file of record.files)
-      if (state.lastFileHashes[file.path] !== file.sha256) throw new Error("Cache hash mismatch.");
+    for (const file of record.files) {
+      if (
+        state.lastFileHashes[file.path] !== file.sha256 ||
+        createHash("sha256").update(Buffer.from(file.contentBase64, "base64")).digest("hex") !== file.sha256
+      )
+        throw new Error("Cache hash mismatch.");
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error("Merge ancestor is invalid; preserve its private cache and review the conflict.");
   }
-  const file = record.files.find((file) => file.path === filePath);
+  return record.files;
+}
+export async function readMergeAncestor(config: AnySyncConfig, state: SyncState, filePath: string) {
+  const file = (await readMergeAncestors(config, state))?.find((file) => file.path === filePath);
   return file ? Buffer.from(file.contentBase64, "base64") : undefined;
 }
 

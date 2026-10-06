@@ -372,3 +372,75 @@ for (const failure of ["copy", "rename", "cancel", "newer"] as const)
         await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
       }
     }));
+
+test("explicit manager root authorizes recovery without a settings-derived match", async () =>
+  withTempHome(async (root) => {
+    const sessionRoot = path.join(path.dirname(root), "explicit-manager");
+    const target = path.join(sessionRoot, "session.jsonl");
+    await fs.mkdir(sessionRoot, { recursive: true });
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, "settings.json"), "{}");
+    await fs.writeFile(target, "before");
+    const controller = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (to === target) controller.abort();
+    });
+    try {
+      await assert.rejects(
+        applySnapshotTransaction(
+          {
+            writes: [{ target, content: Buffer.from("after") }],
+            deletes: [],
+          },
+          { sessionDir: sessionRoot, signal: controller.signal },
+        ),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const context = createMockContext({ hasUI: false });
+    Object.defineProperties((context.ctx as ExtensionContext).sessionManager, {
+      usesDefaultSessionDir: { value: () => false },
+      getSessionDir: { value: () => sessionRoot },
+    });
+    await startSession(context.ctx, new AbortController().signal);
+    assert.equal(await fs.readFile(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(path.join(root, "pi-sync/transactions")), []);
+  }));
+
+for (const copied of [false, true])
+  test(`restart removes ${copied ? "complete" : "partial"} recovery staging left by a crash`, async () =>
+    withTempHome(async (root) => {
+      const f = await directoryRecoveryFixture(root);
+      const cp = fs.cp.bind(fs);
+      const rm = fs.rm.bind(fs);
+      let staged = "";
+      const copying = vi.spyOn(fs, "cp").mockImplementation(async (...args) => {
+        staged = String(args[1]);
+        const journal = JSON.parse(await fs.readFile(path.join(f.directory, "journal.json"), "utf8"));
+        assert.equal(journal.entries[0].recoveryStaged, true);
+        if (copied) await cp(...args);
+        else {
+          await fs.mkdir(staged);
+          await fs.writeFile(path.join(staged, "partial.md"), "private partial copy");
+        }
+        throw new Error("simulated process crash");
+      });
+      const cleanup = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+        if (String(args[0]) !== staged) await rm(...args);
+      });
+      try {
+        await assert.rejects(recoverPendingSnapshotTransactions(), /simulated process crash/);
+      } finally {
+        copying.mockRestore();
+        cleanup.mockRestore();
+      }
+      await fs.access(staged);
+      assert.equal(await fs.readFile(f.target, "utf8"), "after");
+      await recoverPendingSnapshotTransactions();
+      assert.equal(await fs.readFile(path.join(f.target, "old.md"), "utf8"), "before");
+      await assert.rejects(fs.access(staged), { code: "ENOENT" });
+      await assert.rejects(fs.access(f.directory), { code: "ENOENT" });
+    }));

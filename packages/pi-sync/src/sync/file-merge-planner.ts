@@ -117,7 +117,7 @@ export function mergePathIdentity(filePath: string) {
 }
 
 /** Conservative dependency groups: never accept a case or file/directory transition independently. */
-function collidingPaths(paths: readonly string[]) {
+export function collidingPaths(paths: readonly string[]) {
   const byLower = new Map<string, string[]>();
   for (const filePath of paths) {
     const lower = mergePathIdentity(filePath);

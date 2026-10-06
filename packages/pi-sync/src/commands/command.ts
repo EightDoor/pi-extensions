@@ -13,6 +13,7 @@ export const SYNC_COMMANDS = [
   { name: "files", description: "Choose included content" },
   { name: "status", description: "Show sync status" },
   { name: "diff", description: "Show local/remote diff" },
+  { name: "conflicts", description: "Review private unresolved conflict groups" },
   { name: "doctor", description: "Check config, secrets, and lock state" },
   { name: "push", description: "Upload local settings" },
   { name: "pull", description: "Apply remote settings" },
@@ -45,6 +46,7 @@ const SYNC_FLAG_COMPLETIONS: Record<string, readonly CommandArgumentCompletion[]
   files: [SETUP_FLAG_COMPLETION],
   status: [SETUP_FLAG_COMPLETION],
   diff: [SETUP_FLAG_COMPLETION],
+  conflicts: [SETUP_FLAG_COMPLETION],
   doctor: [SETUP_FLAG_COMPLETION],
   push: [
     ...YES_FLAG_COMPLETIONS,
@@ -110,6 +112,7 @@ export function validateCommandOptions(command: string, options: CommandOptions)
     "files",
     "status",
     "diff",
+    "conflicts",
     "doctor",
     "push",
     "pull",

@@ -36,6 +36,8 @@ interface TransactionEntry {
   removalPending?: boolean;
   /** Published before materialization: absence/partial trees can no longer prove an unstarted replacement. */
   replacementStarted?: boolean;
+  /** Published before copying to a transaction-derived sibling staging path. */
+  recoveryStaged?: boolean;
 }
 interface TransactionJournal {
   version: number;
@@ -411,6 +413,18 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
       );
     await verifyTarget(directory, entry, journal);
   }
+  // Recover copies left by a process crash even when the target is already restored.
+  for (const entry of journal.entries) {
+    if (!entry.recoveryStaged) continue;
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    await fs.rm(recoveryStagePath(directory, entry), { recursive: true, force: true });
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+  }
   // Verify the complete group before removing any path. Recheck each destructive boundary.
   for (const entry of [...journal.entries].sort((a, b) => a.target.length - b.target.length)) {
     const current = await verifyTarget(directory, entry, journal);
@@ -421,7 +435,7 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
     options.signal?.throwIfAborted();
     options.validateMutation?.();
     if (entry.kind === "file") {
-      const temporary = path.join(path.dirname(entry.target), `.pi-sync.json.${randomUUID()}.restore`);
+      const temporary = await prepareRecoveryStage(directory, journal, entry, options);
       try {
         await fs.mkdir(path.dirname(entry.target), { recursive: true });
         await fs.copyFile(path.join(directory, "before", entry.backupName), temporary);
@@ -472,7 +486,7 @@ async function restoreTransaction(directory: string, journal: TransactionJournal
       await removeOwnedTarget(directory, entry, journal, options, before);
       continue;
     }
-    const temporary = path.join(path.dirname(entry.target), `.pi-sync.json.${randomUUID()}.restore-tree`);
+    const temporary = await prepareRecoveryStage(directory, journal, entry, options);
     try {
       await fs.mkdir(path.dirname(entry.target), { recursive: true });
       await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
@@ -624,6 +638,38 @@ async function retireRestorationIntent(
   await retireRemovalIntent(directory, journal, [entry], options);
 }
 
+function recoveryStagePath(directory: string, entry: TransactionEntry) {
+  const token = createHash("sha256").update(directory).update("\\0").update(entry.backupName).digest("hex");
+  return path.join(
+    path.dirname(entry.target),
+    `.pi-sync.json.${token}.${entry.kind === "file" ? "restore" : "restore-tree"}`,
+  );
+}
+
+async function prepareRecoveryStage(
+  directory: string,
+  journal: TransactionJournal,
+  entry: TransactionEntry,
+  options: TransactionOptions,
+) {
+  const temporary = recoveryStagePath(directory, entry);
+  if (!entry.recoveryStaged) {
+    try {
+      await fs.lstat(temporary);
+      throw new Error("Unowned recovery staging path; preserve evidence for review.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+    entry.recoveryStaged = true;
+    await writeJson(path.join(directory, "journal.json"), journal, { maxBytes: 32 * 1024 * 1024 });
+    options.validateMutation?.();
+    options.signal?.throwIfAborted();
+  }
+  return temporary;
+}
+
 async function beforeImage(directory: string, entry: TransactionEntry) {
   if (entry.kind === "missing") return "missing";
   if (entry.kind === "symlink") return `symlink:${entry.linkTarget}`;
@@ -755,6 +801,8 @@ function validateJournal(directory: string, journal: TransactionJournal, session
         (entry.postFiles === undefined ? !journal.completed : !Array.isArray(entry.postFiles)))
     )
       throw new Error("Invalid transaction postimage evidence.");
+    if (entry.recoveryStaged !== undefined && typeof entry.recoveryStaged !== "boolean")
+      throw new Error("Invalid recovery staging evidence.");
     if (entry.removalPending !== undefined && (journal.version < 3 || typeof entry.removalPending !== "boolean"))
       throw new Error("Invalid transaction removal evidence.");
     if (

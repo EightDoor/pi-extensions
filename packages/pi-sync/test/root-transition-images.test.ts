@@ -252,3 +252,51 @@ for (const invalid of ["empty-postimage", "mismatched-hash", "unrelated-root", "
       assert.deepEqual(await fs.readFile(f.settings).catch(() => undefined), settings);
       await fs.access(f.journalFile);
     }));
+
+test("large reviewed settings postimage is private sidecar evidence, not journal payload", async () =>
+  withTempHome(async (root) => {
+    const directory = path.join(root, "pi-sync/transactions/large");
+    const settings = path.join(root, "settings.json");
+    const destination = path.join(path.dirname(root), "new-root");
+    const before = Buffer.from("{}");
+    const after = Buffer.from(JSON.stringify({ sessionDir: destination, padding: "x".repeat(25 * 1024 * 1024) }));
+    await fs.mkdir(path.join(directory, "before"), { recursive: true });
+    await fs.writeFile(path.join(directory, "before/0"), before);
+    const entries = [
+      { target: settings, backupName: "0", kind: "file", beforeImage: fileImage(before), afterImage: fileImage(after) },
+      {
+        target: path.join(destination, "session.jsonl"),
+        backupName: "1",
+        kind: "missing",
+        beforeImage: "missing",
+        afterImage: fileImage(Buffer.from("session")),
+      },
+    ];
+    const transition = await prepareSessionRootTransition(directory, root, destination, entries, {
+      deletes: [],
+      writes: [{ target: settings, content: after }],
+    });
+    assert.ok(transition);
+    assert.ok(JSON.stringify(transition).length < 1024);
+    assert.equal(transition.settingsAfterFile, true);
+    assert.equal(transition.settingsAfterBase64, undefined);
+    const sidecar = path.join(directory, "settings-after");
+    assert.deepEqual(await fs.readFile(sidecar), after);
+    if (process.platform !== "win32") assert.equal((await fs.stat(sidecar)).mode & 0o077, 0);
+    assert.equal(
+      await resolveTransitionSessionRoot(
+        directory,
+        root,
+        destination,
+        transition,
+        entries,
+        path.join(root, "sessions"),
+      ),
+      destination,
+    );
+    await fs.writeFile(sidecar, "{}");
+    await assert.rejects(
+      resolveTransitionSessionRoot(directory, root, destination, transition, entries, path.join(root, "sessions")),
+      /Inconsistent/,
+    );
+  }));

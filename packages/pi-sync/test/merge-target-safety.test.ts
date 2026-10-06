@@ -9,6 +9,7 @@ import { loadConfig } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { createSnapshot, regenerateSnapshotIdentity } from "../src/snapshot/snapshot.js";
 import { readStateForConfig, syncStateFingerprint } from "../src/state/sync-state-store.js";
+import { preflightMergedTargets } from "../src/sync/merge-apply.js";
 import {
   mergeJournalIdentity,
   mergeJournalPath,
@@ -82,6 +83,18 @@ async function fixture(agentDir: string, sessionRoot: string, include: string[],
   }
   return { ctx, backend, config, remoteEdit, journalForHead };
 }
+
+test("reviewed directory replacement refuses untracked descendants before publication", async () =>
+  withTempHome(async (agentDir) => {
+    const target = path.join(agentDir, "prompts/parent");
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, "child.md"), "known");
+    await fs.writeFile(path.join(target, "untracked.md"), "unmanaged");
+    const before = snapshot([{ path: "prompts/parent/child.md", content: Buffer.from("known") }]);
+    const after = snapshot([{ path: "prompts/parent", content: Buffer.from("replacement") }]);
+    await assert.rejects(preflightMergedTargets(before, after, { include: ["prompts"] }), /unknown or changed files/);
+    assert.equal(await fs.readFile(path.join(target, "untracked.md"), "utf8"), "unmanaged");
+  }));
 
 type ActiveLayout = "session" | "ordinary" | "symlink-session";
 

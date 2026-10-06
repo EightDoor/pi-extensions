@@ -114,6 +114,8 @@ export function syncConfigReviewIdentity(config: AnySyncConfig) {
     config.automaticTransfer ?? false,
     config.localFields,
     config.mergeSettings ?? false,
+    config.mergeContent ?? false,
+    config.partialSync ?? false,
   ]);
 }
 
@@ -163,6 +165,8 @@ function resolveSyncConfig(
     automaticTransfer: setup.sync.automaticTransfer ?? false,
     localFields: setup.sync.localFields === undefined ? undefined : normalizeLocalFields(setup.sync.localFields),
     mergeSettings: setup.sync.mergeSettings ?? false,
+    mergeContent: setup.sync.mergeContent ?? false,
+    partialSync: setup.sync.partialSync ?? false,
     onSwitch,
     skipSecretScan,
     showStatus,

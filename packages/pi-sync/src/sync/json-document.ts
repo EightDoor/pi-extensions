@@ -25,7 +25,14 @@ export function parseSettingsDocument(bytes: Buffer): JsonDocument {
     );
   }
 }
-function parseDocument(bytes: Buffer): JsonDocument {
+export function parseJsonObjectDocument(bytes: Buffer): JsonDocument {
+  try {
+    return parseDocument(bytes, false);
+  } catch {
+    throw new Error("Unsupported JSON object syntax, encoding or structure; preserve original bytes.");
+  }
+}
+function parseDocument(bytes: Buffer, checkSettingsMigration = true): JsonDocument {
   if (bytes.length > 1024 * 1024) throw new Error("Settings merge input exceeds 1 MiB.");
   const text = bytes.toString("utf8");
   if (!Buffer.from(text).equals(bytes)) throw new Error("Settings merge requires valid UTF-8.");
@@ -96,11 +103,13 @@ function parseDocument(bytes: Buffer): JsonDocument {
   if (!root.members) throw new Error("Settings merge requires a JSON object.");
   // Use the public API rather than reproducing private migration branches. Migrating input
   // is withheld, including legacy queue/transport/skills and retry-delay formats.
-  const migrated = SettingsManager.inMemory(
-    root.value as Parameters<typeof SettingsManager.inMemory>[0],
-  ).getGlobalSettings();
-  if (!jsonEqual(root.value, migrated as unknown as JsonValue))
-    throw new Error("Legacy settings migration requires review before content merge.");
+  if (checkSettingsMigration) {
+    const migrated = SettingsManager.inMemory(
+      root.value as Parameters<typeof SettingsManager.inMemory>[0],
+    ).getGlobalSettings();
+    if (!jsonEqual(root.value, migrated as unknown as JsonValue))
+      throw new Error("Legacy settings migration requires review before content merge.");
+  }
   return { text, root: { ...root, members: root.members } };
 }
 
