@@ -1,36 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
+import { readFileSync, writeFileSync } from "node:fs";
+import { test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 import { createMockPi } from "./mock-pi.js";
+import { deferred, useChromeSettingsFixture } from "./settings-fixture.js";
 
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-let root: string;
-let previousDir: string | undefined;
-beforeAll(async () => {
-  await import("@earendil-works/pi-coding-agent");
-});
-beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "chrome-policy-observation-"));
-  previousDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = root;
-  vi.resetModules();
-});
-afterEach(async () => {
-  vi.restoreAllMocks();
-  await (await import("../src/tool-selector.js")).waitForChromeDevtoolsSettings();
-  if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-  else process.env.PI_CODING_AGENT_DIR = previousDir;
-  rmSync(root, { recursive: true, force: true });
-});
+useChromeSettingsFixture("chrome-policy-observation-");
 
 for (const toolMode of ["codemode", "lazy", "direct"] as const)
   for (const boundary of ["write", "rename"] as const)
