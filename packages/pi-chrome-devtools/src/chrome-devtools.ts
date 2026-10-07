@@ -4,8 +4,8 @@ import { setActivePageId } from "./cdp-client.js";
 import {
   availableChromeDevtoolsTools,
   configureChromeDevtoolsToolExposure,
-  createChromeDevtoolsLoadTool,
   initializeAvailableChromeDevtoolsTools,
+  registerChromeDevtoolsCapabilities,
   requireEagerChromeDevtoolsToolExposure,
   setChromeDevtoolsSessionOwner,
   supportsNativeDeferredToolLoading,
@@ -55,14 +55,15 @@ const COMMAND_COMPLETIONS = [
   { value: "off", label: "off", description: "Compatibility alias for disable" },
 ];
 export default function chromeDevtools(pi: ExtensionAPI) {
-  pi.registerTool(listPagesTool);
-  pi.registerTool(selectPageTool);
-  pi.registerTool(navigateTool);
-  pi.registerTool(evaluateTool);
-  pi.registerTool(screenshotTool);
-  pi.registerTool(webMcpListToolsTool);
-  pi.registerTool(webMcpCallTool);
-  pi.registerTool(createChromeDevtoolsLoadTool(pi));
+  registerChromeDevtoolsCapabilities(pi, [
+    listPagesTool,
+    selectPageTool,
+    navigateTool,
+    evaluateTool,
+    screenshotTool,
+    webMcpListToolsTool,
+    webMcpCallTool,
+  ]);
 
   pi.registerCommand("chrome-devtools", {
     description: "Open Chrome DevTools help and tool controls",
@@ -95,6 +96,8 @@ export default function chromeDevtools(pi: ExtensionAPI) {
     state.activePageId = undefined;
     state.lastLaunchAttempt = undefined;
     const projectTrusted = ctx.isProjectTrusted();
+    await waitForChromeDevtoolsSettings();
+    if (generation !== state.sessionGeneration) return;
     const settings = await loadSettings({ cwd: ctx.cwd, projectTrusted });
     if (generation !== state.sessionGeneration) return;
     applyRuntimeBrowserSettings(settings.effectiveBrowser, settings.paths, projectTrusted);
@@ -113,8 +116,15 @@ export default function chromeDevtools(pi: ExtensionAPI) {
     const availableTools =
       settings.kind === "loaded" && settings.settings.tools
         ? settings.settings.tools
-        : availableChromeDevtoolsTools(pi);
-    configureChromeDevtoolsToolExposure(pi, availableTools, ctx.model);
+        : settings.kind === "loaded" && settings.settings.toolMode === "lazy"
+          ? availableChromeDevtoolsTools(pi)
+          : allChromeDevtoolsTools(ctx.sessionManager);
+    configureChromeDevtoolsToolExposure(
+      pi,
+      availableTools,
+      ctx.model,
+      settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
+    );
   });
 
   pi.on("model_select", (event, ctx) => {

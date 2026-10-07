@@ -4,11 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
-import {
-  createMockContext as createBaseMockContext,
-  createCustomSelectorHarness,
-  createMockPi,
-} from "../../../test/support.js";
+import { createMockContext as createBaseMockContext, createCustomSelectorHarness } from "../../../test/support.js";
 import chromeDevtools, {
   commandCompletions,
   formatHostForUrl,
@@ -25,7 +21,8 @@ import chromeDevtools, {
   selectAllowedRoot,
 } from "../src/chrome-devtools.js";
 import { applyRuntimeWebMcpSetting, beginWebMcpOperation, state, webMcpEnabled } from "../src/runtime.js";
-import { saveSettings } from "../src/settings.js";
+import { saveSettings, saveToolMode } from "../src/settings.js";
+import { createMockPi } from "./mock-pi.js";
 
 const NATIVE_DEFERRED_MODEL = {
   api: "openai-responses",
@@ -66,11 +63,11 @@ test("chrome-devtools factory registers without reading action methods", () => {
   assert.ok(mock.events.has("session_start"));
 });
 
-test("chrome-devtools registers deferred CDP tools and one loader", () => {
+test("chrome-devtools registers codemode CDP tools without a loader", () => {
   const mock = createMockPi();
   chromeDevtools(mock.pi);
 
-  assert.equal(mock.tools.length, 8);
+  assert.equal(mock.tools.length, 7);
   assert.deepEqual(
     mock.tools.map((tool) => tool.name),
     [
@@ -81,7 +78,6 @@ test("chrome-devtools registers deferred CDP tools and one loader", () => {
       "chrome_devtools_screenshot",
       "chrome_devtools_webmcp_list_tools",
       "chrome_devtools_webmcp_call_tool",
-      LOAD_TOOL,
     ],
   );
   for (const tool of mock.tools.filter((candidate) => candidate.name !== LOAD_TOOL)) {
@@ -126,7 +122,7 @@ test("chrome-devtools settings normalize ordered unique tool names", () => {
   assert.deepEqual(orderedChromeDevtoolsTools(new Set([EVALUATE_TOOL])), [EVALUATE_TOOL]);
 });
 
-test("chrome-devtools keeps only its loader active when settings are missing", async () => {
+test("chrome-devtools preserves explicit activation in codemode when settings are missing", async () => {
   await withTempAgentDir(async () => {
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const mock = createMockPi({ activeTools: ["other_tool", EVALUATE_TOOL] });
@@ -135,13 +131,14 @@ test("chrome-devtools keeps only its loader active when settings are missing", a
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", EVALUATE_TOOL]);
     assert.deepEqual(notifications, []);
   });
 });
 
 test("chrome-devtools loader additively activates matching allowed tools", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const mock = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
     const { ctx } = createMockContext();
@@ -195,7 +192,7 @@ test("WebMCP stays unavailable while disabled even when stale tool names are per
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
     assert.equal(webMcpEnabled(sessionOwner(ctx)), false);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS]);
   });
 });
 
@@ -206,6 +203,7 @@ test("enabled WebMCP gateways use fixed definitions and native additive loading"
       JSON.stringify({
         tools: [...CAPABILITY_TOOLS, ...WEBMCP_TOOLS],
         updatedAt: 1,
+        toolMode: "lazy",
         webmcp: { enabled: true },
       }),
     );
@@ -237,7 +235,8 @@ test("enabled WebMCP gateways use fixed definitions and native additive loading"
 });
 
 test("chrome-devtools keeps Azure Responses eager when compat enables tool search", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const unsupportedModel = {
       api: "azure-openai-responses",
@@ -255,15 +254,16 @@ test("chrome-devtools keeps Azure Responses eager when compat enables tool searc
     const { ctx } = createMockContext({ model: unsupportedModel });
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS, LOAD_TOOL]);
 
     await mock.events.get("model_select")?.[0]?.({ model: nativeModel }, ctx);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS, LOAD_TOOL]);
   });
 });
 
 test("chrome-devtools keeps Fireworks Messages eager despite native catalog capability", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const model = {
       api: "anthropic-messages",
@@ -277,12 +277,13 @@ test("chrome-devtools keeps Fireworks Messages eager despite native catalog capa
 
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS, LOAD_TOOL]);
   });
 });
 
 test("chrome-devtools keeps uppercase Anthropic model IDs eager", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const model = {
       api: "anthropic-messages",
@@ -295,12 +296,13 @@ test("chrome-devtools keeps uppercase Anthropic model IDs eager", async () => {
 
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS, LOAD_TOOL]);
   });
 });
 
 test("chrome-devtools honors native Kimi deferred-tool support", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const model = {
       api: "openai-completions",
@@ -319,7 +321,8 @@ test("chrome-devtools honors native Kimi deferred-tool support", async () => {
 });
 
 test("chrome-devtools honors native additional-tools support", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     for (const api of ["openai-responses", "openai-codex-responses"]) {
       const chromeDevtoolsModule = await importFreshChromeDevtools();
       const model = {
@@ -340,7 +343,8 @@ test("chrome-devtools honors native additional-tools support", async () => {
 });
 
 test("chrome-devtools activates every available tool before switching to an unsupported model", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const nativeModel = {
       api: "anthropic-messages",
@@ -364,7 +368,8 @@ test("chrome-devtools activates every available tool before switching to an unsu
 });
 
 test("chrome-devtools keeps its missing-settings catalog across session replacement", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeFileSync(path.join(agentDir, NEW_SETTINGS_FILE), JSON.stringify({ toolMode: "lazy" }));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const mock = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
     const { ctx } = createMockContext();
@@ -394,6 +399,7 @@ test("chrome-devtools keeps its missing-settings catalog across session replacem
 test("chrome-devtools loader does not expose tools outside the saved catalog", async () => {
   await withTempAgentDir(async (agentDir) => {
     writeSettings(agentDir, NEW_SETTINGS_FILE, [SCREENSHOT_TOOL]);
+    await saveToolMode("lazy");
     const chromeDevtoolsModule = await importFreshChromeDevtools();
     const mock = createMockPi({ activeTools: ["other_tool", EVALUATE_TOOL, SCREENSHOT_TOOL] });
     const { ctx } = createMockContext();
@@ -440,7 +446,7 @@ test("chrome-devtools loads the new settings file as the tool catalog without a 
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(notifications, []);
   });
 });
@@ -455,7 +461,7 @@ test("chrome-devtools reads legacy-only settings without modifying either path",
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.equal(existsSync(path.join(agentDir, NEW_SETTINGS_FILE)), false);
     assert.deepEqual(readSettings(agentDir, LEGACY_SETTINGS_FILE).tools, [LIST_PAGES_TOOL]);
     assert.match(notifications[0]?.message ?? "", /using legacy/i);
@@ -475,7 +481,7 @@ test("chrome-devtools prefers new settings created while legacy settings are loa
     writeSettings(agentDir, NEW_SETTINGS_FILE, [SCREENSHOT_TOOL]);
     await sessionStart;
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, [SCREENSHOT_TOOL]);
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), true);
     assert.match(notifications[0]?.message ?? "", /legacy settings ignored/i);
@@ -494,7 +500,7 @@ test("chrome-devtools prefers new settings when both files exist and reports leg
     await mock.events.get("session_start")?.[0]?.({}, ctx);
     await mock.commands.get("chrome-devtools")?.handler("status", ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, [SCREENSHOT_TOOL]);
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), true);
     assert.match(notifications[0]?.message ?? "", /legacy settings ignored/i);
@@ -514,7 +520,7 @@ test("chrome-devtools ignores invalid legacy settings without creating the new f
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", EVALUATE_TOOL]);
     assert.equal(existsSync(path.join(agentDir, NEW_SETTINGS_FILE)), false);
     assert.match(notifications[0]?.message ?? "", /settings ignored/i);
     assert.match(notifications[0]?.message ?? "", /pi-chrome-devtools-settings\.json/);
@@ -532,7 +538,7 @@ test("chrome-devtools does not fall back to legacy settings when the new file is
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", EVALUATE_TOOL]);
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), true);
     assert.match(notifications[0]?.message ?? "", /legacy settings ignored/i);
     assert.match(notifications[1]?.message ?? "", /settings ignored/i);
@@ -553,7 +559,7 @@ test("chrome-devtools saves tool selection only to the new settings file", async
     chromeDevtoolsModule.default(mock.pi);
     await mock.commands.get("chrome-devtools")?.handler("disable", ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, []);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).future, { kept: true });
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), false);
@@ -617,7 +623,7 @@ test("chrome-devtools rejects invalid settings updates and restores active tools
     await mock.commands.get("chrome-devtools")?.handler("disable", ctx);
 
     assert.equal(readFileSync(settingsPath, "utf8"), invalid);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, LIST_PAGES_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LIST_PAGES_TOOL]);
     assert.match(notifications.at(-1)?.message ?? "", /settings save failed/i);
 
     writeSettings(agentDir, NEW_SETTINGS_FILE, [LIST_PAGES_TOOL]);
@@ -635,7 +641,7 @@ test("chrome-devtools keeps failed-save rollback eager after an unsupported mode
     const { ctx, notifications } = createMockContext();
     chromeDevtoolsModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS]);
 
     let markRuntimeApply: (() => void) | undefined;
     const runtimeApplied = new Promise<void>((resolve) => {
@@ -662,12 +668,12 @@ test("chrome-devtools keeps failed-save rollback eager after an unsupported mode
     );
     await command;
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS]);
     assert.match(notifications.at(-1)?.message ?? "", /settings save failed/i);
   });
 });
 
-test("chrome-devtools rolls back a failed save after shutdown invalidates its session", async () => {
+test("chrome-devtools does not roll back into a shut-down session", async () => {
   await withTempAgentDir(async (agentDir) => {
     mkdirSync(path.join(agentDir, NEW_SETTINGS_FILE));
     const chromeDevtoolsModule = await importFreshChromeDevtools();
@@ -677,11 +683,11 @@ test("chrome-devtools rolls back a failed save after shutdown invalidates its se
 
     const command = mock.commands.get("chrome-devtools")?.handler("disable", ctx);
     await Promise.resolve();
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     const shutdown = mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 
     await Promise.all([command, shutdown]);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, LIST_PAGES_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(notifications, []);
   });
 });
@@ -697,7 +703,7 @@ test("chrome-devtools serializes rapid tool saves in invocation order", async ()
     const second = mock.commands.get("chrome-devtools")?.handler("disable", ctx);
     await Promise.all([first, second]);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, []);
   });
 });

@@ -117,6 +117,27 @@ function readSettings() {
   return JSON.parse(readFileSync(settingsFilePath(), "utf8")) as Record<string, unknown>;
 }
 
+test("tool mode row saves for reload without changing current tool exposure", async () => {
+  await withBrowserSettingsMenu(async ({ ctx, notifications, tui, generation }) => {
+    const mock = createMockPi({ activeTools: ["codemode", "other"] });
+    chromeDevtools(mock.pi);
+    const before = mock.rawPi.getActiveTools();
+    const running = showChromeDevtoolsBrowserSettings(mock.pi, ctx, generation);
+    await tui.waitForOpen();
+    for (let row = 0; row < 5; row++) tui.press("tui.select.down");
+    assert.match(tui.render().join("\n"), /Tool mode\s+codemode/);
+    tui.press("tui.select.confirm");
+    await tui.waitForPending();
+    await tui.waitForOpen();
+    assert.equal(readSettings().toolMode, "lazy");
+    assert.deepEqual(mock.rawPi.getActiveTools(), before);
+    assert.match(tui.render().join("\n"), /Tool mode\s+lazy/);
+    assert.match(notifications.at(-1)?.message ?? "", /reload required/);
+    tui.press("ctrl+c");
+    await running;
+  });
+});
+
 test("browser settings save endpoint and auto-launch immediately while preserving unknown fields", async () => {
   await withBrowserSettingsMenu(async ({ ctx, notifications, tui, generation }) => {
     writeFileSync(settingsFilePath(), '{"future":{"kept":true},"browser":{"futureBrowserField":"kept"}}\n');
@@ -171,7 +192,7 @@ test("WebMCP settings toggle the experimental gate, tool exposure, and active op
   await withBrowserSettingsMenu(async ({ ctx, notifications, tui, generation }) => {
     const mockPi = createMockPi({ activeTools: ["other_tool", ...CHROME_DEVTOOLS_TOOL_NAMES] });
     initializeAvailableChromeDevtoolsTools(mockPi.pi);
-    configureChromeDevtoolsToolExposure(mockPi.pi, CHROME_DEVTOOLS_TOOL_NAMES, NATIVE_DEFERRED_MODEL);
+    configureChromeDevtoolsToolExposure(mockPi.pi, CHROME_DEVTOOLS_TOOL_NAMES, NATIVE_DEFERRED_MODEL, "lazy");
     mockPi.rawPi.setActiveTools([...mockPi.rawPi.getActiveTools(), "chrome_devtools_evaluate"]);
     const running = showChromeDevtoolsBrowserSettings(mockPi.pi, ctx, generation);
     await tui.waitForOpen();

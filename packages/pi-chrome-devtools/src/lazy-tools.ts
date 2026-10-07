@@ -1,6 +1,12 @@
-import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { webMcpEnabled } from "./runtime.js";
+import type { ChromeDevToolsToolMode } from "./settings.js";
 import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName, isWebMcpToolName } from "./tool-names.js";
 
 export const CHROME_DEVTOOLS_LOAD_TOOL_NAME = "chrome_devtools_load";
@@ -15,6 +21,71 @@ const availableToolsByApi = existingAvailableToolsStore ?? new WeakMap<Extension
 if (!existingAvailableToolsStore) sharedGlobal[AVAILABLE_TOOLS_STORE] = availableToolsByApi;
 const lazyExposureByApi = new WeakMap<ExtensionAPI, boolean>();
 const sessionOwnerByApi = new WeakMap<ExtensionAPI, object>();
+// Public sessionManager identity survives factory/API rebuilds during /reload.
+// A redundant host selection of an already-owned active name has no public
+// provenance signal; keep known ownership rather than treating carryover as intent.
+const PROVENANCE_STORE = Symbol.for("@narumitw/pi-chrome-devtools.activation-provenance");
+type ActivationOwnership = { explicit: Set<string>; owned: Set<string> };
+const provenanceGlobal = globalThis as typeof globalThis & {
+  [PROVENANCE_STORE]?: WeakMap<object, ActivationOwnership>;
+};
+const ownedBySession = provenanceGlobal[PROVENANCE_STORE] ?? new WeakMap<object, ActivationOwnership>();
+provenanceGlobal[PROVENANCE_STORE] = ownedBySession;
+const modeByApi = new WeakMap<ExtensionAPI, ChromeDevToolsToolMode>();
+const loaderRegistered = new WeakSet<ExtensionAPI>();
+
+function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly string[]) {
+  pi.setActiveTools(names);
+  const owner = sessionOwnerByApi.get(pi);
+  if (!owner) return;
+  const ownership = ownedBySession.get(owner) ?? { explicit: new Set<string>(), owned: new Set<string>() };
+  for (const name of before)
+    if (CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) && !ownership.owned.has(name))
+      ownership.explicit.add(name);
+  if (chromeDevtoolsToolMode(pi) !== "codemode") {
+    for (const name of names)
+      if (CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) && !ownership.explicit.has(name))
+        ownership.owned.add(name);
+  }
+  ownedBySession.set(owner, ownership);
+}
+const definitionsByApi = new WeakMap<ExtensionAPI, ToolDefinition[]>();
+
+export function registerChromeDevtoolsCapabilities(pi: ExtensionAPI, tools: ToolDefinition[]) {
+  definitionsByApi.set(pi, tools);
+  for (const tool of tools) pi.registerTool({ ...tool, exposure: "codemode", defaultActive: false });
+}
+
+export function chromeDevtoolsToolMode(pi: ExtensionAPI): ChromeDevToolsToolMode {
+  return modeByApi.get(pi) ?? "codemode";
+}
+
+function refreshExposure(pi: ExtensionAPI) {
+  const available = effectiveAvailableTools(pi);
+  const mode = chromeDevtoolsToolMode(pi);
+  for (const tool of definitionsByApi.get(pi) ?? []) {
+    pi.registerTool({
+      ...tool,
+      defaultActive: false,
+      exposure: available.has(tool.name as ChromeDevToolsToolName)
+        ? mode === "codemode"
+          ? "codemode"
+          : "direct"
+        : "hidden",
+    });
+  }
+  if (mode === "lazy") {
+    pi.registerTool({ ...createChromeDevtoolsLoadTool(pi), defaultActive: false });
+    loaderRegistered.add(pi);
+  } else if (loaderRegistered.has(pi)) {
+    pi.registerTool({
+      ...createChromeDevtoolsLoadTool(pi),
+      exposure: "hidden",
+      promptSnippet: undefined,
+      promptGuidelines: undefined,
+    });
+  }
+}
 
 const SEARCH_TEXT: Record<ChromeDevToolsToolName, string> = {
   chrome_devtools_list_pages: "list open inspectable chrome browser pages tabs targets",
@@ -43,23 +114,41 @@ export function configureChromeDevtoolsToolExposure(
   pi: ExtensionAPI,
   availableTools: readonly ChromeDevToolsToolName[],
   model?: ExtensionContext["model"],
+  mode: ChromeDevToolsToolMode = "codemode",
 ) {
+  modeByApi.set(pi, mode);
   setAvailableTools(pi, availableTools);
   const available = effectiveAvailableTools(pi);
-  const lazyExposure = supportsNativeDeferredToolLoading(model);
+  const lazyExposure = mode === "lazy" && supportsNativeDeferredToolLoading(model);
   lazyExposureByApi.set(pi, lazyExposure);
-  const exposedTools = lazyExposure ? [] : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
+  const before = pi.getActiveTools();
+  const owner = sessionOwnerByApi.get(pi);
+  const owned = owner ? ownedBySession.get(owner)?.owned : undefined;
+  const exposedTools =
+    mode === "codemode"
+      ? before.filter((name) => available.has(name as ChromeDevToolsToolName) && !owned?.has(name))
+      : lazyExposure
+        ? []
+        : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
   const nonCapabilityTools = pi
     .getActiveTools()
     .filter((name) => !CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName));
-  pi.setActiveTools(unique([...nonCapabilityTools, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...exposedTools]));
+  refreshExposure(pi);
+  const target = new Set([
+    ...nonCapabilityTools.filter((name) => name !== CHROME_DEVTOOLS_LOAD_TOOL_NAME),
+    ...(mode === "lazy" ? [CHROME_DEVTOOLS_LOAD_TOOL_NAME] : []),
+    ...exposedTools,
+  ]);
+  publishActiveTools(pi, unique([...before.filter((name) => target.has(name)), ...target]), before);
+  if (mode === "codemode") owned?.clear();
 }
 
 export function requireEagerChromeDevtoolsToolExposure(pi: ExtensionAPI) {
+  if (chromeDevtoolsToolMode(pi) !== "lazy") return;
   lazyExposureByApi.set(pi, false);
   const active = pi.getActiveTools();
   const available = availableChromeDevtoolsTools(pi);
-  pi.setActiveTools(unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...available]));
+  publishActiveTools(pi, unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...available]), active);
 }
 
 export function applyAvailableChromeDevtoolsTools(pi: ExtensionAPI, availableTools: readonly ChromeDevToolsToolName[]) {
@@ -73,12 +162,29 @@ export function applyAvailableChromeDevtoolsTools(pi: ExtensionAPI, availableToo
         !CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) ||
         (lazyExposure && available.has(name as ChromeDevToolsToolName)),
     );
-  const eagerTools = lazyExposure ? [] : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
-  pi.setActiveTools(unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...eagerTools]));
+  const mode = chromeDevtoolsToolMode(pi);
+  const before = pi.getActiveTools();
+  const eagerTools =
+    mode === "codemode"
+      ? before.filter((name) => available.has(name as ChromeDevToolsToolName))
+      : lazyExposure
+        ? []
+        : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
+  refreshExposure(pi);
+  const target = new Set([
+    ...active.filter((name) => name !== CHROME_DEVTOOLS_LOAD_TOOL_NAME),
+    ...(mode === "lazy" ? [CHROME_DEVTOOLS_LOAD_TOOL_NAME] : []),
+    ...eagerTools,
+  ]);
+  publishActiveTools(pi, unique([...before.filter((name) => target.has(name)), ...target]), before);
 }
 
 export function chromeDevtoolsToolExposureMode(pi: ExtensionAPI) {
-  return lazyExposureByApi.get(pi) === true ? "native deferred" : "eager";
+  return chromeDevtoolsToolMode(pi) === "codemode"
+    ? "codemode"
+    : lazyExposureByApi.get(pi) === true
+      ? "native deferred"
+      : "eager";
 }
 
 export function supportsNativeDeferredToolLoading(model: ExtensionContext["model"]): boolean {
@@ -150,7 +256,7 @@ export function createChromeDevtoolsLoadTool(pi: ExtensionAPI) {
       const activeSet = new Set(active);
       const added = matches.filter((name) => !activeSet.has(name));
       if (added.length > 0) {
-        pi.setActiveTools(unique([...active, ...added]));
+        publishActiveTools(pi, unique([...active, ...added]), active);
       }
 
       const text =

@@ -17,16 +17,19 @@ import {
 import {
   type BrowserSettingsPatch,
   type BrowserSettingsSource,
+  isChromeDevtoolsToolMode,
   loadSettings,
   parseBrowserEndpoint,
   type SettingsLoadResult,
   saveBrowserSettings,
+  saveToolMode,
   saveWebMcpSettings,
 } from "./settings.js";
 import { sanitizeChromeDevtoolsDisplay } from "./tool-selector.js";
 
 type BrowserSettingsScreen = "settings" | "endpoint" | "executable" | "extensions";
 type BrowserSettingsAction =
+  | "set-tool-mode"
   | "open-endpoint"
   | "save-endpoint"
   | "set-auto-launch"
@@ -98,6 +101,14 @@ export async function showChromeDevtoolsBrowserSettings(
               currentValue: `${browser.extensionPaths.length} configured`,
               action: "show-extensions",
             },
+            {
+              id: "tool-mode",
+              label: "Tool mode",
+              description: "codemode discovery, lazy loading, or direct declarations. Saved changes require /reload.",
+              currentValue: current.load.kind === "loaded" ? current.load.settings.toolMode : "codemode",
+              values: ["codemode", "lazy", "direct"],
+              action: "set-tool-mode",
+            },
           ],
         };
       },
@@ -133,6 +144,18 @@ export async function showChromeDevtoolsBrowserSettings(
       }),
     },
     actions: {
+      "set-tool-mode": async ({ value }) => {
+        if (!isChromeDevtoolsToolMode(value) || !isCurrent()) return { kind: "rejected" };
+        try {
+          await saveToolMode(value);
+          if (!isCurrent()) return { kind: "rejected" };
+          ctx.ui.notify("Chrome DevTools tool mode saved; /reload required. Running exposure is unchanged.", "info");
+          return { kind: "stay" };
+        } catch (error) {
+          if (isCurrent()) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
       "open-endpoint": () => ({ kind: "to", screen: "endpoint" }),
       "save-endpoint": async ({ value, signal }) => {
         if (value === undefined) return { kind: "rejected" };

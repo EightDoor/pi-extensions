@@ -17,6 +17,7 @@ import {
   availableChromeDevtoolsTools,
   CHROME_DEVTOOLS_LOAD_TOOL_NAME,
   chromeDevtoolsToolExposureMode,
+  chromeDevtoolsToolMode,
 } from "./lazy-tools.js";
 import { invalidateWebMcpOperations, state, webMcpEnabled } from "./runtime.js";
 import { loadSettings, saveSettings, settingsFilePath } from "./settings.js";
@@ -30,10 +31,6 @@ import {
 export { sanitizeChromeDevtoolsDisplay };
 
 type CommandContext = ExtensionCommandContext;
-
-function unique<T>(values: T[]) {
-  return Array.from(new Set(values));
-}
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -85,8 +82,9 @@ function transactSelectedTools(
   expectedGeneration: number,
   expectedActiveTools?: readonly ChromeDevToolsToolName[],
 ): Promise<ToolSelectionSaveResult> {
+  const acceptedTools = [...selectedTools];
   const operation = toolTransactionQueue.then(() =>
-    transactSelectedToolsNow(pi, ctx, selectedTools, expectedGeneration, expectedActiveTools),
+    transactSelectedToolsNow(pi, ctx, acceptedTools, expectedGeneration, expectedActiveTools),
   );
   toolTransactionQueue = operation.then(
     () => undefined,
@@ -102,7 +100,15 @@ async function transactSelectedToolsNow(
   expectedGeneration: number,
   expectedActiveTools?: readonly ChromeDevToolsToolName[],
 ): Promise<ToolSelectionSaveResult> {
-  if (expectedGeneration !== state.sessionGeneration) return "failed";
+  if (expectedGeneration !== state.sessionGeneration) {
+    // Accepted durable intents outlive their UI/session; never apply to a replacement runtime.
+    try {
+      await persistSettings(selectedTools);
+    } catch {
+      // No live owner remains to notify; storage stays unchanged on failure.
+    }
+    return "failed";
+  }
   if (expectedActiveTools && !arraysEqual(availableChromeDevtoolsTools(pi), expectedActiveTools)) {
     ctx.ui.notify(
       "Browser tool selection changed while review was open. Review the current state, then apply again.",
@@ -122,18 +128,11 @@ async function transactSelectedToolsNow(
     await persistSettings(selectedTools);
     return expectedGeneration === state.sessionGeneration ? "saved" : "failed";
   } catch (error) {
+    if (expectedGeneration !== state.sessionGeneration) return "failed";
     let rollbackError: unknown;
     try {
       applyAvailableChromeDevtoolsTools(pi, previousAvailableTools);
-      const currentNonChromeTools = pi
-        .getActiveTools()
-        .filter((name) => !CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName));
-      const previousLoadedChromeTools = previousActiveTools.filter((name) =>
-        CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName),
-      );
-      const restoredChromeTools =
-        chromeDevtoolsToolExposureMode(pi) === "eager" ? previousAvailableTools : previousLoadedChromeTools;
-      pi.setActiveTools(unique([...currentNonChromeTools, ...restoredChromeTools]));
+      pi.setActiveTools(previousActiveTools);
     } catch (caught) {
       rollbackError = caught;
     }
@@ -182,10 +181,17 @@ function getToolStatusSummary(pi: ExtensionAPI, owner: object): ToolStatusSummar
 export async function buildToolStatusMessage(pi: ExtensionAPI, owner: object) {
   const summary = getToolStatusSummary(pi, owner);
   const persistedSetting = await persistedSettingLabel();
+  const settings = await loadSettings();
+  const savedMode = settings.kind === "loaded" ? settings.settings.toolMode : "codemode";
   return sanitizeChromeDevtoolsDisplay(
     [
       `Chrome DevTools tools available: ${formatRuntimeStatus(summary)}`,
+      `Running tool mode: ${chromeDevtoolsToolMode(pi)}`,
       `Tool exposure: ${chromeDevtoolsToolExposureMode(pi)}`,
+      `Saved tool mode: ${savedMode}`,
+      ...(savedMode !== chromeDevtoolsToolMode(pi)
+        ? ["Tool mode change pending; /reload or session replacement required."]
+        : []),
       `Loaded capability tools this session: ${summary.loadedChromeToolCount}/${summary.capabilityCount}`,
       `WebMCP: ${webMcpEnabled(owner) ? "enabled · experimental · confirmation required for every call" : "disabled · experimental"}`,
       `Loader: ${pi.getActiveTools().includes(CHROME_DEVTOOLS_LOAD_TOOL_NAME) ? "active" : "inactive"}`,
