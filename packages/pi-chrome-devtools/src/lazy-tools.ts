@@ -5,6 +5,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { sanitizeChromeDevtoolsDisplay } from "./display.js";
 import { webMcpEnabled } from "./runtime.js";
 import type { ChromeDevToolsToolMode } from "./settings.js";
 import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName, isWebMcpToolName } from "./tool-names.js";
@@ -54,6 +55,11 @@ function retainedExplicitTools(pi: ExtensionAPI, before: readonly string[]) {
 
 function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly string[]) {
   pi.setActiveTools(names);
+  recordOwnership(pi, before);
+}
+
+function recordOwnership(pi: ExtensionAPI, before: readonly string[]) {
+  const names = pi.getActiveTools();
   const owner = sessionOwnerByApi.get(pi);
   if (!owner) return;
   const ownership: ActivationOwnership = ownedBySession.get(owner) ?? {
@@ -76,7 +82,7 @@ function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly 
         ownership.owned.add(name);
   }
   if (chromeDevtoolsToolMode(pi) === "codemode") ownership.owned.clear();
-  const published = new Set(pi.getActiveTools());
+  const published = new Set(names);
   ownership.published = new Set(CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => published.has(name)));
   ownedBySession.set(owner, ownership);
   persistOwnership(pi, ownership);
@@ -97,6 +103,12 @@ function ownershipData(ownership: ActivationOwnership) {
   };
 }
 
+class ActivationProvenanceError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
   ownership.available = new Set(configuredChromeDevtoolsTools(pi));
   ownership.mode = chromeDevtoolsToolMode(pi);
@@ -110,7 +122,7 @@ function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
     // Pi can advance its in-memory branch before disk persistence throws. Force
     // recovery to append its policy even when it matches the last saved record.
     ownership.serialized = undefined;
-    throw error;
+    throw new ActivationProvenanceError(error);
   }
 }
 
@@ -404,8 +416,21 @@ export function createChromeDevtoolsLoadTool(pi: ExtensionAPI) {
       const active = pi.getActiveTools();
       const activeSet = new Set(active);
       const added = matches.filter((name) => !activeSet.has(name));
-      if (added.length > 0) {
-        publishActiveTools(pi, unique([...active, ...added]), active);
+      let provenanceWarning: string | undefined;
+      try {
+        if (added.length > 0) {
+          publishActiveTools(pi, unique([...active, ...added]), active);
+        } else {
+          const ownership = ownedBySession.get(ctx.sessionManager);
+          if (ownership && ownership.serialized === undefined) recordOwnership(pi, active);
+        }
+      } catch (error) {
+        if (!(error instanceof ActivationProvenanceError)) throw error;
+        // Native loading must remain additive. Activation succeeded; do not
+        // remove tools or claim it failed because its bookkeeping could not save.
+        provenanceWarning = sanitizeChromeDevtoolsDisplay(
+          `Activation ownership could not be saved: ${error.message}. Activation is not rolled back; durable ownership may be incomplete until a later loader call retries successfully.`,
+        );
       }
 
       const text =
@@ -415,8 +440,8 @@ export function createChromeDevtoolsLoadTool(pi: ExtensionAPI) {
             ? `Loaded Chrome DevTools tools: ${added.join(", ")}`
             : `Matching Chrome DevTools tools are already loaded: ${matches.join(", ")}`;
       return {
-        content: [{ type: "text" as const, text }],
-        details: { matches, added },
+        content: [{ type: "text" as const, text: provenanceWarning ? `${text}\nWarning: ${provenanceWarning}` : text }],
+        details: { matches, added, ...(provenanceWarning ? { provenanceWarning } : {}) },
       };
     },
   });

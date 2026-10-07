@@ -90,8 +90,9 @@ function transactSelectedTools(
   expectedActiveTools?: readonly ChromeDevToolsToolName[],
 ): Promise<ToolSelectionSaveResult> {
   const acceptedTools = [...selectedTools];
+  const expectedTools = expectedActiveTools ? [...expectedActiveTools] : undefined;
   const operation = toolTransactionQueue.then(() =>
-    transactSelectedToolsNow(pi, ctx, acceptedTools, expectedGeneration, expectedActiveTools),
+    transactSelectedToolsNow(pi, ctx, acceptedTools, expectedGeneration, expectedTools),
   );
   toolTransactionQueue = operation.then(
     () => undefined,
@@ -110,6 +111,22 @@ async function transactSelectedToolsNow(
   if (expectedGeneration !== state.sessionGeneration) {
     // Accepted durable intents outlive their UI/session; never apply to a replacement runtime.
     try {
+      if (expectedActiveTools) {
+        // Earlier accepted intents can be durable without publishing to this
+        // retired API. Compare the policy the replacement will actually load.
+        const settings = await loadSettings();
+        if (settings.userFile.kind !== "invalid") {
+          const catalog = new Set(
+            settings.kind === "loaded" && settings.settings.tools
+              ? settings.settings.tools
+              : CHROME_DEVTOOLS_TOOL_NAMES,
+          );
+          const current = CHROME_DEVTOOLS_TOOL_NAMES.filter(
+            (name) => catalog.has(name) && (settings.effectiveWebMcpEnabled || !isWebMcpToolName(name)),
+          );
+          if (!arraysEqual(current, expectedActiveTools)) return "active-tools-changed";
+        }
+      }
       await persistSettings(selectedTools);
     } catch {
       // No live owner remains to notify; storage stays unchanged on failure.
@@ -354,7 +371,7 @@ function persistedSettingLabel(settings: SettingsLoadResult) {
   if (settings.kind === "invalid") {
     return `none; current active-tool policy preserved (invalid settings ignored: ${settings.reason})`;
   }
-  return "none; current active-tool policy preserved";
+  return "none; default catalog restored on /reload or session replacement";
 }
 
 function formatPersistedSelection(tools: readonly ChromeDevToolsToolName[]) {
