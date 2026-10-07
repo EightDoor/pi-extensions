@@ -2,8 +2,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { shutdownManagedBrowser, startManagedBrowserSession, syncManagedBrowserSettings } from "./browser-manager.js";
 import { setActivePageId } from "./cdp-client.js";
 import {
+  chromeDevtoolsToolMode,
   configureChromeDevtoolsToolExposure,
   initializeAvailableChromeDevtoolsTools,
+  previousChromeDevtoolsTools,
   registerChromeDevtoolsCapabilities,
   requireEagerChromeDevtoolsToolExposure,
   setChromeDevtoolsSessionOwner,
@@ -78,6 +80,10 @@ export default function chromeDevtools(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++state.sessionGeneration;
     setChromeDevtoolsSessionOwner(pi, ctx.sessionManager, ctx.sessionManager.getBranch());
+    // Capture before default initialization: unknown invalid files must not
+    // broaden availability, while a restored/current policy survives reload.
+    const previousAvailableTools = previousChromeDevtoolsTools(pi);
+    const previousMode = chromeDevtoolsToolMode(pi);
     initializeAvailableChromeDevtoolsTools(pi);
     setWebMcpSessionOwner(ctx.sessionManager);
     replaceSessionController("Chrome DevTools session replaced");
@@ -113,14 +119,16 @@ export default function chromeDevtools(pi: ExtensionAPI) {
       );
     }
     const availableTools =
-      settings.kind === "loaded" && settings.settings.tools
-        ? settings.settings.tools
-        : allChromeDevtoolsTools(ctx.sessionManager);
+      settings.kind === "invalid"
+        ? previousAvailableTools
+        : settings.kind === "loaded" && settings.settings.tools
+          ? settings.settings.tools
+          : allChromeDevtoolsTools(ctx.sessionManager);
     configureChromeDevtoolsToolExposure(
       pi,
       availableTools,
       ctx.model,
-      settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
+      settings.kind === "invalid" ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
     );
   });
 

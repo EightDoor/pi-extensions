@@ -30,6 +30,7 @@ export async function withChromeRuntime(
     sessionManager?: SessionManager;
     restoreTranscript?: boolean;
     activeCapabilities?: readonly string[];
+    invalidSettings?: boolean;
   },
   run: (fixture: {
     session: Awaited<ReturnType<typeof createAgentSession>>["session"];
@@ -51,11 +52,13 @@ export async function withChromeRuntime(
     const file = join(agentDir, "pi-chrome-devtools.json");
     await writeFile(
       file,
-      JSON.stringify({
-        toolMode: options.toolMode,
-        browser: { autoLaunch: false },
-        ...(options.tools ? { tools: options.tools, updatedAt: 1 } : {}),
-      }),
+      options.invalidSettings
+        ? "{"
+        : JSON.stringify({
+            toolMode: options.toolMode,
+            browser: { autoLaunch: false },
+            ...(options.tools ? { tools: options.tools, updatedAt: 1 } : {}),
+          }),
     );
     const fauxModule = (await import(fauxSpecifier)) as typeof import("@earendil-works/pi-ai/providers/faux");
     const faux = fauxModule.createFauxCore({

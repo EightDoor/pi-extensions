@@ -20,7 +20,16 @@ afterEach(() => {
   else process.env.PI_CODING_AGENT_DIR = previous;
   rmSync(root, { recursive: true, force: true });
 });
-for (const kind of ["owned", "explicit", "unknown-version", "invalid-names", "overlap", "invalid-latest"] as const) {
+for (const kind of [
+  "owned",
+  "explicit",
+  "unknown-version",
+  "invalid-names",
+  "overlap",
+  "invalid-latest",
+  "invalid-availability",
+  "invalid-mode",
+] as const) {
   test(`provenance record ${kind} is branch-scoped and conservatively validated`, async () => {
     const { default: extension } = await import("../src/chrome-devtools.js");
     const name = "chrome_devtools_list_pages";
@@ -29,16 +38,16 @@ for (const kind of ["owned", "explicit", "unknown-version", "invalid-names", "ov
       customType: "chrome-devtools.activation-provenance",
       data: { version: 1, explicit: [] as string[], owned: [name], future: true },
     };
-    const data =
-      kind === "explicit"
-        ? { version: 1, explicit: [name], owned: [] }
-        : kind === "unknown-version"
-          ? { ...valid.data, version: 2 }
-          : kind === "invalid-names"
-            ? { ...valid.data, owned: ["unknown"] }
-            : kind === "overlap"
-              ? { ...valid.data, explicit: [name] }
-              : valid.data;
+    const data: Record<string, unknown> = { ...valid.data };
+    if (kind === "explicit") {
+      data.explicit = [name];
+      data.owned = [];
+    }
+    if (kind === "unknown-version") data.version = 2;
+    if (kind === "invalid-names") data.owned = ["unknown"];
+    if (kind === "overlap") data.explicit = [name];
+    if (kind === "invalid-availability") data.available = ["unknown"];
+    if (kind === "invalid-mode") data.mode = "unknown";
     const branch = kind === "invalid-latest" ? [valid, { ...valid, data: null }] : [{ ...valid, data }];
     const snapshot = JSON.stringify(branch);
     const mock = createMockPi({ activeTools: ["other", name] });

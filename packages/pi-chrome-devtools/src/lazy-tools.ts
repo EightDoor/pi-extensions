@@ -26,7 +26,13 @@ const sessionOwnerByApi = new WeakMap<ExtensionAPI, object>();
 // provenance signal; keep known ownership rather than treating carryover as intent.
 const PROVENANCE_STORE = Symbol.for("@narumitw/pi-chrome-devtools.activation-provenance");
 const PROVENANCE_ENTRY = "chrome-devtools.activation-provenance";
-type ActivationOwnership = { explicit: Set<string>; owned: Set<string>; serialized?: string };
+type ActivationOwnership = {
+  explicit: Set<string>;
+  owned: Set<string>;
+  available?: Set<ChromeDevToolsToolName>;
+  mode?: ChromeDevToolsToolMode;
+  serialized?: string;
+};
 const provenanceGlobal = globalThis as typeof globalThis & {
   [PROVENANCE_STORE]?: WeakMap<object, ActivationOwnership>;
 };
@@ -58,10 +64,16 @@ function ownershipData(ownership: ActivationOwnership) {
     version: 1,
     explicit: CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.explicit.has(name)),
     owned: CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.owned.has(name)),
+    available: ownership.available
+      ? CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.available?.has(name))
+      : undefined,
+    mode: ownership.mode,
   };
 }
 
 function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
+  ownership.available = new Set(configuredChromeDevtoolsTools(pi));
+  ownership.mode = chromeDevtoolsToolMode(pi);
   const data = ownershipData(ownership);
   const serialized = JSON.stringify(data);
   if (ownership.serialized === serialized) return;
@@ -84,10 +96,17 @@ function restoredOwnership(entries: readonly { type: string; customType?: string
       record.version !== 1 ||
       !validNames(record.explicit) ||
       !validNames(record.owned) ||
+      (record.available !== undefined && !validNames(record.available)) ||
+      (record.mode !== undefined && record.mode !== "codemode" && record.mode !== "lazy" && record.mode !== "direct") ||
       record.owned.some((name) => (record.explicit as string[]).includes(name))
     )
       return undefined;
-    const restored = { explicit: new Set<string>(record.explicit), owned: new Set<string>(record.owned) };
+    const restored = {
+      explicit: new Set<string>(record.explicit),
+      owned: new Set<string>(record.owned),
+      available: validNames(record.available) ? new Set(record.available) : undefined,
+      mode: record.mode as ChromeDevToolsToolMode | undefined,
+    };
     return { ...restored, serialized: JSON.stringify(ownershipData(restored)) };
   }
   return undefined;
@@ -158,8 +177,16 @@ export function setChromeDevtoolsSessionOwner(
   sessionOwnerByApi.set(pi, owner);
   if (entries) {
     const ownership = restoredOwnership(entries);
-    if (ownership) ownedBySession.set(owner, ownership);
+    if (ownership) {
+      const existing = ownedBySession.get(owner);
+      ownership.available ??= existing?.available;
+      ownership.mode ??= existing?.mode;
+      ownedBySession.set(owner, ownership);
+    }
   }
+  const ownership = ownedBySession.get(owner);
+  if (ownership?.available) setAvailableTools(pi, [...ownership.available]);
+  if (ownership?.mode) modeByApi.set(pi, ownership.mode);
 }
 
 export function initializeAvailableChromeDevtoolsTools(pi: ExtensionAPI) {
@@ -290,6 +317,14 @@ export function supportsNativeDeferredToolLoading(model: ExtensionContext["model
 export function availableChromeDevtoolsTools(pi: ExtensionAPI) {
   const available = effectiveAvailableTools(pi);
   return CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
+}
+
+export function previousChromeDevtoolsTools(pi: ExtensionAPI) {
+  if (availableToolsByApi.has(pi)) return configuredChromeDevtoolsTools(pi);
+  // An unknown catalog cannot authorize new capabilities. Preserve only names
+  // already explicitly active; this fallback is used for invalid settings only.
+  const active = new Set(pi.getActiveTools());
+  return CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => active.has(name));
 }
 
 export function configuredChromeDevtoolsTools(pi: ExtensionAPI) {
