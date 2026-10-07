@@ -238,6 +238,7 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
         "Command Code usage summary endpoint",
       );
       await guard();
+      if (signal.aborted) throw abortError();
       // The account response is mandatory; the credits, plan, and period payloads degrade to notes.
       const bundle: CommandCodeUsageBundle = {
         account,
@@ -1176,8 +1177,11 @@ async function fetchCommandCodeOptional(
   // Optional sections must not discard collected data when an earlier request used the budget.
   if (timeoutMs <= 0) return undefined;
   try {
-    return await fetchProviderJson(url, auth, signal, timeoutMs, description, { redirect: "error" });
+    const payload = await fetchProviderJson(url, auth, signal, timeoutMs, description, { redirect: "error" });
+    if (signal.aborted) throw abortError();
+    return payload;
   } catch (error) {
+    if (signal.aborted) throw abortError();
     if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
     return undefined;
   }
