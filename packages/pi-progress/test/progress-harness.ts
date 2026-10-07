@@ -28,7 +28,7 @@ export interface RegisteredTool {
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: ExtensionContext,
-  ): Promise<{ content: Array<{ type: string; text: string }>; details: ProgressDetails }>;
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ProgressDetails }>;
 }
 
 export function defaultSettingsResult(): ProgressSettingsLoadResult {

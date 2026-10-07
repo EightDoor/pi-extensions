@@ -10,6 +10,7 @@ import {
   type ProgressDetails,
   ProgressParameters,
   type ProgressStep,
+  prepareProgressArguments,
   progressBoundaryContent,
   reconcileProgressContext,
   reconstructProgress,
@@ -32,29 +33,6 @@ export interface ProgressWidgetDependencies {
   loadSettings?: typeof loadProgressSettings;
   setTimeout?: typeof globalThis.setTimeout;
   clearTimeout?: typeof globalThis.clearTimeout;
-}
-
-function prepareProgressArguments(value: unknown): { steps: ProgressStep[] } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return validateProgressArguments(value);
-  }
-  const input = value as Record<string, unknown>;
-  if (!Array.isArray(input.steps)) return validateProgressArguments(value);
-
-  const normalized = {
-    ...input,
-    steps: input.steps.map((entry) => {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
-      const step = entry as Record<string, unknown>;
-      const status = step.status;
-      const isNonBlockedStatus = status === "pending" || status === "in_progress" || status === "completed";
-      if (!isNonBlockedStatus || !Object.hasOwn(step, "reason")) return entry;
-      const withoutReason = { ...step };
-      delete withoutReason.reason;
-      return withoutReason;
-    }),
-  };
-  return validateProgressArguments(normalized);
 }
 
 export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: ProgressWidgetDependencies = {}): void {

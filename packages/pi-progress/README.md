@@ -115,7 +115,8 @@ The sole registered model tool accepts this exact payload:
 ```
 
 Statuses are `pending`, `in_progress`, `completed`, and `blocked`.
-A blocked step requires a non-whitespace `reason`; every other status must omit `reason`.
+The tool schema has two step variants: `pending`, `in_progress`, and `completed` contain only `text` and `status`; `blocked` also requires a non-whitespace `reason` explaining the external action or condition needed to continue.
+`reason` is not a general progress note. For compatibility, redundant reasons on non-blocked tool inputs are ignored before validation; stored state always uses the canonical variants.
 The array supports at most 50 steps, text supports at most 300 characters, reasons support at most 200 characters, and at most one step may be `in_progress`.
 Unknown fields are rejected.
 
@@ -135,7 +136,9 @@ Historical names are read-only session inputs and are not registered as tool ali
 Wrong name/version combinations, malformed shapes, errored results, exceeded limits, and invalid invariants are ignored.
 A later valid empty snapshot clears earlier state.
 
-Ordinary turns rely on the retained matching tool call and result, so the extension does not prepend or rewrite model-visible history.
+Upgrading or reloading into the discriminated-union tool schema intentionally changes the model-visible tool definition once; subsequent ordinary turns keep that definition stable.
+The tool does not enable strict constrained sampling: Pi's strict-schema converter does not support object unions.
+Ordinary turns rely on the retained matching tool call and result, including calls with ignored redundant reasons, so the extension does not prepend or rewrite model-visible history.
 When leading compaction or branch summaries remove that evidence, the extension inserts one deterministic hidden Progress state message after the summaries.
 A Todo boundary already established before upgrade remains byte-stable for that summary epoch, including after updates, clears, reloads, and branch navigation.
 A later summary epoch uses only canonical Progress context for the then-current state.

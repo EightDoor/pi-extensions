@@ -70,25 +70,38 @@ test("registers only the canonical progress tool and strict steps-by-text schema
   assert.deepEqual(Object.keys(parameters.properties ?? {}), ["steps"]);
   const stepsSchema = parameters.properties?.steps as {
     maxItems?: number;
-    items?: { additionalProperties?: boolean; required?: string[]; properties?: Record<string, unknown> };
+    items?: {
+      anyOf: Array<{ additionalProperties?: boolean; required?: string[]; properties?: Record<string, unknown> }>;
+    };
   };
   assert.equal(stepsSchema.maxItems, 50);
-  assert.equal(stepsSchema.items?.additionalProperties, false);
-  assert.deepEqual(stepsSchema.items?.required, ["text", "status"]);
-  assert.deepEqual(Object.keys(stepsSchema.items?.properties ?? {}), ["text", "status", "reason"]);
-  assert.deepEqual(stepsSchema.items?.properties?.text, {
+  assert.equal(stepsSchema.items?.anyOf.length, 2);
+  const [nonBlocked, blocked] = stepsSchema.items?.anyOf ?? [];
+  assert.equal(nonBlocked?.additionalProperties, false);
+  assert.equal(blocked?.additionalProperties, false);
+  assert.deepEqual(nonBlocked?.required, ["text", "status"]);
+  assert.deepEqual(blocked?.required, ["text", "status", "reason"]);
+  assert.deepEqual(Object.keys(nonBlocked?.properties ?? {}), ["text", "status"]);
+  assert.deepEqual(Object.keys(blocked?.properties ?? {}), ["text", "status", "reason"]);
+  assert.deepEqual(nonBlocked?.properties?.text, blocked?.properties?.text);
+  assert.deepEqual(nonBlocked?.properties?.text, {
     description: "A concise, action-oriented step",
     type: "string",
     minLength: 1,
     maxLength: 300,
   });
-  assert.deepEqual(stepsSchema.items?.properties?.status, {
+  assert.deepEqual(nonBlocked?.properties?.status, {
     type: "string",
-    enum: ["pending", "in_progress", "completed", "blocked"],
+    enum: ["pending", "in_progress", "completed"],
     description: "The step's current status",
   });
-  assert.deepEqual(stepsSchema.items?.properties?.reason, {
-    description: "Required only for blocked steps; explain what must unblock the step",
+  assert.deepEqual(blocked?.properties?.status, {
+    type: "string",
+    enum: ["blocked"],
+    description: "The step's current status",
+  });
+  assert.deepEqual(blocked?.properties?.reason, {
+    description: "Explain the external action or condition required to unblock this step; not a general progress note",
     type: "string",
     minLength: 1,
     maxLength: 200,
