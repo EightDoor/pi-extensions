@@ -119,17 +119,19 @@ export default function chromeDevtools(pi: ExtensionAPI) {
         "warning",
       );
     }
-    const availableTools =
-      settings.kind === "invalid"
-        ? previousAvailableTools
-        : settings.kind === "loaded" && settings.settings.tools
-          ? settings.settings.tools
-          : allChromeDevtoolsTools(ctx.sessionManager);
+    // Tool mode/catalog are user-owned; a valid project browser section can
+    // make the aggregate result loaded even when its user source is invalid.
+    const preserveToolPolicy = settings.userFile.kind === "invalid";
+    const availableTools = preserveToolPolicy
+      ? previousAvailableTools
+      : settings.kind === "loaded" && settings.settings.tools
+        ? settings.settings.tools
+        : allChromeDevtoolsTools(ctx.sessionManager);
     configureChromeDevtoolsToolExposure(
       pi,
       availableTools,
       ctx.model,
-      settings.kind === "invalid" ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
+      preserveToolPolicy ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
     );
     const active = new Set(pi.getActiveTools());
     if (
