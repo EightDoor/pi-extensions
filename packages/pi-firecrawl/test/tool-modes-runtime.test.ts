@@ -31,7 +31,9 @@ for (const fixture of [
   { toolMode: "codemode", native: false },
   { toolMode: "lazy", native: false },
   { toolMode: "direct", native: false },
+  { toolMode: "direct", native: false, defaultCapability: true },
   { toolMode: "lazy", native: true },
+  { toolMode: "lazy", native: true, fallback: true },
   { toolMode: "lazy", native: true, allowlist: true },
   { toolMode: "lazy", native: false, allowlist: true },
   { toolMode: "direct", native: false, allowlist: true },
@@ -39,7 +41,9 @@ for (const fixture of [
 ] as const) {
   const { toolMode, native } = fixture;
   const allowlist = "allowlist" in fixture && fixture.allowlist;
-  test(`Jiti runtime enforces ${toolMode ?? "old-file default"}${native ? " native" : ""}${allowlist ? " allowlisted" : ""} mode and discovery without an active-only mock`, async () => {
+  const defaultCapability = "defaultCapability" in fixture && fixture.defaultCapability;
+  const fallback = "fallback" in fixture && fixture.fallback;
+  test(`Jiti runtime enforces ${toolMode ?? "old-file default"}${native ? " native" : ""}${allowlist ? " allowlisted" : ""}${defaultCapability ? " explicit default" : ""}${fallback ? " model fallback" : ""} mode and discovery without an active-only mock`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-firecrawl-runtime-"));
     const agentDir = join(root, "agent");
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -72,7 +76,7 @@ for (const fixture of [
       const model = registry.find(faux.provider, "test");
       assert.ok(model);
       const settingsManager = SettingsManager.inMemory({
-        defaultTools: ["+codemode"],
+        defaultTools: ["+codemode", ...(defaultCapability ? ["+firecrawl_scrape"] : [])],
         retry: { enabled: false },
         compaction: { enabled: false },
       });
@@ -302,6 +306,57 @@ for (const fixture of [
         session.getCallableToolNames().filter((name) => capabilities.includes(name)),
         native ? [] : capabilities,
       );
+
+      // Exercise AgentSession.reload(), not an emitted event: it carries old active names
+      // across fresh Jiti factories/APIs. Those extension-owned names are not host intent.
+      if (native) {
+        faux.setResponses([
+          fauxModule.fauxAssistantMessage(fauxModule.fauxToolCall("firecrawl_load", { query: "scrape one page" })),
+          fauxModule.fauxAssistantMessage("loaded before transition"),
+        ]);
+        await session.prompt("load scrape before changing modes");
+      }
+      if (fallback) {
+        await session.extensionRunner.emit({
+          type: "model_select",
+          model: { ...model, compat: { supportsToolSearch: false } },
+          previousModel: model,
+          source: "set",
+        });
+        assert.deepEqual(
+          session.getActiveToolNames().filter((name) => capabilities.includes(name)),
+          capabilities,
+        );
+      }
+      const beforeTransition = session.getActiveToolNames();
+      const expectedAfterTransition = beforeTransition.filter(
+        (name) =>
+          name !== "firecrawl_load" &&
+          (!capabilities.includes(name) ||
+            allowlist ||
+            (codemode && name === "firecrawl_scrape") ||
+            (defaultCapability && name === "firecrawl_scrape")),
+      );
+      const persisted = JSON.parse(await readFile(join(agentDir, "pi-firecrawl.json"), "utf8"));
+      await writeFile(join(agentDir, "pi-firecrawl.json"), JSON.stringify({ ...persisted, toolMode: "codemode" }));
+      await session.reload();
+      assert.deepEqual(errors, []);
+      assert.deepEqual(session.getActiveToolNames(), expectedAfterTransition);
+      assert.ok(
+        session
+          .getAllTools()
+          .filter((tool) => capabilities.includes(tool.name))
+          .every((tool) => tool.exposure === "codemode"),
+      );
+      assert.ok(!session.getCallableToolNames().includes("firecrawl_load"));
+      assert.deepEqual(
+        session.getCallableToolNames().filter((name) => capabilities.includes(name)),
+        capabilities,
+      );
+      const transitionedPrompt = session.systemPrompt;
+      await session.reload();
+      assert.deepEqual(session.getActiveToolNames(), expectedAfterTransition);
+      assert.equal(session.systemPrompt, transitionedPrompt);
     } finally {
       await session?.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
       session?.dispose();
