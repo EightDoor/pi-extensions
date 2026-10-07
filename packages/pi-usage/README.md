@@ -99,7 +99,8 @@ Remove the companion login if you do not want this automatic companion query pat
 The extension sends only the independently validated companion bearer and account ID to ChatGPT, never the native token.
 It requires exactly one app registration matching the native grant's client ID, but that match is **not independent proof of shared identity**.
 
-Reports and the statusline show shared **plan limits** with percentages, and **app limits** with reset times/window labels only.
+The statusline shows only shared **plan limits**, with percentages and reset times/window labels.
+Detailed reports also show **app limits** with reset times/window labels only.
 App used/remaining percentages are hidden, but their backend data remains validated.
 **App allowance** is a separately labeled cap on shared plan usage, not remaining quota or a reserved pool.
 Codex percentage/countdown preferences do not change this native report.
@@ -197,7 +198,7 @@ MiniMax publishes Token Plan window percentages or the regional pay-as-you-go av
 Baseten publishes the exact trailing 30-day Model APIs net subtotal after credits.
 xAI is always menu-only and never starts a scheduled status refresh.
 Z.AI statusline usage refreshes every five minutes while the selected model remains on Z.AI.
-Verified native OpenAI OAuth with valid companion auth refreshes both read-only endpoints automatically, for example `chatgpt plan 70% ↻ 2h30m · app ↻ 3d`.
+Verified native OpenAI OAuth with valid companion auth refreshes both read-only endpoints automatically, for example `chatgpt plan 70% ↻ 2h30m`.
 Without companion auth it publishes `chatgpt usage: web only`; refreshes revalidate auth without calling a usage endpoint.
 OpenAI API-key auth clears this status.
 

@@ -63,8 +63,9 @@ Unknown envelope fields or pagination markers fail closed rather than assuming u
 Only plan primary/secondary windows are used; Codex model-specific limits are not native app quotas.
 Each window requires a finite 0–100 used percentage and positive whole-second duration; optional remaining percentages must agree within one percentage point, and reset timestamps must be valid nonnegative epoch seconds.
 `allowed_usage_percent` is **App allowance**, a cap on shared plan usage, not remaining quota.
-Plan/app windows and reset boundaries stay separate in reports and the statusline; Codex display preferences do not apply.
-App used/remaining values are validated internally but not displayed; app reset/window information and the separately labeled allowance cap remain visible.
+Reports keep plan/app windows and reset boundaries separate; the statusline shows only plan percentages and resets/window labels.
+Codex display preferences do not apply.
+App used/remaining values are validated internally but not displayed; app reset/window information and the separately labeled allowance cap remain visible in detailed reports.
 
 Missing-companion paths remain web-only without requests. Other companion failures invalidate numerical data and remain observable.
 No native token, refresh token, app name, or account ID is rendered or persisted by this feature.

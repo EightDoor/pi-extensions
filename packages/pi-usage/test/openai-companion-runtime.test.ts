@@ -141,7 +141,7 @@ for (const obsolete of [undefined, true, false, "obsolete"] as const) {
     const calls = mockFetch();
     try {
       await state.emit("session_start");
-      await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
+      await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/));
       await state.run();
       assert.equal(calls.length, 2);
       assert.equal(state.runtime.get().settings.codexFastMode, false);
@@ -167,7 +167,7 @@ for (const mode of ["tui", "rpc"] as const) {
     try {
       await state.run();
       assert.match(state.titles.join("\n"), /Plan limits[\s\S]*80%[\s\S]*App limits[\s\S]*resets/);
-      assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/);
+      assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/);
       assert.doesNotMatch(state.titles.join("\n"), /native-access|account-test|oaiapp_test|90%/);
       assert.doesNotMatch(state.context.statuses.get("usage") ?? "", /app[^%]*%/);
       assert.ok(!state.actions.some((action) => /Turn Fast|Redeem usage/.test(action)));
@@ -410,12 +410,12 @@ for (const change of ["rotation", "removal"] as const) {
   });
 }
 
-test("automatic refresh publishes both domains and releases its HTTP/timers on shutdown", async () => {
+test("automatic refresh publishes only plan status and releases its HTTP/timers on shutdown", async () => {
   const state = await setup();
   const calls = mockFetch();
   try {
     await state.emit("session_start");
-    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
+    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/));
     assert.equal(calls.length, 2);
     vi.useFakeTimers();
     await state.run();
