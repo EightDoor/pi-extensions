@@ -136,7 +136,10 @@ for (const change of ["model", "other-tools"] as const) {
         active.filter((name) => !name.startsWith("chrome_devtools_")),
         others,
       );
-      const expected = change === "model" ? names : names.slice(0, 2);
+      // Persistence now precedes application. With malformed JSON, the first
+      // publication is failure recovery, so the later host withdrawal wins.
+      // rollback.test.ts gates I/O to exercise changes during persistence.
+      const expected = change === "model" ? names : [];
       assert.deepEqual(
         active.filter((name) => names.includes(name as never)),
         expected,

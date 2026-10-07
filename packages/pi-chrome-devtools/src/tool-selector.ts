@@ -121,14 +121,17 @@ async function transactSelectedToolsNow(
   const previousAvailableTools = availableChromeDevtoolsTools(pi);
   const previousConfiguredTools = configuredChromeDevtoolsTools(pi);
   try {
+    // Publish runtime policy and session provenance only after durability. A
+    // replacement waits for this queue and must never restore an unsaved intent.
+    await persistSettings(selectedTools);
+    if (expectedGeneration !== state.sessionGeneration) return "failed";
     const previousWebMcpTools = previousAvailableTools.filter(isWebMcpToolName);
     const selectedWebMcpTools = selectedTools.filter(isWebMcpToolName);
     if (!arraysEqual(previousWebMcpTools, selectedWebMcpTools)) {
       invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools WebMCP gateway availability changed");
     }
     applyChromeDevtoolsTools(pi, selectedTools);
-    await persistSettings(selectedTools);
-    return expectedGeneration === state.sessionGeneration ? "saved" : "failed";
+    return "saved";
   } catch (error) {
     if (expectedGeneration !== state.sessionGeneration) return "failed";
     let rollbackError: unknown;
@@ -183,14 +186,19 @@ export async function buildToolStatusMessage(pi: ExtensionAPI, owner: object) {
   const summary = getToolStatusSummary(pi, owner);
   const persistedSetting = await persistedSettingLabel();
   const settings = await loadSettings();
-  const savedMode = settings.kind === "loaded" ? settings.settings.toolMode : "codemode";
+  const savedMode =
+    settings.userFile.kind === "invalid"
+      ? undefined
+      : settings.kind === "loaded"
+        ? settings.settings.toolMode
+        : "codemode";
   return sanitizeChromeDevtoolsDisplay(
     [
       `Chrome DevTools tools available: ${formatRuntimeStatus(summary)}`,
       `Running tool mode: ${chromeDevtoolsToolMode(pi)}`,
       `Tool exposure: ${chromeDevtoolsToolExposureMode(pi)}`,
-      `Saved tool mode: ${savedMode}`,
-      ...(savedMode !== chromeDevtoolsToolMode(pi)
+      `Saved tool mode: ${savedMode ?? "unavailable (invalid user settings)"}`,
+      ...(savedMode !== undefined && savedMode !== chromeDevtoolsToolMode(pi)
         ? ["Tool mode change pending; /reload or session replacement required."]
         : []),
       `Loaded capability tools this session: ${summary.loadedChromeToolCount}/${summary.capabilityCount}`,

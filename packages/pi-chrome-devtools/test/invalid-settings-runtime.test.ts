@@ -9,38 +9,46 @@ for (const toolMode of ["codemode", "direct", "lazy"] as const)
     for (const catalog of ["empty", "partial"] as const) {
       test(`invalid reload preserves ${toolMode} ${catalog} policy (${native ? "native" : "fallback"})`, async () => {
         const tools = catalog === "empty" ? [] : [names[0]];
-        await withChromeRuntime({ native, toolMode, tools }, async ({ session, file, faux, fauxModule }) => {
-          let active = session.getActiveToolNames();
-          await writeFile(file, "{");
-          await session.reload();
-          assert.deepEqual(
-            names.filter((name) => session.getToolDefinition(name)?.exposure !== "hidden"),
-            tools,
-          );
-          assert.deepEqual(session.getActiveToolNames(), active);
-          assert.equal(await readFile(file, "utf8"), "{");
-          if (toolMode === "lazy" && native) {
-            faux.setResponses([
-              fauxModule.fauxAssistantMessage(
-                fauxModule.fauxToolCall("chrome_devtools_load", { query: "list pages tabs", limit: 1 }),
-              ),
-              fauxModule.fauxAssistantMessage("loaded"),
-            ]);
-            await session.prompt("load retained catalog");
-            active = session.getActiveToolNames();
-          }
-          assert.deepEqual(
-            names.filter((name) => session.getCallableToolNames().includes(name)),
-            tools,
-          );
-          await session.prompt("/chrome-devtools disable");
-          assert.deepEqual(
-            names.filter((name) => session.getCallableToolNames().includes(name)),
-            tools,
-          );
-          assert.deepEqual(session.getActiveToolNames(), active);
-          assert.equal(await readFile(file, "utf8"), "{");
-        });
+        await withChromeRuntime(
+          { native, toolMode, tools },
+          async ({ session, file, faux, fauxModule, notifications }) => {
+            let active = session.getActiveToolNames();
+            await writeFile(file, "{");
+            await session.reload();
+            assert.deepEqual(
+              names.filter((name) => session.getToolDefinition(name)?.exposure !== "hidden"),
+              tools,
+            );
+            assert.deepEqual(session.getActiveToolNames(), active);
+            assert.equal(await readFile(file, "utf8"), "{");
+            await session.prompt("/chrome-devtools status");
+            const status = notifications.at(-1)?.message ?? "";
+            assert.match(status, new RegExp(`Running tool mode: ${toolMode}`));
+            assert.match(status, /Saved tool mode: unavailable \(invalid user settings\)/);
+            assert.doesNotMatch(status, /Tool mode change pending/);
+            if (toolMode === "lazy" && native) {
+              faux.setResponses([
+                fauxModule.fauxAssistantMessage(
+                  fauxModule.fauxToolCall("chrome_devtools_load", { query: "list pages tabs", limit: 1 }),
+                ),
+                fauxModule.fauxAssistantMessage("loaded"),
+              ]);
+              await session.prompt("load retained catalog");
+              active = session.getActiveToolNames();
+            }
+            assert.deepEqual(
+              names.filter((name) => session.getCallableToolNames().includes(name)),
+              tools,
+            );
+            await session.prompt("/chrome-devtools disable");
+            assert.deepEqual(
+              names.filter((name) => session.getCallableToolNames().includes(name)),
+              tools,
+            );
+            assert.deepEqual(session.getActiveToolNames(), active);
+            assert.equal(await readFile(file, "utf8"), "{");
+          },
+        );
       });
     }
 

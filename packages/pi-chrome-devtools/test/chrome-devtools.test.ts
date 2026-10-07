@@ -688,11 +688,11 @@ test("chrome-devtools does not roll back into a shut-down session", async () => 
 
     const command = mock.commands.get("chrome-devtools")?.handler("disable", ctx);
     await Promise.resolve();
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LIST_PAGES_TOOL]);
     const shutdown = mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 
     await Promise.all([command, shutdown]);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LIST_PAGES_TOOL]);
     assert.deepEqual(notifications, []);
   });
 });
