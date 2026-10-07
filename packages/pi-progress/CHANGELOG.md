@@ -2,6 +2,12 @@
 
 This changelog retains the published `@narumitw/pi-todo` predecessor history below the first `pi-progress` release.
 
+## 0.4.1
+
+### Patch Changes
+
+- e706fc5: Ignore redundant `reason` fields on non-blocked `update_progress` steps before strict validation so explanatory model output does not cause avoidable tool retries.
+
 ## 0.4.0
 
 ### Minor Changes

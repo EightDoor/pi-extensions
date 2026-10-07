@@ -1,5 +1,15 @@
 # @narumitw/pi-usage
 
+## 0.64.0
+
+### Minor Changes
+
+- 12c03d4: Add Command Code (`command-code`) usage reporting for the official `@commandcode/pi-commandcode-provider` extension.
+
+### Patch Changes
+
+- ca8477b: Preserve available Command Code usage sections when an optional endpoint exhausts its transport deadline, reserve time within the overall deadline for mandatory credential revalidation, and preserve caller cancellation even when it races a timeout.
+
 ## 0.63.1
 
 ### Patch Changes
