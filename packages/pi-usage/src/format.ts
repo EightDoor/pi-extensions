@@ -62,19 +62,14 @@ export function formatUsageStatusline(
 ): string | undefined {
   if (report.providerId === "openai" && report.source === "openai-chatgpt-auth") return "chatgpt usage: web only";
   if (report.source === "openai-chatgpt-companion") {
-    return `chatgpt ${["chatgpt-plan", "chatgpt-app"]
-      .map((group) => {
-        const windows = report.buckets
-          .filter((bucket) => bucket.groupId === group)
-          .map((bucket) => {
-            const reset = formatResetCountdown(bucket.resetsAt, now);
-            const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
-            if (group === "chatgpt-app") return window;
-            return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
-          });
-        return `${group === "chatgpt-plan" ? "plan" : "app"} ${windows.join(" ")}`;
-      })
-      .join(" · ")}`;
+    const windows = report.buckets
+      .filter((bucket) => bucket.groupId === "chatgpt-plan")
+      .map((bucket) => {
+        const reset = formatResetCountdown(bucket.resetsAt, now);
+        const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
+        return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
+      });
+    return `chatgpt plan ${windows.join(" ")}`;
   }
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
   if (report.providerId === "openai-codex") {
