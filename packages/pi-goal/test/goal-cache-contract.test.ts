@@ -27,12 +27,14 @@ async function captureRequest(
   ctx: ReturnType<typeof createMockContext>["ctx"],
   prompt: string,
   messages: unknown[],
+  includeAgentStart = true,
 ): Promise<CapturedRequest> {
   const baseSystemPrompt = "stable base system prompt";
-  const beforeResult = (await mock.events.get("before_agent_start")?.[0]?.(
-    { prompt, systemPrompt: baseSystemPrompt },
-    ctx,
-  )) as { message?: unknown; systemPrompt?: string } | undefined;
+  const beforeResult = (
+    includeAgentStart
+      ? await mock.events.get("before_agent_start")?.[0]?.({ prompt, systemPrompt: baseSystemPrompt }, ctx)
+      : undefined
+  ) as { message?: unknown; systemPrompt?: string } | undefined;
   const boundaryMessages = beforeResult?.message ? [...messages, beforeResult.message] : messages;
   const contextResult = (await mock.events.get("context")?.[0]?.({ messages: boundaryMessages }, ctx)) as
     | { messages?: unknown[] }
@@ -726,7 +728,7 @@ test("persisting a restored waiting Goal contract does not wake the Goal", async
   assert.equal(restored.mock.sentUserMessages.length, 0);
 });
 
-test("compacted active Goal receives one cache-stable contract after summary messages", async () => {
+test("compacted active Goal preserves its restored contract position after persistence", async () => {
   const branch: Record<string, unknown>[] = [];
   const mock = createMockPi();
   registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
@@ -756,21 +758,35 @@ test("compacted active Goal receives one cache-stable contract after summary mes
   await mock.events.get("session_compact")?.[0]?.({ reason: "threshold", willRetry: true }, context.ctx);
   const persistedAfterCompaction = restoredGoalContract(mock);
   assertPromptHasGoalId(persistedAfterCompaction.content ?? "", goal.id);
-  const second = (await contextHook?.({ messages: compactedMessages }, context.ctx)) as
-    | { messages?: unknown[] }
-    | undefined;
-  assert.ok(second?.messages);
-  assert.deepEqual(second.messages, first.messages);
+  const persistedMessages = [...compactedMessages, { role: "custom", ...persistedAfterCompaction, timestamp: 123 }];
+  // Compaction recovery is within the existing run; do not simulate a new
+  // before_agent_start handoff on these provider requests.
+  const firstRequest = await captureRequest(mock, context.ctx, "After compaction", first.messages, false);
+  const secondRequest = await captureRequest(
+    mock,
+    context.ctx,
+    "Next ordinary request",
+    [...persistedMessages, assistantMessage("New assistant output"), userMessage("Continue")],
+    false,
+  );
+  const firstPayload = await serializeProviderRequest(firstRequest);
+  const secondPayload = await serializeProviderRequest(secondRequest);
+  const firstInput = firstPayload.input as unknown[];
+  const secondInput = secondPayload.input as unknown[];
+  assert.deepEqual(secondInput.slice(0, firstInput.length), firstInput);
+  assert.equal(secondRequest.instructions, firstRequest.instructions);
+  assert.deepEqual(secondRequest.activeTools, firstRequest.activeTools);
+  assert.deepEqual(secondPayload.tools, firstPayload.tools);
 
-  const repeated = (await contextHook?.({ messages: second.messages }, context.ctx)) as
+  const repeated = (await contextHook?.({ messages: secondRequest.messages }, context.ctx)) as
     | { messages?: unknown[] }
     | undefined;
-  const repeatedMessages = repeated?.messages ?? second.messages;
+  const repeatedMessages = repeated?.messages ?? secondRequest.messages;
   const contracts = repeatedMessages.filter(
     (message) => (message as { customType?: string }).customType === "goal-contract",
   );
   assert.equal(contracts.length, 1);
-  assert.equal(repeatedMessages[3], contracts[0]);
+  assert.equal(repeatedMessages[compactedMessages.length], contracts[0]);
   const contractContent = (contracts[0] as { content?: string }).content ?? "";
   assertPromptHasGoalId(contractContent, goal.id);
   assertHardenedGoalPrompt(contractContent);
