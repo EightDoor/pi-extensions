@@ -1,5 +1,11 @@
 # @narumitw/pi-sync
 
+## 0.52.1
+
+### Patch Changes
+
+- 1e2df4b: Prevent reviewed case-only renames from deadlocking on case-insensitive filesystems while retaining file mutation queue protection for both spellings.
+
 ## 0.52.0
 
 ### Minor Changes
