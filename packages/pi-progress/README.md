@@ -152,7 +152,8 @@ Adaptive mode uses up to one third of terminal height, bounded between four and 
 It prioritizes the in-progress step, blocked steps, and pending steps before summarizing completed or hidden rows.
 Completing every non-empty step shows a three-second summary, then hides the widget without clearing session state.
 Updates, clears, tree navigation, replacement, and shutdown cancel stale summaries.
-RPC, print, and JSON modes retain structured tool behavior without creating a widget.
+RPC mode publishes progress and completion summaries as string-line snapshots at 80 columns using the default 36-row budget because Pi does not expose client dimensions.
+Print and JSON modes retain structured tool behavior without creating a widget.
 
 ## ⚙️ Settings
 
@@ -189,7 +190,7 @@ Terminal escape sequences, control characters, and bidirectional display control
 
 ## 🚧 Limitations
 
-- The visual widget and completion summary appear only in TUI mode.
+- RPC widgets use fixed-size snapshots rather than adapting to the client viewport.
 - The extension provides a model tool rather than a slash command, SettingsList, or manual progress editor.
 - It reminds the model to update progress but cannot infer completion or force a tool call.
 - Compatibility restores only the documented, valid historical result contracts from the active branch.

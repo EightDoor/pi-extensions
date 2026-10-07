@@ -28,6 +28,8 @@ import {
 export const WIDGET_KEY = "progress";
 export const COMPLETION_SUMMARY_MS = 3_000;
 const WIDGET_OPTIONS = { placement: "aboveEditor" } as const;
+// RPC provides no terminal dimensions and ignores component factories.
+const RPC_WIDGET_WIDTH = 80;
 
 export interface ProgressWidgetDependencies {
   loadSettings?: typeof loadProgressSettings;
@@ -72,6 +74,14 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
 
     const snapshot = cloneProgressSteps(steps);
     const widgetSettings = { ...settings.widget };
+    if (ctx.mode === "rpc") {
+      ctx.ui.setWidget(
+        WIDGET_KEY,
+        renderProgressWidget(snapshot, ctx.ui.theme, RPC_WIDGET_WIDTH, { settings: widgetSettings }),
+        WIDGET_OPTIONS,
+      );
+      return;
+    }
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui, theme) => ({
@@ -95,14 +105,18 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
     }
 
     const total = steps.length;
-    ctx.ui.setWidget(
-      WIDGET_KEY,
-      (_tui, theme) => ({
-        render: (width) => renderCompletionSummary(total, theme, width),
-        invalidate: () => {},
-      }),
-      WIDGET_OPTIONS,
-    );
+    if (ctx.mode === "rpc") {
+      ctx.ui.setWidget(WIDGET_KEY, renderCompletionSummary(total, ctx.ui.theme, RPC_WIDGET_WIDTH), WIDGET_OPTIONS);
+    } else {
+      ctx.ui.setWidget(
+        WIDGET_KEY,
+        (_tui, theme) => ({
+          render: (width) => renderCompletionSummary(total, theme, width),
+          invalidate: () => {},
+        }),
+        WIDGET_OPTIONS,
+      );
+    }
     const ownerSession = activeSession;
     const token = completionToken;
     completionTimer = scheduleTimeout(() => {
