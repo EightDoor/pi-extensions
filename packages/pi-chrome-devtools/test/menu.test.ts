@@ -42,11 +42,11 @@ test("main menu presents consequential state and five goal-oriented actions with
 
     await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-    assert.match(rendered, /Tool catalog: 2 of 5 available · not\s+saved/);
+    assert.match(rendered, /Tool catalog: 5 of 5 available · not\s+saved/);
     assert.match(rendered, /Browser: not started · attaches or\s+launches on first use/);
     assert.match(rendered, /Endpoint: http:\/\/127\.0\.0\.1:9222/);
     assert.match(rendered, /[→›] Choose available browser tools…/);
-    assert.match(rendered, /Make all browser tools available…/);
+    assert.match(rendered, /Make all browser tools unavailable…/);
     assert.match(rendered, /Browser status/);
     assert.match(rendered, /Browser settings/);
     assert.match(rendered, /Help/);
@@ -316,7 +316,7 @@ test("bulk preview and nested detail navigation return without side effects", as
 
     await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-    assert.match(details[0] ?? "", /Proposed availability: 5\/5/);
+    assert.match(details[0] ?? "", /Proposed availability: 0\/5/);
     assert.match(details[1] ?? "", /does not probe the endpoint or launch Chrome/);
     assert.match(details[2] ?? "", /DevTools endpoint/);
     assert.match(details[2] ?? "", /Auto-launch/);
@@ -402,7 +402,7 @@ test("interactive routes reject unsupported modes while direct mutations remain 
     await assert.rejects(() => invoke("tools"), /requires TUI or RPC/);
     await invoke("disable");
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", "chrome_devtools_load"]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(JSON.parse(readFileSync(settingsFilePath(), "utf8")).tools, []);
   });
 });
@@ -452,7 +452,7 @@ test("apply refreshes review instead of overwriting browser tools changed while 
     assert.equal(reviewScreen, 2);
     assert.match(refreshedReview, /Currently available: 3\/5/);
     assert.match(refreshedReview, /Proposed availability: 4\/5/);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", "chrome_devtools_load", ...CHROME_TOOLS.slice(0, 3)]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CHROME_TOOLS.slice(0, 3)]);
     assert.equal(existsSync(settingsFilePath()), false);
     assert.match(notifications.at(-1)?.message ?? "", /changed while review was open/i);
   });
@@ -498,8 +498,8 @@ test("a failed confirmed save restores runtime and retains the draft for retry",
 
     assert.equal(reviewScreen, 2);
     assert.match(retryReview, /Proposed availability: 4\/5/);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", "chrome_devtools_load", ...CHROME_TOOLS]);
-    assert.match(notifications.at(-1)?.message ?? "", /settings save failed; active tools restored/i);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CHROME_TOOLS]);
+    assert.match(notifications.at(-1)?.message ?? "", /settings save failed; active tools unchanged/i);
   });
 });
 
@@ -572,7 +572,7 @@ test("RPC dialogs preserve staged review and confirmed apply semantics", async (
 
     assert.ok(dialogTitles.some((title) => title.includes("Currently available: 5/5")));
     assert.ok(dialogTitles.some((title) => title.includes("Proposed availability: 4/5")));
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", "chrome_devtools_load", ...CHROME_TOOLS.slice(1)]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CHROME_TOOLS.slice(1)]);
     assert.deepEqual(JSON.parse(readFileSync(settingsFilePath(), "utf8")).tools, CHROME_TOOLS.slice(1));
   });
 });
@@ -629,7 +629,7 @@ test("review previews the exact tool effect and one confirmed apply persists it"
     assert.ok(narrowReview.every((line) => visibleWidth(line) <= 20));
     assert.ok(narrowReview.length <= 5);
     assert.deepEqual(applicationOrder, ["wait-for-idle", "apply-runtime"]);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", "chrome_devtools_load", ...CHROME_TOOLS.slice(1)]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CHROME_TOOLS.slice(1)]);
     assert.deepEqual(JSON.parse(readFileSync(settingsFilePath(), "utf8")).tools, CHROME_TOOLS.slice(1));
     assert.match(notifications.at(-1)?.message ?? "", /Saved: 4 of 5 browser tools available/);
   });

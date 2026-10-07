@@ -3,9 +3,11 @@ import { shutdownManagedBrowser, startManagedBrowserSession, syncManagedBrowserS
 import { setActivePageId } from "./cdp-client.js";
 import {
   availableChromeDevtoolsTools,
+  chromeDevtoolsToolMode,
   configureChromeDevtoolsToolExposure,
-  createChromeDevtoolsLoadTool,
   initializeAvailableChromeDevtoolsTools,
+  previousChromeDevtoolsTools,
+  registerChromeDevtoolsCapabilities,
   requireEagerChromeDevtoolsToolExposure,
   setChromeDevtoolsSessionOwner,
   supportsNativeDeferredToolLoading,
@@ -55,14 +57,15 @@ const COMMAND_COMPLETIONS = [
   { value: "off", label: "off", description: "Compatibility alias for disable" },
 ];
 export default function chromeDevtools(pi: ExtensionAPI) {
-  pi.registerTool(listPagesTool);
-  pi.registerTool(selectPageTool);
-  pi.registerTool(navigateTool);
-  pi.registerTool(evaluateTool);
-  pi.registerTool(screenshotTool);
-  pi.registerTool(webMcpListToolsTool);
-  pi.registerTool(webMcpCallTool);
-  pi.registerTool(createChromeDevtoolsLoadTool(pi));
+  registerChromeDevtoolsCapabilities(pi, [
+    listPagesTool,
+    selectPageTool,
+    navigateTool,
+    evaluateTool,
+    screenshotTool,
+    webMcpListToolsTool,
+    webMcpCallTool,
+  ]);
 
   pi.registerCommand("chrome-devtools", {
     description: "Open Chrome DevTools help and tool controls",
@@ -77,7 +80,11 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++state.sessionGeneration;
-    setChromeDevtoolsSessionOwner(pi, ctx.sessionManager);
+    setChromeDevtoolsSessionOwner(pi, ctx.sessionManager, ctx.sessionManager.getBranch());
+    // Capture before default initialization: unknown invalid files must not
+    // broaden availability, while a restored/current policy survives reload.
+    const previousAvailableTools = previousChromeDevtoolsTools(pi);
+    const previousMode = chromeDevtoolsToolMode(pi);
     initializeAvailableChromeDevtoolsTools(pi);
     setWebMcpSessionOwner(ctx.sessionManager);
     replaceSessionController("Chrome DevTools session replaced");
@@ -95,6 +102,8 @@ export default function chromeDevtools(pi: ExtensionAPI) {
     state.activePageId = undefined;
     state.lastLaunchAttempt = undefined;
     const projectTrusted = ctx.isProjectTrusted();
+    await waitForChromeDevtoolsSettings();
+    if (generation !== state.sessionGeneration) return;
     const settings = await loadSettings({ cwd: ctx.cwd, projectTrusted });
     if (generation !== state.sessionGeneration) return;
     applyRuntimeBrowserSettings(settings.effectiveBrowser, settings.paths, projectTrusted);
@@ -110,17 +119,41 @@ export default function chromeDevtools(pi: ExtensionAPI) {
         "warning",
       );
     }
-    const availableTools =
-      settings.kind === "loaded" && settings.settings.tools
+    // Tool mode/catalog are user-owned; a valid project browser section can
+    // make the aggregate result loaded even when its user source is invalid.
+    const preserveToolPolicy = settings.userFile.kind === "invalid";
+    const availableTools = preserveToolPolicy
+      ? previousAvailableTools
+      : settings.kind === "loaded" && settings.settings.tools
         ? settings.settings.tools
-        : availableChromeDevtoolsTools(pi);
-    configureChromeDevtoolsToolExposure(pi, availableTools, ctx.model);
+        : allChromeDevtoolsTools(ctx.sessionManager);
+    const provenanceWarning = configureChromeDevtoolsToolExposure(
+      pi,
+      availableTools,
+      ctx.model,
+      preserveToolPolicy ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
+    );
+    if (generation !== state.sessionGeneration) return;
+    if (provenanceWarning) ctx.ui.notify(provenanceWarning, "warning");
+    const active = new Set(pi.getActiveTools());
+    if (
+      chromeDevtoolsToolMode(pi) === "codemode" &&
+      !active.has("codemode") &&
+      availableChromeDevtoolsTools(pi).some((name) => !active.has(name))
+    ) {
+      ctx.ui.notify(
+        "Chrome DevTools capabilities require Pi's codemode tool, but it is not active. Add '+codemode' to defaultTools and reload, or choose direct/lazy mode in Chrome DevTools settings. Chrome DevTools does not activate host tools automatically.",
+        "warning",
+      );
+    }
   });
 
   pi.on("model_select", (event, ctx) => {
+    const generation = state.sessionGeneration;
     invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools model and tool exposure changed");
     if (!supportsNativeDeferredToolLoading(event.model)) {
-      requireEagerChromeDevtoolsToolExposure(pi);
+      const provenanceWarning = requireEagerChromeDevtoolsToolExposure(pi);
+      if (generation === state.sessionGeneration && provenanceWarning) ctx.ui.notify(provenanceWarning, "warning");
     }
   });
 

@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { beforeAll, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
+
+// Keep SDK initialization out of the generated runtime's 5 s behavior budget.
+// The extension itself still imports only after PI_CODING_AGENT_DIR is set.
+beforeAll(async () => {
+  await import("@earendil-works/pi-coding-agent");
+});
 
 async function emit(
   events: ReadonlyMap<string, Array<(...args: unknown[]) => unknown>>,

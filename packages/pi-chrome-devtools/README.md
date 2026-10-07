@@ -12,7 +12,7 @@ The design is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTo
 - Reuses an existing CDP endpoint or launches an isolated Chromium-family browser on first use.
 - Recovers from stale page selections and explains browser startup or endpoint failures.
 - Loads explicitly approved unpacked extensions only in an extension-owned Chrome for Testing or Chromium process.
-- Uses native deferred browser tools when supported and exposes allowed tools eagerly otherwise.
+- Defaults to codemode-discoverable browser capabilities, with optional lazy and direct exposure.
 - Provides availability controls, setup guidance, status, and help through `/chrome-devtools`.
 - Shows compact expandable results and activity only while browser tools are running.
 - Persists reviewed tool availability while keeping browser connection settings machine-owned.
@@ -46,7 +46,15 @@ Review third-party extension source before installing it.
 
 ## 🚀 Quick start
 
-Start Pi and ask the agent to load the browser capability needed for the task.
+If `codemode` is already in your active tool list, no additional Pi setting is needed. Startup warns when enabled capabilities require codemode but the host tool is inactive; empty catalogs and fully explicit host selections do not produce this warning.
+Otherwise, enable Pi's built-in codemode in Pi's `settings.json`:
+
+```json
+{ "defaultTools": ["+codemode"] }
+```
+
+Start Pi and ask the agent to inspect a browser page. Codemode can discover `chrome_devtools_*` with `searchTools`, inspect schemas with `describeTool`, and call them through `tools`.
+A CLI `--tools` list is an allowlist for extension tools too; prefer the additive `defaultTools` setting above.
 By default, the extension tries `http://127.0.0.1:9222` and launches an isolated local Chromium-family browser if that endpoint is unavailable.
 Run `/chrome-devtools` to review status, settings, help, and available tools.
 WebMCP remains disabled until you explicitly enable it.
@@ -77,7 +85,7 @@ See [WebMCP setup and troubleshooting](./docs/browser-setup.md#experimental-webm
 
 ## 🛠️ Tools
 
-- `chrome_devtools_load` — find and load browser capabilities relevant to a task.
+- `chrome_devtools_load` — find and load browser capabilities relevant to a task (lazy mode only).
 - `chrome_devtools_list_pages` — list inspectable Chrome tabs/pages.
 - `chrome_devtools_select_page` — select the active page for later tool calls.
 - `chrome_devtools_navigate` — navigate a page to a URL; if no page exists, create one first.
@@ -88,8 +96,12 @@ See [WebMCP setup and troubleshooting](./docs/browser-setup.md#experimental-webm
 
 ### Tool exposure
 
-The extension registers eight tools: one loader, five stable DevTools capabilities, and two fixed experimental WebMCP gateways.
-With native deferred-tool support, only `chrome_devtools_load` starts active.
+The default `codemode` mode registers five stable capabilities and two fixed experimental WebMCP gateways without a loader. Enabled capabilities are callable through codemode discovery without adding their definitions to the ordinary model request. Explicit host activation of an enabled capability is preserved.
+Disabled capabilities are hidden from discovery and calls in every mode, including the WebMCP gateways while their gate is off.
+
+Choose `lazy` or `direct` under **Browser settings → Tool mode** to use another exposure policy; changes require `/reload` or session replacement. Direct mode declares all enabled capabilities without a loader.
+
+In lazy mode, with native deferred-tool support, only `chrome_devtools_load` starts active.
 The loader accepts a task-oriented `query`, matches it against the five stable capabilities plus enabled WebMCP gateways, and adds matching available tools without removing any active Pi tool.
 Loaded capability tools remain active for the rest of the session unless the user makes them unavailable through `/chrome-devtools`.
 
@@ -105,7 +117,7 @@ The capability tools omit active-only prompt snippets so native deferred loading
 The saved `tools` array controls which capabilities the extension may expose.
 The `webmcp.enabled` gate takes precedence, so persisted WebMCP names cannot bypass a disabled gate.
 Page-provided tool definitions appear only in list results and never alter Pi's provider-visible tool definitions.
-An empty array leaves the loader active but makes every browser capability unavailable.
+An empty array makes every browser capability unavailable; only lazy mode retains the loader.
 
 ### Screenshot files
 
@@ -141,14 +153,14 @@ If the model cannot inspect the inline image, ask it to read the saved path, for
 | `/chrome-devtools help` | Show command usage. |
 | `/chrome-devtools quickstart` | Show the CDP endpoint, launch candidates, and setup hints. |
 | `/chrome-devtools status` | Inspect tools, settings sources, and the last browser launch without probing or starting Chrome. |
-| `/chrome-devtools settings` | Change browser settings; successful edits save immediately. |
+| `/chrome-devtools settings` | Change browser settings and tool mode; successful edits save immediately. |
 | `/chrome-devtools tools` (aliases: `toggle`, `select`) | Stage tool availability, review the result, and apply it. |
 | `/chrome-devtools enable` (alias: `on`) | Immediately make all currently gated capabilities available and save the selection. |
 | `/chrome-devtools disable` (alias: `off`) | Immediately make all capabilities unavailable and save the empty selection. |
 
 All routes support TUI and RPC and reject unknown or trailing arguments.
 Only `enable` and `disable` also support print and JSON modes.
-Disabling capabilities leaves the slash command and `chrome_devtools_load` available; see [Tool exposure](#tool-exposure).
+Disabling capabilities leaves the slash command available and retains `chrome_devtools_load` only in lazy mode; see [Tool exposure](#tool-exposure).
 
 Menu tool changes require **Apply tool changes**; cancellation discards the unconfirmed draft.
 Failed apply leaves previous tool availability and settings intact and retains the draft for retry.
@@ -180,11 +192,16 @@ Browser connection fields and `webmcp.enabled` are machine-owned user settings; 
 Confirmed menu changes apply before the next browser connection and close only an extension-owned managed browser.
 Manual JSON edits and unpacked-extension changes apply after `/reload` or session replacement.
 
-When the file is missing or invalid, the extension preserves Pi's current Chrome DevTools availability policy instead of replacing it.
-A valid saved catalog is restored on Pi startup and `/reload`, with capability definitions exposed natively deferred or eagerly according to model/provider support.
+`toolMode` accepts `codemode` (default), `lazy`, or `direct` and is user-only. It applies at session start, including `/reload`; availability edits apply immediately without overwriting a pending mode change.
+Missing settings and valid older files without `toolMode` now use codemode. To restore the previous loader behavior, save `"toolMode": "lazy"` and reload. Without an explicit catalog, all modes make the stable capabilities available; the active declaration list does not determine configured availability.
+A first `/reload` from the previous loader implementation clears carried-over Chrome declarations when applying codemode; enabled capabilities remain callable through codemode. Pi exposes no activation-origin API, so an active loader plus Chrome capabilities without known session provenance is treated as the predecessor's cohort. Capability-only host selections and known explicit activations are preserved. This is an intentional reload-time model-visible prefix transition, not an ordinary-turn change.
+Activation provenance is stored as versioned, non-model session metadata and restored from the current branch on session start; a branch without valid provenance drops abandoned-branch caches, so transcript-restoring resume/fork paths can apply codemode without carrying extension-owned declarations forward. Recordless sessions retain the legacy loader-cohort migration policy; unknown capability-only selections remain conservative host selections. Observed host deactivation clears an explicit selection, while extension-caused hiding is not treated as host withdrawal. Re-enabling availability restores retained explicit declarations only when the capability and its WebMCP gate allow it.
+A successful lazy activation remains additive if its ownership metadata cannot be saved: the loader reports the loaded tools with a warning rather than removing them or reporting a failed load. Startup and model-switch exposure also remain applied when only metadata persistence fails; lifecycle handlers warn and continue instead of reporting a failed setup. A later loader call or lifecycle update retries pending metadata, including when matching tools are already loaded or the same policy is restored on reload; durable ownership may be incomplete until persistence succeeds. Availability and WebMCP settings saves retain their transactional failure recovery.
+A valid saved catalog is restored on Pi startup and `/reload`. An invalid user settings file retains the known effective availability and running mode with a warning, even when valid trusted-project browser settings make the combined load succeed; without a recoverable catalog, only already active capabilities are retained and no new capability is enabled. A fresh invalid configuration therefore leaves browser capabilities disabled until the file is repaired. Invalid settings cannot be overwritten by a save.
 A missing file is created by the first confirmed browser or tool setting.
 Within one Pi process, all browser and tool saves run in invocation order, reread the latest valid document, publish by temporary-file rename, and preserve unknown fields.
-Malformed JSON or invalid recognized fields make menu mutation unavailable and block direct saves without replacement; a failed save restores the prior displayed and effective state.
+Malformed JSON or invalid recognized fields make menu mutation unavailable and block direct saves without replacement.
+Availability saves precede runtime publication. A failed disk write leaves runtime tools unchanged, including host edits made during the save. If runtime publication fails after saving, recovery restores the previous runtime policy and saved catalog before releasing dependent reads or session replacement. Recovery changes only the tool catalog fields, preserves unrelated settings, and refuses to overwrite invalid or newer catalog data; any recovery failure is reported explicitly.
 
 Compatibility: older versions used `pi-chrome-devtools-settings.json`.
 A legacy-only file remains readable with a warning and is never modified automatically; rename it to `pi-chrome-devtools.json`.

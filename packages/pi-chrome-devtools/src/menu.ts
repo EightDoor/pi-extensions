@@ -84,7 +84,7 @@ export async function showChromeDevtoolsMenu(pi: ExtensionAPI, ctx: CommandConte
           {
             id: "tools",
             label: "Choose available browser tools…",
-            description: "Choose which capabilities the loader may expose.",
+            description: "Choose which browser capabilities are available.",
             disabled: Boolean(current.mutationBlockedReason),
             disabledReason: current.mutationBlockedReason,
             action: "tools",
@@ -435,8 +435,8 @@ function buildToolReview(current: ToolWorkflowState, owner: object) {
         : ["  - none"]),
       "",
       "Other active Pi tools remain unchanged.",
-      "Native-capable models defer these tools until chrome_devtools_load selects them.",
-      "Other models expose available tools eagerly before the next model request.",
+      "Enabled capabilities follow the running tool mode; saved mode changes apply on reload.",
+      "Disabled capabilities cannot be discovered or called.",
       "The accepted availability policy is saved for future sessions.",
     ].join("\n"),
   );
