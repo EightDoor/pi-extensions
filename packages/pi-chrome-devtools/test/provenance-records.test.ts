@@ -29,6 +29,7 @@ for (const kind of [
   "invalid-latest",
   "invalid-availability",
   "invalid-mode",
+  "invalid-published",
 ] as const) {
   test(`provenance record ${kind} is branch-scoped and conservatively validated`, async () => {
     const { default: extension } = await import("../src/chrome-devtools.js");
@@ -48,6 +49,7 @@ for (const kind of [
     if (kind === "overlap") data.explicit = [name];
     if (kind === "invalid-availability") data.available = ["unknown"];
     if (kind === "invalid-mode") data.mode = "unknown";
+    if (kind === "invalid-published") data.published = ["unknown"];
     const branch = kind === "invalid-latest" ? [valid, { ...valid, data: null }] : [{ ...valid, data }];
     const snapshot = JSON.stringify(branch);
     const mock = createMockPi({ activeTools: ["other", name] });

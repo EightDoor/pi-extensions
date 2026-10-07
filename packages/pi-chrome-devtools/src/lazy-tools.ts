@@ -31,6 +31,7 @@ type ActivationOwnership = {
   owned: Set<string>;
   available?: Set<ChromeDevToolsToolName>;
   mode?: ChromeDevToolsToolMode;
+  published?: Set<ChromeDevToolsToolName>;
   serialized?: string;
 };
 const provenanceGlobal = globalThis as typeof globalThis & {
@@ -45,7 +46,17 @@ function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly 
   pi.setActiveTools(names);
   const owner = sessionOwnerByApi.get(pi);
   if (!owner) return;
-  const ownership = ownedBySession.get(owner) ?? { explicit: new Set<string>(), owned: new Set<string>() };
+  const ownership: ActivationOwnership = ownedBySession.get(owner) ?? {
+    explicit: new Set<string>(),
+    owned: new Set<string>(),
+  };
+  const observed = new Set(before);
+  for (const name of ownership.explicit) {
+    // Absence after our own suppression is not a host withdrawal. Only a
+    // previously published activation disappearing is observable withdrawal.
+    if (!observed.has(name) && (ownership.published?.has(name as ChromeDevToolsToolName) ?? true))
+      ownership.explicit.delete(name);
+  }
   for (const name of before)
     if (CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) && !ownership.owned.has(name))
       ownership.explicit.add(name);
@@ -55,6 +66,8 @@ function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly 
         ownership.owned.add(name);
   }
   if (chromeDevtoolsToolMode(pi) === "codemode") ownership.owned.clear();
+  const published = new Set(pi.getActiveTools());
+  ownership.published = new Set(CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => published.has(name)));
   ownedBySession.set(owner, ownership);
   persistOwnership(pi, ownership);
 }
@@ -68,6 +81,9 @@ function ownershipData(ownership: ActivationOwnership) {
       ? CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.available?.has(name))
       : undefined,
     mode: ownership.mode,
+    published: ownership.published
+      ? CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.published?.has(name))
+      : undefined,
   };
 }
 
@@ -97,6 +113,7 @@ function restoredOwnership(entries: readonly { type: string; customType?: string
       !validNames(record.explicit) ||
       !validNames(record.owned) ||
       (record.available !== undefined && !validNames(record.available)) ||
+      (record.published !== undefined && !validNames(record.published)) ||
       (record.mode !== undefined && record.mode !== "codemode" && record.mode !== "lazy" && record.mode !== "direct") ||
       record.owned.some((name) => (record.explicit as string[]).includes(name))
     )
@@ -106,6 +123,7 @@ function restoredOwnership(entries: readonly { type: string; customType?: string
       owned: new Set<string>(record.owned),
       available: validNames(record.available) ? new Set(record.available) : undefined,
       mode: record.mode as ChromeDevToolsToolMode | undefined,
+      published: validNames(record.published) ? new Set(record.published) : undefined,
     };
     return { ...restored, serialized: JSON.stringify(ownershipData(restored)) };
   }
