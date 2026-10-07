@@ -69,7 +69,7 @@ for (const mode of [undefined, "codemode", "lazy", "direct"] as const) {
         noExtensions: true,
         noSkills: true,
         noContextFiles: true,
-        additionalExtensionPaths: ["builtin:codemode", resolve("packages/pi-chrome-devtools")],
+        additionalExtensionPaths: ["builtin:codemode", resolve("deprecated/pi-chrome-devtools")],
       });
       await loader.reload();
       assert.deepEqual(loader.getExtensions().errors, []);

@@ -1,10 +1,14 @@
-# 🌐 pi-chrome-devtools — Inspect and Control Chrome from Pi
+# 🌐 pi-chrome-devtools — Deprecated Chrome DevTools Integration
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-chrome-devtools)](https://www.npmjs.com/package/@narumitw/pi-chrome-devtools) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Inspect browser tabs, navigate pages, evaluate JavaScript, and capture screenshots from Pi through the Chrome DevTools Protocol.
-Use these native Pi tools for web debugging, UI validation, and browser-assisted investigation without an MCP server.
-The design is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp), but compatibility is not guaranteed.
+> [!WARNING]
+> `@narumitw/pi-chrome-devtools` is deprecated in this repository, retained under `deprecated/` for reference, and excluded from active workspace checks, tests, releases, and maintenance.
+> Use [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) through [Pi's native MCP support](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) instead; review the [migration instructions and compatibility differences](#-migration-to-native-mcp) below.
+> This repository change does not deprecate published versions in the npm registry or publish a new release.
+
+This archived extension inspected browser tabs, navigated pages, evaluated JavaScript, and captured screenshots through the Chrome DevTools Protocol.
+Its design was inspired by Chrome DevTools MCP, not an API-compatible implementation.
 
 ## ✨ Features
 
@@ -18,33 +22,106 @@ The design is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTo
 - Persists reviewed tool availability while keeping browser connection settings machine-owned.
 - Offers opt-in experimental WebMCP discovery and invocation through two fixed gateway tools without dynamically registering page-provided definitions.
 
-## 📦 Install
+## 📦 Archived reference
 
-Install persistently:
+The source, tests, browser reference, and changelog remain here as historical references and receive no feature, compatibility, or security fixes.
+The archived package declares a build-backed `dist/index.ts`; generated output is not tracked.
+Do not install it for new sessions; migrate to native MCP instead.
 
-```bash
-pi install npm:@narumitw/pi-chrome-devtools
-```
+Pi extensions and local MCP servers run with your user permissions.
+Review third-party code before installing or launching it.
 
-Run once from npm:
+## 🔄 Migration to native MCP
 
-```bash
-pi -e npm:@narumitw/pi-chrome-devtools
-```
-
-Build and run a local checkout from the repository root:
+Finish browser operations and exit Pi before changing integrations so the extension can release its managed browser and temporary profile.
+Remove the npm extension from each scope where it was installed:
 
 ```bash
-npm --workspace @narumitw/pi-chrome-devtools run build
-pi -e ./packages/pi-chrome-devtools
+pi uninstall npm:@narumitw/pi-chrome-devtools
 ```
 
-The package declares `dist/index.ts`, so build a local checkout before loading its package directory.
+Use `pi uninstall --local npm:@narumitw/pi-chrome-devtools` for a project installation.
+Remove explicit extension paths, `-e` arguments, or extension-tool selections that still load the archive.
+A repository installation no longer includes Chrome DevTools in the root entrypoint list.
 
-Pi extensions run with your user permissions.
-Review third-party extension source before installing it.
+Merge this server entry into the user-level `<getAgentDir()>/mcp.json` (normally `~/.pi/agent/mcp.json`), preserving existing servers and other fields:
 
-## 🚀 Quick start
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--isolated",
+        "--no-usage-statistics",
+        "--no-performance-crux"
+      ],
+      "env": {
+        "CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY": "1"
+      },
+      "exposure": "hidden",
+      "toolExposure": {
+        "list_pages": "codemode",
+        "select_page": "codemode",
+        "new_page": "codemode",
+        "navigate_page": "codemode",
+        "evaluate_script": "codemode",
+        "take_screenshot": "codemode"
+      }
+    }
+  }
+}
+```
+
+This example exposes only the six tools needed for ordinary browser migration; additional capabilities stay hidden.
+It disables server config-file discovery so an unrelated `cd4a.config.json` cannot silently change launch policy, and uses a temporary browser profile rather than the server's persistent default profile.
+Usage statistics and CrUX URL reporting are disabled explicitly; this does not disable Chrome's own metrics.
+The server starts Chrome only when a browser tool is called, not merely when Pi connects.
+Install a supported Chrome or Chrome for Testing executable before browser use; other Chromium-family browsers are not guaranteed by the upstream server.
+
+Run `pi mcp list` to verify the connection, then start a new Pi session and inspect `/mcp`.
+Pi normally activates codemode for servers with codemode tools; if `autoEnableCodemode` is disabled, enable it explicitly or choose another exposure.
+A connection check does not prove browser launch, page access, or screenshots work.
+See the upstream [configuration](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/configuration.md) and [tool reference](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/tool-reference.md) before enabling more tools.
+
+### Tool and settings mapping
+
+With the server named `chrome-devtools`, Pi normalizes its namespace to `mcp__chrome_devtools__`:
+
+| Archived extension | Native MCP replacement |
+| --- | --- |
+| `chrome_devtools_list_pages` | `mcp__chrome_devtools__list_pages` |
+| `chrome_devtools_select_page` | `mcp__chrome_devtools__select_page` |
+| `chrome_devtools_navigate` | `mcp__chrome_devtools__navigate_page` for an existing page; `mcp__chrome_devtools__new_page` to create one. |
+| `chrome_devtools_evaluate` | `mcp__chrome_devtools__evaluate_script` |
+| `chrome_devtools_screenshot` | `mcp__chrome_devtools__take_screenshot` |
+| `chrome_devtools_load` | Pi's `tool_search` with `deferred` exposure, or codemode discovery; no extension loader. |
+| `/chrome-devtools` | `/mcp` for server state, connection, and tool exposure. |
+| `toolMode` / `tools` | Per-tool `codemode`, `deferred`, `direct`, or `hidden` exposure. |
+| `browser.endpoint` / disabled auto-launch | Explicit `--browser-url=<endpoint>` to attach to a user-started browser; do not assume attach-first launch fallback. |
+| `browser.executablePath` | Explicit `--executable-path=<absolute-path>` for a managed launch. |
+
+Update saved tool allowlists and automation, including Plan mode selections, to the new names.
+Inspect schemas with codemode's `describeTool()` before porting calls: selected-page behavior, explicit `pageId` routing, JavaScript function inputs, navigation options, and screenshot `filePath` differ.
+Do not assume `select_page` removes the need to pass `pageId` to other tools.
+
+Pi does not convert or consume `pi-chrome-devtools.json`, legacy `pi-chrome-devtools-settings.json`, trusted project extension paths, or `PI_CHROME_DEVTOOLS_*` overrides for native MCP.
+Leave the old files untouched as backups until the replacement works; there is no automatic conversion or deletion.
+Recreate reviewed connection and availability settings explicitly in the server configuration.
+
+### Compatibility and security differences
+
+- **Browser ownership:** the sample launches an isolated profile; it does not automatically attach to `127.0.0.1:9222` first. Attaching to an existing profile can expose its authenticated pages; use only trusted debugging endpoints and profiles.
+- **Screenshots:** the archived extension's cwd/temp path checks, `savePath`, always-save behavior, and cleanup are not replacement contracts. The server owns file output and roots policy; review its `--filesystem-root` settings rather than broadly enabling unrestricted paths.
+- **Unpacked extensions:** upstream offers an opt-in extensions category, but its version, browser, and connection requirements differ. The archive's trusted-project path replacement, manifest validation, launch policy, and confirmation behavior are not automatically preserved; review upstream setup before exposing extension installation tools.
+- **WebMCP:** upstream offers experimental WebMCP debugging tools, but they do not inherit this extension's per-call Pi confirmation, exact page/schema identity revalidation, or cancellation policy. They remain disabled and hidden in the migration example; do not enable them as a drop-in replacement for the archived gateways.
+- **UI and state:** extension settings menus, activity status, compact result renderers, branch activation provenance, and browser/profile cleanup guarantees are not carried over. Pi owns MCP exposure and tool-result handling; the server owns browser lifecycle.
+
+The remaining sections describe historical extension behavior only, not guarantees of the MCP replacement.
+
+## 🚀 Historical quick start
 
 If `codemode` is already in your active tool list, no additional Pi setting is needed. Startup warns when enabled capabilities require codemode but the host tool is inactive; empty catalogs and fully explicit host selections do not produce this warning.
 Otherwise, enable Pi's built-in codemode in Pi's `settings.json`:
@@ -232,7 +309,7 @@ Screenshot output is restricted to the current working directory or OS temporary
 ## 🗂️ Package layout
 
 ```text
-packages/pi-chrome-devtools/
+deprecated/pi-chrome-devtools/
 ├── src/                               # Authoritative implementation and helpers
 │   ├── index.ts                       # Thin Pi entrypoint
 │   └── chrome-devtools.ts             # Browser tools and command orchestration
