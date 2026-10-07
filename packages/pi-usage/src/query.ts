@@ -2,7 +2,7 @@
 // separating that security boundary would duplicate request and redaction policy across providers.
 import { randomBytes } from "node:crypto";
 import { type ExtensionContext, readStoredCredential } from "@earendil-works/pi-coding-agent";
-import { errorMessage, fingerprintResolvedAuth, redactUsageError } from "./core.js";
+import { abortError, errorMessage, fingerprintResolvedAuth, redactUsageError } from "./core.js";
 import { fallbackOAuthCredentialCandidates, type OAuthCredentialCandidateReader } from "./oauth-credential-source.js";
 import { normalizeBasetenBillingUsagePayload } from "./providers/baseten.js";
 import { normalizeCodexBackendPayload } from "./providers/codex.js";
@@ -215,14 +215,14 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
           commandCodeUrl(COMMAND_CODE_CREDITS_URL, { orgId }),
           auth,
           signal,
-          remainingTimeout(timeoutMs, startedAt, "fetching Command Code credits"),
+          timeoutMs - (Date.now() - startedAt),
           "Command Code credits endpoint",
         ),
         fetchCommandCodeOptional(
           commandCodeUrl(COMMAND_CODE_SUBSCRIPTIONS_URL, { orgId }),
           auth,
           signal,
-          remainingTimeout(timeoutMs, startedAt, "fetching the Command Code plan"),
+          timeoutMs - (Date.now() - startedAt),
           "Command Code plan endpoint",
         ),
       ]);
@@ -234,7 +234,7 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
         }),
         auth,
         signal,
-        remainingTimeout(timeoutMs, startedAt, "fetching Command Code billing-period usage"),
+        timeoutMs - (Date.now() - startedAt),
         "Command Code usage summary endpoint",
       );
       await guard();
@@ -1172,6 +1172,9 @@ async function fetchCommandCodeOptional(
   timeoutMs: number,
   description: string,
 ): Promise<Record<string, unknown> | undefined> {
+  if (signal.aborted) throw abortError();
+  // Optional sections must not discard collected data when an earlier request used the budget.
+  if (timeoutMs <= 0) return undefined;
   try {
     return await fetchProviderJson(url, auth, signal, timeoutMs, description, { redirect: "error" });
   } catch (error) {

@@ -8,8 +8,27 @@ import {
   formatUsageStatusline,
   normalizeCommandCodeUsagePayload,
   queryProviderUsage,
+  type ResolvedUsageAuth,
   resolveUsageAuth,
 } from "../src/index.js";
+
+const TEST_AUTH: ResolvedUsageAuth = {
+  headers: { Authorization: "Bearer test-key" },
+  fingerprint: "test",
+  secrets: ["test-key"],
+  model: {
+    id: "test",
+    name: "Test",
+    provider: "command-code",
+    baseUrl: "https://api.commandcode.ai/provider",
+    api: "anthropic-messages",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 100_000,
+    maxTokens: 8_000,
+  },
+};
 
 const ACCOUNT = {
   success: true,
@@ -258,6 +277,87 @@ test("Command Code usage resolves stored Bearer auth and queries the alpha endpo
   } finally {
     fetchMock.mockRestore();
   }
+});
+
+for (const endpoint of ["credits", "subscriptions", "summary"] as const) {
+  test(`Command Code preserves available sections when optional ${endpoint} exhausts the deadline`, async () => {
+    vi.useFakeTimers();
+    const adapter = adapterForProvider("command-code");
+    assert.ok(adapter);
+    const seen: string[] = [];
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.split("?")[0]?.endsWith(`/${endpoint}`)) {
+        const signal = init?.signal;
+        assert.ok(signal);
+        signals.push(signal);
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })), {
+            once: true,
+          });
+        });
+      }
+      const body = url.includes("/whoami")
+        ? ACCOUNT
+        : url.includes("/credits")
+          ? CREDITS
+          : url.includes("/subscriptions")
+            ? SUBSCRIPTION
+            : USAGE;
+      return new Response(JSON.stringify(body));
+    });
+    const result = queryProviderUsage(adapter, TEST_AUTH, new AbortController().signal, 1_000, async () => undefined);
+    // Attach rejection handling before advancing the request deadline.
+    const settled = result.then(
+      (report) => ({ report }),
+      (error: unknown) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(1_001);
+    const outcome = await settled;
+    assert.ok("report" in outcome, "An optional timeout must not discard successful sections");
+    const report = outcome.report;
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0]?.aborted, true);
+    assert.equal(vi.getTimerCount(), 0);
+    if (endpoint === "credits") {
+      assert.equal(report.metrics.find((metric) => metric.id === "plan")?.value, "GOAT (active)");
+      assert.match(report.notes?.join(" ") ?? "", /credits were unavailable/);
+    } else {
+      assert.equal(report.buckets.find((bucket) => bucket.id === "five-hour")?.limit, 14);
+      assert.equal(formatUsageStatusline(report), "cmd 99% 5h 92% wk");
+    }
+    assert.match(report.notes?.join(" ") ?? "", /billing-period usage was unavailable/);
+    assert.equal(
+      seen.some((url) => url.includes("/usage/summary")),
+      endpoint === "summary",
+    );
+    assert.equal(fetchMock.mock.calls.length, endpoint === "summary" ? 4 : 3);
+  });
+}
+
+test("Command Code rejects caller cancellation after the optional deadline expires", async () => {
+  vi.useFakeTimers();
+  const adapter = adapterForProvider("command-code");
+  assert.ok(adapter);
+  const controller = new AbortController();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    const body = url.includes("/whoami") ? ACCOUNT : url.includes("/credits") ? CREDITS : SUBSCRIPTION;
+    return new Response(JSON.stringify(body));
+  });
+  let boundaries = 0;
+  const guard = async () => {
+    boundaries += 1;
+    if (boundaries === 3) {
+      vi.setSystemTime(Date.now() + 1_001);
+      controller.abort();
+    }
+  };
+  await assert.rejects(() => queryProviderUsage(adapter, TEST_AUTH, controller.signal, 1_000, guard), {
+    name: "AbortError",
+  });
 });
 
 test("Command Code usage rejects custom model origins before fetching", async () => {
