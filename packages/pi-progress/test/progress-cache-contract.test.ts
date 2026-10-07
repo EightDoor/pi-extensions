@@ -3,12 +3,14 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
+import { ProgressParameters } from "../src/progress-state.js";
 import progressWidgetExtension, {
   PROGRESS_DETAILS_VERSION,
   type ProgressStep,
   reconcileProgressContext,
   TOOL_NAME,
 } from "../src/progress-widget.js";
+import { progressToolCallMessage } from "./progress-harness.js";
 
 interface RegisteredTool {
   name: string;
@@ -95,7 +97,7 @@ function progressJson(steps: readonly ProgressStep[]): JsonValue {
   return steps.map((step) => ({
     text: step.text,
     status: step.status,
-    ...(step.reason === undefined ? {} : { reason: step.reason }),
+    ...(step.status === "blocked" ? { reason: step.reason } : {}),
   }));
 }
 
@@ -136,6 +138,65 @@ test("the Progress rename starts one intentional provider-prefix epoch", () => {
   assert.notDeepEqual(
     { activeToolNames: first.activeToolNames, toolName: first.toolDefinitions[0]?.name, payload: "steps[].text" },
     predecessorIdentity,
+  );
+});
+
+test("the union upgrade starts one static tool-definition epoch without changing guidance or tool order", () => {
+  const initial = normalizedRequest([userMessage("start")]);
+  const [nonBlocked, blocked] = ProgressParameters.properties.steps.items.anyOf;
+  const predecessorParameters = {
+    ...ProgressParameters,
+    properties: {
+      steps: {
+        ...ProgressParameters.properties.steps,
+        items: {
+          type: "object",
+          required: ["text", "status"],
+          additionalProperties: false,
+          properties: {
+            ...blocked.properties,
+            status: {
+              type: "string",
+              enum: ["pending", "in_progress", "completed", "blocked"],
+              description: "The step's current status",
+            },
+            reason: {
+              ...blocked.properties.reason,
+              description: "Required only for blocked steps; explain what must unblock the step",
+            },
+          },
+        },
+      },
+    },
+  };
+  const predecessor = {
+    ...initial,
+    toolDefinitions: initial.toolDefinitions.map((tool) => ({ ...tool, parameters: predecessorParameters })),
+  };
+  assert.notDeepEqual(initial.toolDefinitions, predecessor.toolDefinitions);
+  assert.deepEqual(initial.activeToolNames, predecessor.activeToolNames);
+  assert.deepEqual(initial.effectiveSystemGuidance, predecessor.effectiveSystemGuidance);
+  assert.deepEqual(nonBlocked.required, ["text", "status"]);
+  assert.deepEqual(blocked.required, ["text", "status", "reason"]);
+
+  const steps: ProgressStep[] = [{ text: "work", status: "in_progress" }];
+  const raw = [
+    { role: "compactionSummary", summary: "Earlier work", tokensBefore: 100, timestamp: 0 } as const,
+    progressToolCallMessage([{ ...steps[0], reason: "checking code" }]),
+    progressToolResult(steps, "progress-call"),
+    userMessage("continue"),
+  ];
+  const baselineMessages = reconcileProgressContext(raw, steps);
+  assert.equal(baselineMessages, raw, "a retained normalized call/result pair needs no synthetic boundary");
+  const baseline = normalizedRequest(baselineMessages);
+  assert.deepEqual(baseline.toolDefinitions, initial.toolDefinitions);
+  const nextRaw = [...raw, assistantText("working"), userMessage("again")];
+  const next = normalizedRequest(reconcileProgressContext(nextRaw, steps));
+  assertPrefix(next, baseline);
+  assert.deepEqual(
+    normalizedRequest(reconcileProgressContext(nextRaw, steps)),
+    next,
+    "reload keeps the new baseline stable",
   );
 });
 

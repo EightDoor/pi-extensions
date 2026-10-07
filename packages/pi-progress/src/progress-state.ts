@@ -21,29 +21,25 @@ const TODO_DETAILS_VERSION = 3;
 const PREVIOUS_TODO_DETAILS_VERSION = 2;
 const LEGACY_TODO_DETAILS_VERSION = 1;
 const PROGRESS_STATUSES = ["pending", "in_progress", "completed", "blocked"] as const;
-const PREVIOUS_TODO_STATUSES = ["pending", "in_progress", "completed"] as const;
+const NON_BLOCKED_STATUSES = ["pending", "in_progress", "completed"] as const;
 const RESUBMIT_GUIDANCE = "Fix the input and resubmit the complete steps array.";
 
 type ProgressStatus = (typeof PROGRESS_STATUSES)[number];
-type PreviousTodoStatus = (typeof PREVIOUS_TODO_STATUSES)[number];
+type PreviousTodoStatus = (typeof NON_BLOCKED_STATUSES)[number];
 type SupportedStateVersion = 1 | 2 | 3 | 4;
 
-export interface ProgressStep {
-  text: string;
-  status: ProgressStatus;
-  reason?: string;
-}
+export type ProgressStep =
+  | { text: string; status: "pending" | "in_progress" | "completed" }
+  | { text: string; status: "blocked"; reason: string };
 
 export interface ProgressDetails {
   version: typeof PROGRESS_DETAILS_VERSION;
   steps: ProgressStep[];
 }
 
-interface TodoV3 {
-  step: string;
-  status: ProgressStatus;
-  reason?: string;
-}
+type TodoV3 =
+  | { step: string; status: "pending" | "in_progress" | "completed" }
+  | { step: string; status: "blocked"; reason: string };
 
 interface PreviousTodo {
   step: string;
@@ -55,29 +51,37 @@ interface LegacyTodoItem {
   status: PreviousTodoStatus;
 }
 
+const progressTextSchema = Type.String({
+  minLength: 1,
+  maxLength: MAX_PROGRESS_TEXT_LENGTH,
+  description: "A concise, action-oriented step",
+});
+
 export const ProgressParameters = Type.Object(
   {
     steps: Type.Array(
-      Type.Object(
-        {
-          text: Type.String({
-            minLength: 1,
-            maxLength: MAX_PROGRESS_TEXT_LENGTH,
-            description: "A concise, action-oriented step",
-          }),
-          status: StringEnum(PROGRESS_STATUSES, {
-            description: "The step's current status",
-          }),
-          reason: Type.Optional(
-            Type.String({
+      Type.Union([
+        Type.Object(
+          {
+            text: progressTextSchema,
+            status: StringEnum(NON_BLOCKED_STATUSES, { description: "The step's current status" }),
+          },
+          { additionalProperties: false },
+        ),
+        Type.Object(
+          {
+            text: progressTextSchema,
+            status: StringEnum(["blocked"] as const, { description: "The step's current status" }),
+            reason: Type.String({
               minLength: 1,
               maxLength: MAX_PROGRESS_REASON_LENGTH,
-              description: "Required only for blocked steps; explain what must unblock the step",
+              description:
+                "Explain the external action or condition required to unblock this step; not a general progress note",
             }),
-          ),
-        },
-        { additionalProperties: false },
-      ),
+          },
+          { additionalProperties: false },
+        ),
+      ]),
       {
         maxItems: MAX_PROGRESS_STEPS,
         description: "The complete current progress state; send an empty array to clear it",
@@ -86,6 +90,29 @@ export const ProgressParameters = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export function prepareProgressArguments(value: unknown): { steps: ProgressStep[] } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return validateProgressArguments(value);
+  }
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.steps)) return validateProgressArguments(value);
+
+  const normalized = {
+    ...input,
+    steps: input.steps.map((entry) => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+      const step = entry as Record<string, unknown>;
+      const status = step.status;
+      const isNonBlockedStatus = status === "pending" || status === "in_progress" || status === "completed";
+      if (!isNonBlockedStatus || !Object.hasOwn(step, "reason")) return entry;
+      const withoutReason = { ...step };
+      delete withoutReason.reason;
+      return withoutReason;
+    }),
+  };
+  return validateProgressArguments(normalized);
+}
 
 export function validateProgressArguments(value: unknown): { steps: ProgressStep[] } {
   if (!isRecord(value) || !hasOnlyKeys(value, ["steps"])) {
@@ -140,11 +167,11 @@ export function validateProgressArguments(value: unknown): { steps: ProgressStep
 }
 
 export function cloneProgressSteps(steps: readonly ProgressStep[]): ProgressStep[] {
-  return steps.map((step) => ({
-    text: step.text,
-    status: step.status,
-    ...(step.reason === undefined ? {} : { reason: step.reason }),
-  }));
+  return steps.map((step) =>
+    step.status === "blocked"
+      ? { text: step.text, status: step.status, reason: step.reason }
+      : { text: step.text, status: step.status },
+  );
 }
 
 export function allProgressCompleted(steps: readonly ProgressStep[]): boolean {
@@ -376,7 +403,13 @@ function decodeToolArguments(
 ): ProgressStep[] | undefined {
   if (!isRecord(value)) return undefined;
   if (toolName === TOOL_NAME && version === 4) {
-    return hasOnlyKeys(value, ["steps"]) && isProgressSteps(value.steps) ? cloneProgressSteps(value.steps) : undefined;
+    // Pi retains raw calls but stores prepared results. Match the same narrow input
+    // normalization as execution without loosening persisted-result validation.
+    try {
+      return prepareProgressArguments(value).steps;
+    } catch {
+      return undefined;
+    }
   }
   if (toolName === UPDATE_TODO_TOOL_NAME && version === 3) {
     return hasOnlyKeys(value, ["todos"]) && isTodoV3Array(value.todos) ? migrateTodoV3(value.todos) : undefined;
@@ -470,7 +503,7 @@ function hasPreviousTodoShape(value: unknown, textProperty: "step" | "text"): bo
       typeof text !== "string" ||
       text.trim().length === 0 ||
       !hasMaxGraphemeLength(text, MAX_PROGRESS_TEXT_LENGTH) ||
-      !PREVIOUS_TODO_STATUSES.includes(entry.status as PreviousTodoStatus)
+      !NON_BLOCKED_STATUSES.includes(entry.status as PreviousTodoStatus)
     ) {
       return false;
     }
@@ -480,11 +513,11 @@ function hasPreviousTodoShape(value: unknown, textProperty: "step" | "text"): bo
 }
 
 function migrateTodoV3(todos: readonly TodoV3[]): ProgressStep[] {
-  return todos.map((todo) => ({
-    text: todo.step,
-    status: todo.status,
-    ...(todo.reason === undefined ? {} : { reason: todo.reason }),
-  }));
+  return todos.map((todo) =>
+    todo.status === "blocked"
+      ? { text: todo.step, status: todo.status, reason: todo.reason }
+      : { text: todo.step, status: todo.status },
+  );
 }
 
 function migratePreviousTodos(todos: readonly PreviousTodo[]): ProgressStep[] {
@@ -496,11 +529,11 @@ function migrateLegacyItems(items: readonly LegacyTodoItem[]): ProgressStep[] {
 }
 
 function cloneTodoV3(todos: readonly TodoV3[]): TodoV3[] {
-  return todos.map((todo) => ({
-    step: todo.step,
-    status: todo.status,
-    ...(todo.reason === undefined ? {} : { reason: todo.reason }),
-  }));
+  return todos.map((todo) =>
+    todo.status === "blocked"
+      ? { step: todo.step, status: todo.status, reason: todo.reason }
+      : { step: todo.step, status: todo.status },
+  );
 }
 
 function progressStepsEqual(left: readonly ProgressStep[], right: readonly ProgressStep[]): boolean {
@@ -510,7 +543,7 @@ function progressStepsEqual(left: readonly ProgressStep[], right: readonly Progr
       (step, index) =>
         step.text === right[index]?.text &&
         step.status === right[index]?.status &&
-        step.reason === right[index]?.reason,
+        (step.status !== "blocked" || (right[index]?.status === "blocked" && step.reason === right[index].reason)),
     )
   );
 }
