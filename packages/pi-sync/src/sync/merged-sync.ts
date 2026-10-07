@@ -555,7 +555,12 @@ async function completeJournal(
   }
   const snapshotOptions = { ...snapshotOptionsForContext(ctx, config), sessionDir: sessionRoot, signal };
   const head = await backend.readHead(signal);
-  if (!journal.committedHead && head && backend.sameRevision(head.revision, journal.expectedHead.revision)) {
+  if (
+    !journal.committedHead &&
+    head &&
+    (backend.sameRevision(head.revision, journal.expectedHead.revision) ||
+      backend.matchesUncommittedRecoveryHead?.(head, journal.expectedHead))
+  ) {
     await validate();
     const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     if (

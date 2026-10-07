@@ -413,6 +413,50 @@ test("S3 competing first publisher is never overwritten", async () => {
   });
 });
 
+test("S3 legacy weak-read revisions match only unchanged heads for inactive recovery, never publication", async () => {
+  const harness = new S3Harness(snapshot([]));
+  await harness.run(async () => {
+    const backend = createSyncBackend(s3Config());
+    harness.weakHeadEtag = true;
+    const legacy = await backend.readHead();
+    assert.ok(legacy);
+    harness.weakHeadEtag = false;
+    const current = await backend.readHead();
+    assert.ok(current);
+    assert.equal(backend.sameRevision(current.revision, legacy.revision), false);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), true);
+    await assert.rejects(
+      backend.publishSnapshot({ ...snapshot([]), id: "candidate" }, expectedRemoteHead(legacy)),
+      SyncBackendConflictError,
+    );
+    assert.equal(harness.latestPuts, 0);
+    harness.replacePointerMetadata({ machine: "different-machine" });
+    const changed = await backend.readHead();
+    assert.ok(changed);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(changed, legacy), false);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
+    harness.missingHead = true;
+    await backend.readHead();
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
+  });
+});
+
+test("S3 weak current ETags cannot supply a strong-read recovery alias", async () => {
+  const harness = new S3Harness(snapshot([]));
+  await harness.run(async () => {
+    const backend = createSyncBackend(s3Config());
+    harness.weakHeadEtag = true;
+    const legacy = await backend.readHead();
+    harness.weakHeadEtag = false;
+    const current = await backend.readHead();
+    assert.ok(legacy && current);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), true);
+    harness.weakHeadEtag = true;
+    await backend.readHead();
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
+  });
+});
+
 test("S3 publication preserves strong JSON ETags by avoiding transfer compression", async () => {
   const remote = snapshot([]);
   const harness = new S3Harness(remote);
