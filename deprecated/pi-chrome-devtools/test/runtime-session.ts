@@ -101,7 +101,7 @@ export async function withChromeRuntime(
     const builtinSpecifier = new URL("extensions/index.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
       .href;
     const { builtInExtensions } = (await import(builtinSpecifier)) as { builtInExtensions: InlineExtension[] };
-    const extensionPaths = ["builtin:codemode", options.extensionPath ?? resolve("packages/pi-chrome-devtools")];
+    const extensionPaths = ["builtin:codemode", options.extensionPath ?? resolve("deprecated/pi-chrome-devtools")];
     const loader = new DefaultResourceLoader({
       cwd: root,
       agentDir,
