@@ -3,14 +3,15 @@ import { hasApiKey } from "./client.js";
 import {
   availableFirecrawlTools,
   configureFirecrawlToolExposure,
-  createFirecrawlLoadTool,
+  firecrawlToolMode,
   initializeAvailableFirecrawlTools,
   loadedFirecrawlToolsFromBranch,
+  registerFirecrawlTools,
   requireEagerFirecrawlToolExposure,
   supportsNativeDeferredToolLoading,
 } from "./lazy-tools.js";
 import { cleanupResponseArtifacts, openResponseArtifacts } from "./response-format.js";
-import { loadSettings } from "./settings.js";
+import { DEFAULT_TOOL_MODE, loadSettings } from "./settings.js";
 import {
   advanceFirecrawlSessionGeneration,
   allFirecrawlTools,
@@ -27,7 +28,6 @@ import {
   updateFirecrawlTools,
   waitForFirecrawlSettings,
 } from "./tool-selector.js";
-import { crawlStatusTool, crawlTool, mapTool, scrapeTool, searchTool } from "./tools.js";
 
 const STATUS_KEY = "firecrawl";
 const COMMAND_COMPLETIONS = [
@@ -35,6 +35,7 @@ const COMMAND_COMPLETIONS = [
   { value: "config", label: "config", description: "Show configuration quick start" },
   { value: "quickstart", label: "quickstart", description: "Show configuration quick start" },
   { value: "status", label: "status", description: "Show tool and settings status" },
+  { value: "settings", label: "settings", description: "Choose tool mode and available tools" },
   { value: "tools", label: "tools", description: "Choose available Firecrawl tools" },
   { value: "toggle", label: "toggle", description: "Choose available Firecrawl tools" },
   { value: "enable", label: "enable", description: "Make all Firecrawl tools available" },
@@ -44,45 +45,50 @@ const MENU_OPTIONS = {
   config: "Configuration quick start",
   help: "Command usage guide",
   status: "Show tool status",
+  settings: "Settings",
   tools: "Choose available Firecrawl tools",
   enable: "Make all Firecrawl tools available",
   disable: "Make all Firecrawl tools unavailable",
 } as const;
-type CommandAction = "menu" | "help" | "config" | "quickstart" | "status" | "tools" | "enable" | "disable";
+type CommandAction = "menu" | "help" | "config" | "quickstart" | "status" | "settings" | "tools" | "enable" | "disable";
 type CommandContext = ExtensionCommandContext;
 export default function firecrawl(pi: ExtensionAPI) {
-  pi.registerTool(scrapeTool);
-  pi.registerTool(crawlTool);
-  pi.registerTool(crawlStatusTool);
-  pi.registerTool(mapTool);
-  pi.registerTool(searchTool);
-  pi.registerTool(createFirecrawlLoadTool(pi));
+  registerFirecrawlTools(pi);
 
   pi.registerCommand("firecrawl", {
     description: "Open Firecrawl help and tool controls",
     getArgumentCompletions: (prefix) => commandCompletions(prefix),
     handler: async (args, ctx) => {
       initializeAvailableFirecrawlTools(pi, ctx.sessionManager);
-      const generation = currentFirecrawlSessionGeneration();
+      const generation = currentFirecrawlSessionGeneration(pi);
       await handleFirecrawlCommand(pi, args, ctx, generation);
     },
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const generation = advanceFirecrawlSessionGeneration();
-    initializeAvailableFirecrawlTools(pi, ctx.sessionManager);
+    const generation = advanceFirecrawlSessionGeneration(pi);
     openResponseArtifacts(ctx.sessionManager);
-    clearSettingsNotice();
+    clearSettingsNotice(pi);
     ctx.ui.setStatus(STATUS_KEY, undefined);
+    await waitForFirecrawlSettings();
+    if (!isCurrentFirecrawlSession(pi, generation)) return;
+    initializeAvailableFirecrawlTools(pi, ctx.sessionManager);
     const settings = await loadSettings();
-    if (!isCurrentFirecrawlSession(generation)) return;
-    recordSettingsNotice(settings);
+    if (!isCurrentFirecrawlSession(pi, generation)) return;
+    recordSettingsNotice(pi, settings);
     if (settings.notice) ctx.ui.notify(sanitizeFirecrawlDisplay(settings.notice), "warning");
     const availableTools = settings.kind === "loaded" ? settings.settings.tools : availableFirecrawlTools(pi);
     const loadedTools = loadedFirecrawlToolsFromBranch(ctx.sessionManager.getBranch(), availableTools);
-    configureFirecrawlToolExposure(pi, availableTools, loadedTools, ctx.sessionManager, ctx.model);
+    const mode = settings.kind === "loaded" ? (settings.settings.toolMode ?? DEFAULT_TOOL_MODE) : DEFAULT_TOOL_MODE;
+    configureFirecrawlToolExposure(pi, availableTools, loadedTools, ctx.sessionManager, ctx.model, mode);
     if (settings.kind === "invalid") {
       ctx.ui.notify(sanitizeFirecrawlDisplay(`Firecrawl settings ignored: ${settings.reason}`), "warning");
+    }
+    if (mode === "codemode" && !pi.getActiveTools().includes("codemode")) {
+      ctx.ui.notify(
+        'Firecrawl uses codemode, but codemode is not active. Enable Pi defaultTools: ["+codemode"] and /reload, or choose lazy/direct in /firecrawl settings.',
+        "warning",
+      );
     }
   });
 
@@ -93,7 +99,7 @@ export default function firecrawl(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    advanceFirecrawlSessionGeneration();
+    advanceFirecrawlSessionGeneration(pi);
     ctx.ui.setStatus(STATUS_KEY, undefined);
     const artifactOwner = ctx.sessionManager;
     await waitForFirecrawlSettings();
@@ -119,8 +125,14 @@ async function handleFirecrawlCommand(pi: ExtensionAPI, args: string, ctx: Comma
     case "status": {
       requireObservableUi(ctx, "status");
       const status = await buildStatusMessage(pi);
-      if (!isCurrentFirecrawlSession(generation)) return;
+      if (!isCurrentFirecrawlSession(pi, generation)) return;
       ctx.ui.notify(status, hasApiKey() ? "info" : "warning");
+      return;
+    }
+    case "settings": {
+      const { showFirecrawlSettings } = await import("./settings-ui.js");
+      if (!isCurrentFirecrawlSession(pi, generation)) return;
+      await showFirecrawlSettings(pi, ctx);
       return;
     }
     case "tools":
@@ -146,8 +158,8 @@ async function handleFirecrawlCommand(pi: ExtensionAPI, args: string, ctx: Comma
 
 async function showMenu(pi: ExtensionAPI, ctx: CommandContext, generation: number) {
   requireObservableUi(ctx, "menu");
-  const menuSignal = currentFirecrawlSessionSignal();
-  const isCurrent = () => isCurrentFirecrawlSession(generation) && !menuSignal.aborted;
+  const menuSignal = currentFirecrawlSessionSignal(pi);
+  const isCurrent = () => isCurrentFirecrawlSession(pi, generation) && !menuSignal.aborted;
   const { defineMenu, runMenu } = await import("@narumitw/pi-tui-kit");
   if (!isCurrent()) return;
 
@@ -169,6 +181,11 @@ async function showMenu(pi: ExtensionAPI, ctx: CommandContext, generation: numbe
       }),
     },
     actions: {
+      settings: async () => {
+        const { showFirecrawlSettings } = await import("./settings-ui.js");
+        if (isCurrent()) await showFirecrawlSettings(pi, ctx);
+        return { kind: "close" };
+      },
       config: async () => {
         ctx.ui.notify(buildConfigMessage(), hasApiKey() ? "info" : "warning");
         return { kind: "close" };
@@ -179,7 +196,7 @@ async function showMenu(pi: ExtensionAPI, ctx: CommandContext, generation: numbe
       },
       status: async () => {
         const status = await buildStatusMessage(pi);
-        if (isCurrentFirecrawlSession(generation)) {
+        if (isCurrentFirecrawlSession(pi, generation)) {
           ctx.ui.notify(status, hasApiKey() ? "info" : "warning");
         }
         return { kind: "close" };
@@ -210,6 +227,7 @@ function mainMenuLines(pi: ExtensionAPI) {
   const capabilityNames = allFirecrawlTools();
   const loadedCount = capabilityNames.filter((name) => active.has(name)).length;
   return [
+    `Tool mode: ${firecrawlToolMode(pi)}`,
     `Tool catalog: ${availableFirecrawlTools(pi).length}/${capabilityNames.length} available`,
     `Loaded this session: ${loadedCount}/${capabilityNames.length}`,
     `API key: ${hasApiKey() ? "present" : "missing"}`,
@@ -229,6 +247,7 @@ export function parseCommand(args: string): CommandAction | "unknown" {
   if (command === "config") return "config";
   if (command === "quickstart") return "quickstart";
   if (command === "status") return "status";
+  if (command === "settings") return "settings";
   if (command === "tools" || command === "select" || command === "toggle") return "tools";
   if (command === "enable" || command === "on") return "enable";
   if (command === "disable" || command === "off") return "disable";

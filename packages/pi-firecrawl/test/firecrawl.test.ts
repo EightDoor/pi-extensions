@@ -19,7 +19,6 @@ import { test, vi } from "vitest";
 import {
   createMockContext as createBaseMockContext,
   createCustomSelectorHarness,
-  createMockPi,
   driveCustomSelector,
 } from "../../../test/support.js";
 import firecrawl, {
@@ -40,6 +39,7 @@ import firecrawl, {
 import { applyAvailableFirecrawlTools } from "../src/lazy-tools.js";
 import { saveSettings } from "../src/settings.js";
 import { advanceFirecrawlSessionGeneration, buildStatusMessage } from "../src/tool-selector.js";
+import { createMockPi } from "./mock-pi.js";
 
 const NATIVE_DEFERRED_MODEL = {
   api: "openai-responses",
@@ -101,7 +101,7 @@ test("firecrawl interactive routes reject unsupported modes while direct catalog
     await invoke("enable");
     await invoke("disable");
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(process.env.PI_CODING_AGENT_DIR ?? "", NEW_SETTINGS_FILE).tools, []);
   });
 });
@@ -132,7 +132,7 @@ test("firecrawl settings normalize ordered unique valid tool names", () => {
       tools: ["firecrawl_search", "firecrawl_scrape", "firecrawl_search"],
       updatedAt: 1,
     }),
-    { tools: ["firecrawl_scrape", "firecrawl_search"], updatedAt: 1 },
+    { tools: ["firecrawl_scrape", "firecrawl_search"], toolMode: "codemode", updatedAt: 1 },
   );
   assert.equal(normalizeFirecrawlSettings({ tools: ["bad"], updatedAt: 1 }), undefined);
   assert.deepEqual(orderedFirecrawlTools(new Set(["firecrawl_search", "firecrawl_map"])), [
@@ -386,7 +386,7 @@ test("formatPersistedSelection summarizes all, none, and partial selections", ()
   assert.equal(formatPersistedSelection(["firecrawl_scrape"]), "1/5 selected: firecrawl_scrape");
 });
 
-test("firecrawl preserves the current catalog but initially activates only its loader", async () => {
+test("firecrawl defaults to five callable codemode capabilities without a loader", async () => {
   await withTempAgentDir(async () => {
     const firecrawlModule = await importFreshFirecrawl();
     const mock = createMockPi({ activeTools: ["other_tool", SEARCH_TOOL] });
@@ -395,8 +395,9 @@ test("firecrawl preserves the current catalog but initially activates only its l
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
-    assert.deepEqual(notifications, []);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", SEARCH_TOOL]);
+    assert.equal(mock.tools.filter((tool) => tool.exposure === "codemode").length, 5);
+    assert.match(notifications[0]?.message ?? "", /codemode is not active/);
   });
 });
 
@@ -506,7 +507,7 @@ test("firecrawl ignores invalid legacy settings without creating the new file", 
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", MAP_TOOL]);
     assert.equal(existsSync(path.join(agentDir, NEW_SETTINGS_FILE)), false);
     assert.match(notifications[0]?.message ?? "", /settings ignored/i);
     assert.match(notifications[0]?.message ?? "", /pi-firecrawl-settings\.json/);
@@ -524,7 +525,7 @@ test("firecrawl does not fall back to legacy settings when the new file is inval
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", MAP_TOOL]);
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), true);
     assert.match(notifications[0]?.message ?? "", /legacy settings ignored/i);
     assert.match(notifications[1]?.message ?? "", /settings ignored/i);
@@ -551,7 +552,7 @@ test("Firecrawl main menu dispatches declarative actions at narrow widths", asyn
   assert.equal(plain[0], "─".repeat(20));
   assert.equal(plain.at(-1), "─".repeat(20));
   const rendered = renderedLines.join("\n");
-  assert.match(rendered, /Tool catalog: 0\/5/);
+  assert.match(rendered, /Tool catalog: 5\/5/);
   assert.match(rendered, /Loaded this session:\s+0\/5/);
   assert.match(notifications.at(-1)?.message ?? "", /FIRECRAWL_API_KEY/);
 });
@@ -579,9 +580,9 @@ test("Firecrawl tool selection keeps the cursor on the toggled row", async () =>
     assert.equal(toggledRowKeptCursor, true);
     assert.deepEqual(mock.rawPi.getActiveTools(), [
       "other_tool",
-      LOAD_TOOL,
       ...CAPABILITY_TOOLS.filter((name) => name !== CRAWL_TOOL),
     ]);
+    assert.equal(mock.tools.find((tool) => tool.name === CRAWL_TOOL)?.exposure, "hidden");
     assert.deepEqual(
       readSettings(agentDir, NEW_SETTINGS_FILE).tools,
       CAPABILITY_TOOLS.filter((name) => name !== CRAWL_TOOL),
@@ -590,7 +591,8 @@ test("Firecrawl tool selection keeps the cursor on the toggled row", async () =>
 });
 
 test("catalog changes unload unavailable tools and leave newly available tools deferred", async () => {
-  await withTempAgentDir(async () => {
+  await withTempAgentDir(async (agentDir) => {
+    writeSettings(agentDir, NEW_SETTINGS_FILE, [...CAPABILITY_TOOLS]);
     const firecrawlModule = await importFreshFirecrawl();
     const mock = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
     const { ctx } = createMockContext();
@@ -624,7 +626,7 @@ test("firecrawl saves tool selection only to the new settings file", async () =>
     firecrawlModule.default(mock.pi);
     await mock.commands.get("firecrawl")?.handler("disable", ctx);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, []);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).future, { kept: true });
     assert.equal(existsSync(path.join(agentDir, LEGACY_SETTINGS_FILE)), false);
@@ -699,7 +701,7 @@ test("stale status reads do not publish output after session replacement", async
     const mock = createMockPi({ activeTools: ["other_tool", LOAD_TOOL] });
     firecrawl(mock.pi);
     const status = buildStatusMessage(mock.pi);
-    advanceFirecrawlSessionGeneration();
+    advanceFirecrawlSessionGeneration(mock.pi);
     releaseWrite?.();
     await pendingSave;
 
@@ -773,7 +775,7 @@ test("queued selector saves reject stale availability without overwriting it", a
     continueSelector?.();
     await selector;
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, ...CAPABILITY_TOOLS.slice(0, 3)]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS.slice(0, 3)]);
     assert.ok(notifications.some(({ message }) => /availability changed/i.test(message)));
   });
 });
@@ -788,6 +790,8 @@ test("firecrawl rejects invalid settings updates and restores active tools", asy
     const { ctx, notifications } = createMockContext();
 
     firecrawlModule.default(mock.pi);
+    const { configureFirecrawlToolExposure } = await import("../src/lazy-tools.js");
+    configureFirecrawlToolExposure(mock.pi, [CRAWL_TOOL], [CRAWL_TOOL], undefined, undefined, "lazy");
     await mock.commands.get("firecrawl")?.handler("disable", ctx);
 
     assert.equal(readFileSync(settingsPath, "utf8"), invalid);
@@ -814,13 +818,14 @@ test("firecrawl rejects invalid settings updates and restores active tools", asy
 test("firecrawl keeps failed-save rollback eager after an unsupported model switch", async () => {
   await withTempAgentDir(async (agentDir) => {
     const settingsPath = path.join(agentDir, NEW_SETTINGS_FILE);
-    writeFileSync(settingsPath, '{"tools":["invalid"]}\n');
+    writeSettings(agentDir, NEW_SETTINGS_FILE, [...CAPABILITY_TOOLS]);
     const firecrawlModule = await importFreshFirecrawl();
     const mock = createMockPi({ activeTools: ["other_tool", ...CAPABILITY_TOOLS] });
     const { ctx, notifications } = createMockContext();
     firecrawlModule.default(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
     assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    writeFileSync(settingsPath, '{"tools":["invalid"]}\n');
 
     let markRuntimeApply: (() => void) | undefined;
     const runtimeApplied = new Promise<void>((resolve) => {
@@ -852,7 +857,7 @@ test("firecrawl keeps failed-save rollback eager after an unsupported model swit
   });
 });
 
-test("firecrawl rolls back a failed save after shutdown invalidates its session", async () => {
+test("firecrawl does not roll back old runtime state after shutdown invalidates its session", async () => {
   await withTempAgentDir(async (agentDir) => {
     mkdirSync(path.join(agentDir, NEW_SETTINGS_FILE));
     const firecrawlModule = await importFreshFirecrawl();
@@ -862,11 +867,11 @@ test("firecrawl rolls back a failed save after shutdown invalidates its session"
 
     const command = mock.commands.get("firecrawl")?.handler("disable", ctx);
     await Promise.resolve();
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     const shutdown = mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 
     await Promise.all([command, shutdown]);
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL, CRAWL_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(notifications, []);
   });
 });
@@ -882,7 +887,7 @@ test("firecrawl serializes rapid tool saves in invocation order", async () => {
     const second = mock.commands.get("firecrawl")?.handler("disable", ctx);
     await Promise.all([first, second]);
 
-    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", LOAD_TOOL]);
+    assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
     assert.deepEqual(readSettings(agentDir, NEW_SETTINGS_FILE).tools, []);
   });
 });
@@ -945,7 +950,7 @@ async function withTempAgentDir<T>(fn: (agentDir: string) => Promise<T>) {
 }
 
 function writeSettings(agentDir: string, fileName: string, tools: string[]) {
-  writeFileSync(path.join(agentDir, fileName), JSON.stringify({ tools, updatedAt: 1 }));
+  writeFileSync(path.join(agentDir, fileName), JSON.stringify({ tools, toolMode: "lazy", updatedAt: 1 }));
 }
 
 function readSettings(agentDir: string, fileName: string) {

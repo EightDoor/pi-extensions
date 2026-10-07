@@ -1,14 +1,19 @@
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { DEFAULT_TOOL_MODE, type FirecrawlToolMode } from "./settings.js";
 import { FIRECRAWL_TOOL_NAMES, type FirecrawlToolName } from "./tool-names.js";
+import { crawlStatusTool, crawlTool, mapTool, scrapeTool, searchTool } from "./tools.js";
 
 export const FIRECRAWL_LOAD_TOOL_NAME = "firecrawl_load";
 
 const AVAILABLE_TOOLS_STORE = Symbol.for("@narumitw/pi-firecrawl.available-tools-store");
 const SESSION_AVAILABLE_TOOLS_STORE = Symbol.for("@narumitw/pi-firecrawl.session-available-tools-store");
+const ACTIVATION_OWNERSHIP_STORE = Symbol.for("@narumitw/pi-firecrawl.activation-ownership-store");
+type ActivationOwnership = { explicit: Set<string>; owned: Set<string> };
 type FirecrawlGlobal = typeof globalThis & {
   [AVAILABLE_TOOLS_STORE]?: WeakMap<ExtensionAPI, Set<FirecrawlToolName>>;
   [SESSION_AVAILABLE_TOOLS_STORE]?: WeakMap<object, Set<FirecrawlToolName>>;
+  [ACTIVATION_OWNERSHIP_STORE]?: WeakMap<object, ActivationOwnership>;
 };
 const sharedGlobal = globalThis as FirecrawlGlobal;
 const existingAvailableToolsStore = sharedGlobal[AVAILABLE_TOOLS_STORE];
@@ -19,7 +24,85 @@ const availableToolsBySession = existingSessionAvailableToolsStore ?? new WeakMa
 if (!existingSessionAvailableToolsStore) {
   sharedGlobal[SESSION_AVAILABLE_TOOLS_STORE] = availableToolsBySession;
 }
+// Reload rebuilds the extension API, but keeps its public sessionManager identity.
+const activationOwnershipBySession =
+  sharedGlobal[ACTIVATION_OWNERSHIP_STORE] ?? new WeakMap<object, ActivationOwnership>();
+sharedGlobal[ACTIVATION_OWNERSHIP_STORE] = activationOwnershipBySession;
+const activationOwnershipByApi = new WeakMap<ExtensionAPI, ActivationOwnership>();
+
+function observeActivationOwnership(pi: ExtensionAPI, active: readonly string[], sessionOwner?: object) {
+  const ownership = (sessionOwner ? activationOwnershipBySession.get(sessionOwner) : undefined) ??
+    activationOwnershipByApi.get(pi) ?? {
+      explicit: new Set<string>(),
+      owned: new Set<string>(),
+    };
+  // A redundant host selection of an already-owned active name has no public signal.
+  // Keep known ownership rather than reclassifying carryover as explicit intent.
+  for (const name of active) {
+    if (FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) && !ownership.owned.has(name))
+      ownership.explicit.add(name);
+  }
+  activationOwnershipByApi.set(pi, ownership);
+  if (sessionOwner) activationOwnershipBySession.set(sessionOwner, ownership);
+  return ownership;
+}
+
+function recordOwnedActivations(pi: ExtensionAPI, names: readonly string[]) {
+  const ownership = activationOwnershipByApi.get(pi);
+  if (!ownership) return;
+  for (const name of names) {
+    if (!ownership.explicit.has(name)) ownership.owned.add(name);
+  }
+}
+
 const lazyExposureByApi = new WeakMap<ExtensionAPI, boolean>();
+const modeByApi = new WeakMap<ExtensionAPI, FirecrawlToolMode>();
+const exposuresByApi = new WeakMap<ExtensionAPI, Map<string, string>>();
+const loaderRegistrations = new WeakSet<ExtensionAPI>();
+const capabilityTools = [scrapeTool, crawlTool, crawlStatusTool, mapTool, searchTool];
+
+export function firecrawlToolMode(pi: ExtensionAPI): FirecrawlToolMode {
+  return modeByApi.get(pi) ?? DEFAULT_TOOL_MODE;
+}
+
+// Factory registration is action-free. Startup applies persisted availability and mode.
+export function registerFirecrawlTools(pi: ExtensionAPI) {
+  registerExposure(pi, FIRECRAWL_TOOL_NAMES, DEFAULT_TOOL_MODE);
+}
+
+function registerExposure(pi: ExtensionAPI, availableTools: readonly FirecrawlToolName[], mode: FirecrawlToolMode) {
+  const available = new Set(availableTools);
+  const exposures = exposuresByApi.get(pi) ?? new Map<string, string>();
+  exposuresByApi.set(pi, exposures);
+  for (const tool of capabilityTools) {
+    const exposure = !available.has(tool.name as FirecrawlToolName)
+      ? "hidden"
+      : mode === "codemode"
+        ? "codemode"
+        : "direct";
+    if (exposures.get(tool.name) === exposure) continue;
+    try {
+      pi.registerTool({ ...tool, exposure, defaultActive: false });
+      exposures.set(tool.name, exposure);
+    } catch (error) {
+      // Refresh may throw after replacing the registration; rollback must re-register it.
+      exposures.delete(tool.name);
+      throw error;
+    }
+  }
+  const loaderExposure = mode === "lazy" ? "direct" : "hidden";
+  if (mode !== "lazy" && !loaderRegistrations.has(pi)) return;
+  if (exposures.get(FIRECRAWL_LOAD_TOOL_NAME) !== loaderExposure) {
+    loaderRegistrations.add(pi);
+    try {
+      pi.registerTool({ ...createFirecrawlLoadTool(pi), exposure: loaderExposure, defaultActive: false });
+      exposures.set(FIRECRAWL_LOAD_TOOL_NAME, loaderExposure);
+    } catch (error) {
+      exposures.delete(FIRECRAWL_LOAD_TOOL_NAME);
+      throw error;
+    }
+  }
+}
 
 const CRAWL_CREATION_TERMS = new Set(["begin", "create", "launch", "start"]);
 
@@ -45,12 +128,7 @@ export function initializeAvailableFirecrawlTools(pi: ExtensionAPI, sessionOwner
     if (sessionOwner) setAvailableTools(pi, apiTools, sessionOwner);
     return;
   }
-  const activeTools = new Set(pi.getActiveTools());
-  setAvailableTools(
-    pi,
-    FIRECRAWL_TOOL_NAMES.filter((name) => activeTools.has(name)),
-    sessionOwner,
-  );
+  setAvailableTools(pi, FIRECRAWL_TOOL_NAMES, sessionOwner);
 }
 
 export function configureFirecrawlToolExposure(
@@ -59,25 +137,48 @@ export function configureFirecrawlToolExposure(
   loadedTools: readonly FirecrawlToolName[] = [],
   sessionOwner?: object,
   model?: ExtensionContext["model"],
+  mode: FirecrawlToolMode = DEFAULT_TOOL_MODE,
 ) {
+  const previouslyActive = new Set(pi.getActiveTools());
+  const ownership = observeActivationOwnership(pi, [...previouslyActive], sessionOwner);
+  modeByApi.set(pi, mode);
+  registerExposure(pi, availableTools, mode);
   const available = setAvailableTools(pi, availableTools, sessionOwner);
-  const lazyExposure = supportsNativeDeferredToolLoading(model);
+  const lazyExposure = mode === "lazy" && supportsNativeDeferredToolLoading(model);
   lazyExposureByApi.set(pi, lazyExposure);
   const loaded = new Set(loadedTools);
-  const exposedTools = lazyExposure
-    ? FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name) && loaded.has(name))
-    : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
-  const nonCapabilityTools = pi
+  const exposedTools =
+    mode === "codemode"
+      ? []
+      : lazyExposure
+        ? FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name) && loaded.has(name))
+        : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
+  const preservedTools = pi
     .getActiveTools()
-    .filter((name) => !FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName));
-  pi.setActiveTools(unique([...nonCapabilityTools, FIRECRAWL_LOAD_TOOL_NAME, ...exposedTools]));
+    .filter(
+      (name) =>
+        name !== FIRECRAWL_LOAD_TOOL_NAME &&
+        (!FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) ||
+          (mode === "codemode" &&
+            previouslyActive.has(name) &&
+            !ownership.owned.has(name) &&
+            available.has(name as FirecrawlToolName))),
+    );
+  pi.setActiveTools(
+    unique([...preservedTools, ...(mode === "lazy" ? [FIRECRAWL_LOAD_TOOL_NAME] : []), ...exposedTools]),
+  );
+  if (mode === "codemode") ownership.owned.clear();
+  else recordOwnedActivations(pi, exposedTools);
 }
 
 export function requireEagerFirecrawlToolExposure(pi: ExtensionAPI) {
+  if (firecrawlToolMode(pi) !== "lazy") return;
   lazyExposureByApi.set(pi, false);
   const active = pi.getActiveTools();
   const available = availableFirecrawlTools(pi);
+  observeActivationOwnership(pi, active);
   pi.setActiveTools(unique([...active, FIRECRAWL_LOAD_TOOL_NAME, ...available]));
+  recordOwnedActivations(pi, available);
 }
 
 export function applyAvailableFirecrawlTools(
@@ -85,21 +186,35 @@ export function applyAvailableFirecrawlTools(
   availableTools: readonly FirecrawlToolName[],
   sessionOwner?: object,
 ) {
+  const mode = firecrawlToolMode(pi);
+  // Host allowlists can activate direct tools during registration despite defaultActive:false.
+  const previouslyActive = new Set(pi.getActiveTools());
+  observeActivationOwnership(pi, [...previouslyActive], sessionOwner);
+  registerExposure(pi, availableTools, mode);
   const available = setAvailableTools(pi, availableTools, sessionOwner);
   const lazyExposure = lazyExposureByApi.get(pi) === true;
   const active = pi
     .getActiveTools()
     .filter(
       (name) =>
-        !FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) ||
-        (lazyExposure && available.has(name as FirecrawlToolName)),
+        (name !== FIRECRAWL_LOAD_TOOL_NAME || mode === "lazy") &&
+        (!FIRECRAWL_TOOL_NAMES.includes(name as FirecrawlToolName) ||
+          ((mode === "codemode" || lazyExposure) &&
+            previouslyActive.has(name) &&
+            available.has(name as FirecrawlToolName))),
     );
-  const eagerTools = lazyExposure ? [] : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
-  pi.setActiveTools(unique([...active, FIRECRAWL_LOAD_TOOL_NAME, ...eagerTools]));
+  const eagerTools =
+    mode === "codemode" || lazyExposure ? [] : FIRECRAWL_TOOL_NAMES.filter((name) => available.has(name));
+  pi.setActiveTools(unique([...active, ...(mode === "lazy" ? [FIRECRAWL_LOAD_TOOL_NAME] : []), ...eagerTools]));
+  recordOwnedActivations(pi, eagerTools);
 }
 
 export function firecrawlToolExposureMode(pi: ExtensionAPI) {
-  return lazyExposureByApi.get(pi) === true ? "native deferred" : "eager";
+  return firecrawlToolMode(pi) === "codemode"
+    ? "codemode"
+    : lazyExposureByApi.get(pi) === true
+      ? "native deferred"
+      : "eager";
 }
 
 export function supportsNativeDeferredToolLoading(model: ExtensionContext["model"]): boolean {
@@ -127,6 +242,16 @@ export function supportsNativeDeferredToolLoading(model: ExtensionContext["model
     );
   }
   return false;
+}
+
+// Restore an uncommitted policy without touching a replaced session's active tools.
+// Session startup waits for the settings transaction queue before reading this store.
+export function restoreAvailableFirecrawlPolicy(
+  pi: ExtensionAPI,
+  tools: readonly FirecrawlToolName[],
+  sessionOwner: object,
+) {
+  setAvailableTools(pi, tools, sessionOwner);
 }
 
 export function availableFirecrawlTools(pi: ExtensionAPI) {
@@ -165,7 +290,11 @@ export function createFirecrawlLoadTool(pi: ExtensionAPI) {
       const active = pi.getActiveTools();
       const activeSet = new Set(active);
       const added = matches.filter((name) => !activeSet.has(name));
-      if (added.length > 0) pi.setActiveTools(unique([...active, ...added]));
+      observeActivationOwnership(pi, active);
+      if (added.length > 0) {
+        pi.setActiveTools(unique([...active, ...added]));
+        recordOwnedActivations(pi, added);
+      }
 
       const text =
         matches.length === 0
