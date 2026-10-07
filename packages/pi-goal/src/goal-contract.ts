@@ -83,10 +83,9 @@ function reconcileContract(
   },
 ) {
   if (latestGoalContractContent(messages) === expected.content) return messages;
-  const summaryBoundary = leadingSummaryBoundary(messages);
-  if (!hasGoalContextContractHistory(messages) && hasLeadingSummary(messages, summaryBoundary)) {
-    return [...messages.slice(0, summaryBoundary), expected, ...messages.slice(summaryBoundary)];
-  }
+  // Match Pi's immediate persisted-message position after retained history.
+  // Streaming publication can be deferred past new output; tail insertion alone
+  // does not preserve the prefix across that separate delivery boundary.
   return [...messages, expected];
 }
 
@@ -96,21 +95,6 @@ function latestGoalContractContent(messages: readonly unknown[]) {
     if (isGoalContextContract(message)) return unwrapMessage(message).content;
   }
   return undefined;
-}
-
-function leadingSummaryBoundary(messages: readonly unknown[]) {
-  let index = unwrapMessage(messages[0]).role === "system" ? 1 : 0;
-  while (index < messages.length) {
-    const role = unwrapMessage(messages[index]).role;
-    if (role !== "compactionSummary" && role !== "branchSummary") break;
-    index += 1;
-  }
-  return index;
-}
-
-function hasLeadingSummary(messages: readonly unknown[], boundary: number): boolean {
-  const summaryStart = unwrapMessage(messages[0]).role === "system" ? 1 : 0;
-  return boundary > summaryStart;
 }
 
 function unwrapMessage(message: unknown): ContractMessage {
