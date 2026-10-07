@@ -97,7 +97,6 @@ function progressJson(steps: readonly ProgressStep[]): JsonValue {
   return steps.map((step) => ({
     text: step.text,
     status: step.status,
-    ...(step.status === "blocked" ? { reason: step.reason } : {}),
   }));
 }
 
@@ -141,43 +140,52 @@ test("the Progress rename starts one intentional provider-prefix epoch", () => {
   );
 });
 
-test("the union upgrade starts one static tool-definition epoch without changing guidance or tool order", () => {
+test("removing reason starts one tool-definition and guidance epoch with stable tool order", () => {
   const initial = normalizedRequest([userMessage("start")]);
-  const [nonBlocked, blocked] = ProgressParameters.properties.steps.items.anyOf;
+  const stepSchema = ProgressParameters.properties.steps.items;
   const predecessorParameters = {
     ...ProgressParameters,
     properties: {
       steps: {
         ...ProgressParameters.properties.steps,
         items: {
-          type: "object",
-          required: ["text", "status"],
-          additionalProperties: false,
-          properties: {
-            ...blocked.properties,
-            status: {
-              type: "string",
-              enum: ["pending", "in_progress", "completed", "blocked"],
-              description: "The step's current status",
+          anyOf: [
+            {
+              ...stepSchema,
+              properties: {
+                ...stepSchema.properties,
+                text: { ...stepSchema.properties.text, maxLength: 300 },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
             },
-            reason: {
-              ...blocked.properties.reason,
-              description: "Required only for blocked steps; explain what must unblock the step",
+            {
+              ...stepSchema,
+              required: ["text", "status", "reason"],
+              properties: {
+                ...stepSchema.properties,
+                text: { ...stepSchema.properties.text, maxLength: 300 },
+                status: { type: "string", enum: ["blocked"] },
+                reason: { type: "string", minLength: 1, maxLength: 200 },
+              },
             },
-          },
+          ],
         },
       },
     },
   };
   const predecessor = {
     ...initial,
+    effectiveSystemGuidance: [
+      "Use blocked with a concise reason only when progress depends on an external action or condition; blocked does not mean completed.",
+    ],
     toolDefinitions: initial.toolDefinitions.map((tool) => ({ ...tool, parameters: predecessorParameters })),
   };
   assert.notDeepEqual(initial.toolDefinitions, predecessor.toolDefinitions);
   assert.deepEqual(initial.activeToolNames, predecessor.activeToolNames);
-  assert.deepEqual(initial.effectiveSystemGuidance, predecessor.effectiveSystemGuidance);
-  assert.deepEqual(nonBlocked.required, ["text", "status"]);
-  assert.deepEqual(blocked.required, ["text", "status", "reason"]);
+  assert.notDeepEqual(initial.effectiveSystemGuidance, predecessor.effectiveSystemGuidance);
+  assert.deepEqual(stepSchema.required, ["text", "status"]);
+  assert.equal("reason" in stepSchema.properties, false);
+  assert.match(initial.effectiveSystemGuidance.join("\n"), /include what is needed to continue in the step text/u);
 
   const steps: ProgressStep[] = [{ text: "work", status: "in_progress" }];
   const raw = [
@@ -253,7 +261,7 @@ test("compaction restoration keeps its old epoch byte-stable and later epochs ca
   assertPrefix(ordinary, first);
   assert.equal(reconcileProgressContext(ordinaryMessages, steps, oldContent), ordinaryMessages);
 
-  const updatedSteps: ProgressStep[] = [{ text: "continue", status: "blocked", reason: "approval" }];
+  const updatedSteps: ProgressStep[] = [{ text: "continue — approval", status: "blocked" }];
   const updatedRaw = [
     ...ordinaryRaw,
     progressToolCall(updatedSteps, "update-2"),
@@ -271,6 +279,6 @@ test("compaction restoration keeps its old epoch byte-stable and later epochs ca
     updatedSteps,
   );
   const canonical = nextEpochMessages[1];
-  assert.match(canonical?.role === "custom" ? String(canonical.content) : "", /PI PROGRESS STATUS v4/u);
+  assert.match(canonical?.role === "custom" ? String(canonical.content) : "", /PI PROGRESS STATUS v5/u);
   assert.doesNotMatch(canonical?.role === "custom" ? String(canonical.content) : "", /PI TODO STATUS/u);
 });

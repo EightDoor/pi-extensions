@@ -51,7 +51,10 @@ test("a real Pi session keeps the full effective prompt and provider prefix stab
         fauxToolCall(
           "update_progress",
           {
-            steps: [{ text: "work", status: "in_progress", reason: "checking code" }],
+            steps: [
+              { text: "work", status: "in_progress", reason: "checking code" },
+              { text: "deploy", status: "blocked", reason: "approval" },
+            ],
           },
           { id: "progress-cache-call" },
         ),
@@ -122,7 +125,13 @@ test("a real Pi session keeps the full effective prompt and provider prefix stab
     const result = session.messages.find((message) => message.role === "toolResult");
     assert.ok(result?.role === "toolResult");
     assert.equal(result.isError, false);
-    assert.deepEqual(result.details, { version: 4, steps: [{ text: "work", status: "in_progress" }] });
+    assert.deepEqual(result.details, {
+      version: 5,
+      steps: [
+        { text: "work", status: "in_progress" },
+        { text: "deploy — approval", status: "blocked" },
+      ],
+    });
   } finally {
     session?.dispose();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

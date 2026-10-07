@@ -38,16 +38,17 @@ const context = normalizeContext({
   messages: [{ role: "user", content: [{ type: "text", text: "start" }], timestamp: 0 }],
 });
 
-function assertUnionContract(parameters: unknown) {
+function assertStepContract(parameters: unknown) {
   const schema = parameters as typeof ProgressParameters;
   assert.deepEqual(schema.properties.steps, ProgressParameters.properties.steps);
   const validator = Compile(schema);
-  for (const status of ["pending", "in_progress", "completed"]) {
+  for (const status of ["pending", "in_progress", "completed", "blocked"]) {
     assert.equal(validator.Check({ steps: [{ text: "work", status }] }), true);
     assert.equal(validator.Check({ steps: [{ text: "work", status, reason: "note" }] }), false);
   }
-  assert.equal(validator.Check({ steps: [{ text: "work", status: "blocked", reason: "approval" }] }), true);
-  assert.equal(validator.Check({ steps: [{ text: "work", status: "blocked" }] }), false);
+  assert.equal(validator.Check({ steps: [{ text: "x".repeat(503), status: "blocked" }] }), true);
+  // Runtime preparation enforces grapheme limits; provider schemas cannot encode them.
+  assert.equal("maxLength" in schema.properties.steps.items.properties.text, false);
 }
 
 interface Payload {
@@ -83,7 +84,7 @@ const fixtures: Array<{ api: Api; provider: string; id: string; compat?: Model<A
 ];
 
 for (const fixture of fixtures) {
-  test(`provider payload retains the union: ${fixture.api}/${fixture.id}/${JSON.stringify(fixture.compat ?? {})}`, async () => {
+  test(`provider payload retains the single step shape: ${fixture.api}/${fixture.id}/${JSON.stringify(fixture.compat ?? {})}`, async () => {
     const implementation = implementations.get(fixture.api);
     assert.ok(implementation);
     const model: Model<Api> = {
@@ -135,33 +136,18 @@ for (const fixture of fixtures) {
         parameters = captured.tools?.[0]?.parameters;
     }
     assert.ok(parameters, JSON.stringify(captured));
-    assertUnionContract(parameters);
+    assertStepContract(parameters);
   });
 }
 
-test("Google legacy conversion also retains nested closed union branches", () => {
+test("Google legacy conversion retains the closed step object", () => {
   const converted = convertTools([tool], true, false);
-  assertUnionContract(converted[0].functionDeclarations[0].parameters);
+  assertStepContract(converted[0].functionDeclarations[0].parameters);
 });
 
-test("object unions use ordinary tool schemas, not Pi strict constrained sampling", () => {
+test("the simple schema does not opt into strict constrained sampling", () => {
   assert.equal(tool.constrainedSampling, undefined);
   for (const supportsStrict of [true, false]) {
     assert.equal(resolveJsonSchemaStrictSampling(tool, supportsStrict), undefined);
-    assert.equal(
-      resolveJsonSchemaStrictSampling(
-        { ...tool, constrainedSampling: { type: "json_schema", strict: "prefer" } },
-        supportsStrict,
-      ),
-      undefined,
-    );
-    assert.throws(
-      () =>
-        resolveJsonSchemaStrictSampling(
-          { ...tool, constrainedSampling: { type: "json_schema", strict: "require" } },
-          supportsStrict,
-        ),
-      /requires JSON-schema constrained sampling/u,
-    );
   }
 });
