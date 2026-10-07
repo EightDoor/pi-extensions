@@ -29,6 +29,7 @@ export class S3SyncBackend implements SyncBackend {
   readonly destination: string;
   readonly capability = "conditional-required" as const;
   private readonly checksums = new Map<string, string>();
+  private recoveryHead?: { current: string; legacy: string };
 
   constructor(
     private readonly config: ResolvedS3Backend,
@@ -43,7 +44,18 @@ export class S3SyncBackend implements SyncBackend {
     return left === right;
   }
 
+  matchesUncommittedRecoveryHead(current: RemoteHead, recorded: RemoteHead) {
+    return (
+      this.sameRevision(current.revision, recorded.revision) ||
+      (current.snapshotId === recorded.snapshotId &&
+        current.snapshotRef === recorded.snapshotRef &&
+        current.revision === this.recoveryHead?.current &&
+        recorded.revision === this.recoveryHead?.legacy)
+    );
+  }
+
   async readHead(signal?: AbortSignal): Promise<RemoteHead | undefined> {
+    this.recoveryHead = undefined;
     const object = await new S3Client(this.config, signal).getJson<LatestPointer>(latestKey(this.config));
     throwIfAborted(signal);
     if (object.missing) return undefined;
@@ -53,7 +65,16 @@ export class S3SyncBackend implements SyncBackend {
       this.config.destination.namespace,
     );
     this.registerChecksum(pointer.snapshot, pointer.sha256);
-    return remoteHead(pointer, this.identity, object.etag);
+    const head = remoteHead(pointer, this.identity, object.etag);
+    if (object.etag && /^"[^"\r\n]+"$/u.test(object.etag)) {
+      // Old clients hashed R2's compression-weakened ETag. Bind the alias to the
+      // exact current pointer and strong ETag, solely for inactive-journal retirement.
+      this.recoveryHead = {
+        current: head.revision,
+        legacy: remoteHead(pointer, this.identity, `W/${object.etag}`).revision,
+      };
+    }
+    return head;
   }
 
   async readSnapshot(reference: string, signal?: AbortSignal): Promise<Snapshot> {

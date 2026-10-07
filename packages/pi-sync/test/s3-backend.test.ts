@@ -413,21 +413,89 @@ test("S3 competing first publisher is never overwritten", async () => {
   });
 });
 
-test("S3 existing pointer without an ETag cannot enter the commit boundary", async () => {
+test("S3 legacy weak-read revisions match only unchanged heads for inactive recovery, never publication", async () => {
   const harness = new S3Harness(snapshot([]));
-  harness.missingHeadEtag = true;
   await harness.run(async () => {
     const backend = createSyncBackend(s3Config());
-    const expected = expectedRemoteHead(await backend.readHead());
+    harness.weakHeadEtag = true;
+    const legacy = await backend.readHead();
+    assert.ok(legacy);
+    harness.weakHeadEtag = false;
+    const current = await backend.readHead();
+    assert.ok(current);
+    assert.equal(backend.sameRevision(current.revision, legacy.revision), false);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), true);
     await assert.rejects(
-      backend.publishSnapshot({ ...snapshot([]), id: "candidate" }, expected, {
-        onCommit: () => assert.fail("commit began"),
-      }),
-      /strong ETag/u,
+      backend.publishSnapshot({ ...snapshot([]), id: "candidate" }, expectedRemoteHead(legacy)),
+      SyncBackendConflictError,
     );
     assert.equal(harness.latestPuts, 0);
+    harness.replacePointerMetadata({ machine: "different-machine" });
+    const changed = await backend.readHead();
+    assert.ok(changed);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(changed, legacy), false);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
+    harness.missingHead = true;
+    await backend.readHead();
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
   });
 });
+
+test("S3 weak current ETags cannot supply a strong-read recovery alias", async () => {
+  const harness = new S3Harness(snapshot([]));
+  await harness.run(async () => {
+    const backend = createSyncBackend(s3Config());
+    harness.weakHeadEtag = true;
+    const legacy = await backend.readHead();
+    harness.weakHeadEtag = false;
+    const current = await backend.readHead();
+    assert.ok(legacy && current);
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), true);
+    harness.weakHeadEtag = true;
+    await backend.readHead();
+    assert.equal(backend.matchesUncommittedRecoveryHead?.(current, legacy), false);
+  });
+});
+
+test("S3 publication preserves strong JSON ETags by avoiding transfer compression", async () => {
+  const remote = snapshot([]);
+  const harness = new S3Harness(remote);
+  harness.compressJson = true;
+  harness.addHistorical(remote);
+  await harness.run(async () => {
+    const backend = createSyncBackend(s3Config());
+    const result = await backend.publishSnapshot(
+      { ...remote, id: "candidate" },
+      expectedRemoteHead(await backend.readHead()),
+    );
+    assert.equal(result.head.snapshotId, "candidate");
+    assert.deepEqual(result.warnings, []);
+    assert.equal(harness.latestCondition, '"latest-1"');
+    assert.equal(harness.latestPuts, 1);
+    assert.equal(harness.historyPuts, 1);
+    assert.equal((await backend.listHistory()).length, 2);
+  });
+});
+
+test.each(["missing", "weak"] as const)(
+  "S3 existing pointer with a %s ETag cannot enter the commit boundary",
+  async (mode) => {
+    const harness = new S3Harness(snapshot([]));
+    harness.missingHeadEtag = mode === "missing";
+    harness.weakHeadEtag = mode === "weak";
+    await harness.run(async () => {
+      const backend = createSyncBackend(s3Config());
+      const expected = expectedRemoteHead(await backend.readHead());
+      await assert.rejects(
+        backend.publishSnapshot({ ...snapshot([]), id: "candidate" }, expected, {
+          onCommit: () => assert.fail("commit began"),
+        }),
+        /strong ETag/u,
+      );
+      assert.equal(harness.latestPuts, 0);
+    });
+  },
+);
 
 test("S3 history contention preserves the active publication with a warning", async () => {
   const harness = new S3Harness(snapshot([]));
@@ -482,6 +550,8 @@ class S3Harness {
   failLatest = false;
   missingHead = false;
   missingHeadEtag = false;
+  weakHeadEtag = false;
+  compressJson = false;
   rejectLatest?: number;
   rejectHistory = false;
   latestSignedHeaders = "";
@@ -579,7 +649,9 @@ class S3Harness {
       }
       if (this.missingHead) return new Response(null, { status: 404 });
       return Response.json(this.pointer, {
-        headers: this.missingHeadEtag ? {} : { etag: `"latest-${this.etagRevision}"` },
+        headers: this.missingHeadEtag
+          ? {}
+          : { etag: `${this.weakHeadEtag ? "W/" : ""}${this.jsonEtag(`"latest-${this.etagRevision}"`, init)}` },
       });
     }
     if (url.pathname.includes("/snapshots/")) {
@@ -611,11 +683,18 @@ class S3Harness {
         return new Response(null, { status: 200 });
       }
       return this.historyPointers.length > 0
-        ? Response.json({ version: 1, snapshots: this.historyPointers }, { headers: { etag: '"history"' } })
+        ? Response.json(
+            { version: 1, snapshots: this.historyPointers },
+            { headers: { etag: this.jsonEtag('"history"', init) } },
+          )
         : new Response(null, { status: 404 });
     }
     throw new Error(`Unexpected request: ${method} ${url.pathname}`);
   };
+
+  private jsonEtag(etag: string, init?: RequestInit) {
+    return this.compressJson && new Headers(init?.headers).get("accept-encoding") !== "identity" ? `W/${etag}` : etag;
+  }
 }
 
 function hangingResponse(signal?: AbortSignal | null) {
