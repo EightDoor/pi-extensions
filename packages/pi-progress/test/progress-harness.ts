@@ -99,6 +99,7 @@ export function createContext(
   const widgets: Array<{
     key: string;
     content: WidgetFactory | undefined;
+    lines?: string[];
     options: { placement: "aboveEditor" } | undefined;
   }> = [];
   const notifications: Array<{ message: string; type: string | undefined }> = [];
@@ -110,11 +111,22 @@ export function createContext(
   const mode = options.mode ?? "tui";
   const ctx = {
     mode,
-    hasUI: options.hasUI ?? mode === "tui",
+    hasUI: options.hasUI ?? (mode === "tui" || mode === "rpc"),
     sessionManager,
     ui: {
-      setWidget(key: string, content: WidgetFactory | undefined, widgetOptions?: { placement: "aboveEditor" }) {
-        widgets.push({ key, content, options: widgetOptions });
+      theme: identityTheme().theme,
+      setWidget(
+        key: string,
+        content: WidgetFactory | string[] | undefined,
+        widgetOptions?: { placement: "aboveEditor" },
+      ) {
+        // Match Pi RPC: clear and string-array calls are emitted; factories are ignored.
+        if (mode === "rpc" && typeof content === "function") return;
+        if (Array.isArray(content)) {
+          widgets.push({ key, content: undefined, lines: [...content], options: widgetOptions });
+        } else {
+          widgets.push({ key, content, options: widgetOptions });
+        }
       },
       notify(message: string, type?: string) {
         notifications.push({ message, type });
