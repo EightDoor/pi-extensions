@@ -1,5 +1,13 @@
 # @narumitw/pi-usage
 
+## 0.64.1
+
+### Patch Changes
+
+- 69b4499: Remove app reset windows from the ChatGPT statusline while retaining them in detailed usage reports.
+- Updated dependencies [178e2e4]
+  - @narumitw/pi-tui-kit@0.65.3
+
 ## 0.64.0
 
 ### Minor Changes

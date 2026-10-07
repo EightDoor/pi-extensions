@@ -2,6 +2,14 @@
 
 This changelog retains the published `@narumitw/pi-todo` predecessor history below the first `pi-progress` release.
 
+## 0.4.2
+
+### Patch Changes
+
+- fb35c02: Express progress steps as a discriminated union in the tool schema so only blocked steps expose and require a reason. Preserve redundant-reason input normalization and recognize normalized call/result pairs during compaction without changing stored state or historical result validation.
+- Updated dependencies [178e2e4]
+  - @narumitw/pi-tui-kit@0.65.3
+
 ## 0.4.1
 
 ### Patch Changes
