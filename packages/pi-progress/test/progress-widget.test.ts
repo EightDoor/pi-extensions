@@ -596,7 +596,7 @@ test("renders Progress terminology, sanitizes hostile text, and bounds every lin
   ]);
 });
 
-test("clears the exact widget key on replacement and shutdown and avoids non-TUI widgets", async () => {
+test("clears the exact widget key on replacement and shutdown and avoids headless widgets", async () => {
   const harness = createHarness();
   const previous = createContext();
   await harness.emit("session_start", previous.ctx);
@@ -613,7 +613,7 @@ test("clears the exact widget key on replacement and shutdown and avoids non-TUI
   await harness.emit("session_shutdown", current.ctx);
   assert.deepEqual(current.widgets.at(-1), { key: WIDGET_KEY, content: undefined, options: undefined });
 
-  for (const mode of ["rpc", "print", "json"] as const) {
+  for (const mode of ["print", "json"] as const) {
     const headlessHarness = createHarness();
     const headless = createContext({ mode });
     await headlessHarness.emit("session_start", headless.ctx);

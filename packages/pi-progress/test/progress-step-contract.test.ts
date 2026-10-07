@@ -162,7 +162,7 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
       assert.deepEqual(cloneProgressSteps(canonical), canonical);
       assert.equal(
         current.widgets.some((widget) => typeof widget.content === "function"),
-        mode === "tui",
+        mode === "tui" || mode === "rpc",
       );
       const publicationCount = current.widgets.length;
       const invalid = await runProgressCall(harness, current.ctx, [{ text: "wait", status: "blocked", extra: true }]);

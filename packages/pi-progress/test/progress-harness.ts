@@ -110,7 +110,7 @@ export function createContext(
   const mode = options.mode ?? "tui";
   const ctx = {
     mode,
-    hasUI: options.hasUI ?? mode === "tui",
+    hasUI: options.hasUI ?? (mode === "tui" || mode === "rpc"),
     sessionManager,
     ui: {
       setWidget(key: string, content: WidgetFactory | undefined, widgetOptions?: { placement: "aboveEditor" }) {
