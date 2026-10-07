@@ -81,7 +81,9 @@ test("mode-only saves preserve fields, pending mode survives availability saves,
     );
     const { default: extension } = await import("../src/chrome-devtools.js");
     const mock = createMockPi({ activeTools: ["codemode"] });
-    const { ctx } = createMockContext();
+    const { ctx } = createMockContext({
+      sessionManager: { getBranch: () => mock.entries.map((entry) => ({ type: "custom", ...entry })) },
+    });
     extension(mock.pi);
     await mock.events.get("session_start")?.[0]?.({}, ctx);
     const before = mock.rawPi.getActiveTools();
@@ -128,11 +130,15 @@ for (const cohort of ["capability-only", "unknown-loader", "known-explicit-loade
     fixture(async () => {
       const { CORE_CHROME_DEVTOOLS_TOOL_NAMES: names } = await import("../src/tool-names.js");
       const { default: extension } = await import("../src/chrome-devtools.js");
-      const { ctx } = createMockContext();
+      let entries: Array<{ customType: string; data: unknown }> = [];
+      const { ctx } = createMockContext({
+        sessionManager: { getBranch: () => entries.map((entry) => ({ type: "custom", ...entry })) },
+      });
       if (cohort === "known-explicit-loader") {
         const previous = createMockPi({ activeTools: ["other-a", names[0], "other-b"] });
         extension(previous.pi);
         await previous.events.get("session_start")?.[0]?.({}, ctx);
+        entries = previous.entries;
       }
       const mock = createMockPi({
         activeTools: [

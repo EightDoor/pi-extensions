@@ -177,11 +177,13 @@ export function setChromeDevtoolsSessionOwner(
   sessionOwnerByApi.set(pi, owner);
   if (entries) {
     const ownership = restoredOwnership(entries);
-    if (ownership) {
-      const existing = ownedBySession.get(owner);
-      ownership.available ??= existing?.available;
-      ownership.mode ??= existing?.mode;
-      ownedBySession.set(owner, ownership);
+    if (ownership) ownedBySession.set(owner, ownership);
+    else {
+      // Tree navigation can reuse a manager while replacing its active branch.
+      // Never lend another branch's activation or policy provenance to it.
+      ownedBySession.delete(owner);
+      availableToolsByApi.delete(pi);
+      modeByApi.delete(pi);
     }
   }
   const ownership = ownedBySession.get(owner);
