@@ -77,7 +77,6 @@ These TypeSafe AI integrations are experimental and may change as they are evalu
 | Package | Use it for | Install |
 | --- | --- | --- |
 | [`pi-chrome-devtools`](./packages/pi-chrome-devtools) | Inspect tabs, navigate pages, evaluate JavaScript, and capture screenshots through Chrome DevTools Protocol. | `pi install npm:@narumitw/pi-chrome-devtools` |
-| [`pi-firecrawl`](./packages/pi-firecrawl) | Scrape pages, crawl websites, discover URLs, and search the web with Firecrawl. | `pi install npm:@narumitw/pi-firecrawl` |
 
 ### Task and workspace workflows
 
@@ -267,6 +266,7 @@ The following packages remain available as source references but are excluded fr
 - `pi-codex-accounts` — replaced by [`pi-accounts`](./packages/pi-accounts)
 - `pi-codex-usage` — replaced by [`pi-usage`](./packages/pi-usage)
 - [`pi-cbmem`](./deprecated/pi-cbmem) — deprecated without a replacement because a simple benchmark found insufficient benefit and substantially higher token usage
+- [`pi-firecrawl`](./deprecated/pi-firecrawl) — replaced by Firecrawl MCP through Pi's native MCP support; follow the [migration instructions](./deprecated/pi-firecrawl/README.md#-migration-to-native-mcp)
 - `pi-retry` — replaced by Pi's built-in provider retry and timeout behavior
 - `pi-google-genai` — replaced by the `grounding-with-google-genai` agent skill
 - `pi-image-drop` — deprecated without a replacement

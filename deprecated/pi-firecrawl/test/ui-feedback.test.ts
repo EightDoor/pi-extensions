@@ -337,7 +337,7 @@ for (const entry of hintCases) {
 }
 
 test("codemode setup documents additive defaultTools rather than an extension-excluding CLI allowlist", () => {
-  const readme = readFileSync("packages/pi-firecrawl/README.md", "utf8");
+  const readme = readFileSync("deprecated/pi-firecrawl/README.md", "utf8");
   assert.ok(readme.includes('"defaultTools": ["+codemode"]'));
   assert.ok(!readme.includes("pi --tools read,bash,edit,write,codemode"));
   assert.ok(readme.includes("allowlist for extension tools too"));
