@@ -1,7 +1,7 @@
 {
   "name": "@narumitw/pi-firecrawl",
   "version": "0.51.0",
-  "description": "Pi extension that exposes Firecrawl web scraping and crawling tools.",
+  "description": "Deprecated Pi extension that exposes Firecrawl web scraping and crawling tools.",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -48,6 +48,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/narumiruna/pi-extensions",
-    "directory": "packages/pi-firecrawl"
+    "directory": "deprecated/pi-firecrawl"
   }
 }

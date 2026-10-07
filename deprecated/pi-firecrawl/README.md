@@ -1,8 +1,13 @@
-# 🔥 pi-firecrawl — Scrape and Research the Web from Pi
+# 🔥 pi-firecrawl — Deprecated Firecrawl Integration
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-firecrawl)](https://www.npmjs.com/package/@narumitw/pi-firecrawl) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Add [Firecrawl](https://www.firecrawl.dev/) tools to Pi for web search, scraping, crawling, URL discovery, and content extraction.
+> [!WARNING]
+> `@narumitw/pi-firecrawl` is deprecated in this repository, retained under `deprecated/` for reference, and excluded from active workspace checks, tests, releases, and maintenance.
+> Use [Firecrawl MCP](https://github.com/firecrawl/firecrawl-mcp-server) through [Pi's native MCP support](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) instead; follow the [migration instructions](#-migration-to-native-mcp) below.
+> This repository change does not deprecate published versions in the npm registry or publish a new release.
+
+This archived extension added Firecrawl tools to Pi for web search, scraping, crawling, URL discovery, and content extraction.
 
 ## ✨ Features
 
@@ -14,33 +19,86 @@ Add [Firecrawl](https://www.firecrawl.dev/) tools to Pi for web search, scraping
 - Bounds model-visible output while preserving oversized responses in private temporary files.
 - Reads the API key from the environment and never logs, displays, or stores it.
 
-## 📦 Install
+## 📦 Archived reference
 
-Install persistently:
+The source, tests, and changelog remain here as a historical reference and receive no feature, compatibility, or security fixes.
+The archived package declares a build-backed `dist/index.ts`; generated output is not tracked.
+Do not install it for new sessions; migrate to native MCP instead.
 
-```bash
-pi install npm:@narumitw/pi-firecrawl
-```
+Pi extensions and local MCP servers run with your user permissions.
+Review third-party code before installing or launching it.
 
-Run once from npm:
+## 🔄 Migration to native MCP
 
-```bash
-FIRECRAWL_API_KEY=fc-... pi -e npm:@narumitw/pi-firecrawl
-```
-
-Build and run a local checkout from the repository root:
+Finish active Firecrawl calls and exit Pi before switching integrations.
+Remove the npm extension from each scope where it was installed:
 
 ```bash
-npm --workspace @narumitw/pi-firecrawl run build
-FIRECRAWL_API_KEY=fc-... pi -e ./packages/pi-firecrawl
+pi uninstall npm:@narumitw/pi-firecrawl
 ```
 
-The package declares `dist/index.ts`, so build a local checkout before loading its package directory.
+Use `pi uninstall --local npm:@narumitw/pi-firecrawl` for a project installation.
+Remove any explicit extension paths, `-e` arguments, or extension-tool selections that still load the archived package.
+A repository installation no longer includes Firecrawl in the root entrypoint list.
 
-Pi extensions run with your user permissions.
-Review third-party extension source before installing it.
+Keep `FIRECRAWL_API_KEY` in your environment; do not paste the key into chat or commit it to project settings.
+Merge this server entry into the user-level `<getAgentDir()>/mcp.json` (normally `~/.pi/agent/mcp.json`), preserving any existing servers and other fields:
 
-## 🚀 Quick start
+```json
+{
+  "mcpServers": {
+    "firecrawl": {
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+      },
+      "exposure": "hidden",
+      "toolExposure": {
+        "firecrawl_scrape": "codemode",
+        "firecrawl_crawl": "codemode",
+        "firecrawl_check_crawl_status": "codemode",
+        "firecrawl_map": "codemode",
+        "firecrawl_search": "codemode"
+      }
+    }
+  }
+}
+```
+
+The official server offers additional capabilities; this example exposes only the five replacement capabilities for reviewable migration.
+Run `pi mcp list` to verify the connection, then start a new Pi session and inspect `/mcp`.
+Pi normally activates codemode for servers with codemode tools; if `autoEnableCodemode` is disabled, enable codemode explicitly or choose another exposure.
+No scrape, search, or crawl is needed merely to check the connection.
+
+### Tool and settings mapping
+
+With the server named `firecrawl`, tools receive the `mcp__firecrawl__` prefix:
+
+| Archived extension | Native MCP replacement |
+| --- | --- |
+| `firecrawl_scrape` | `mcp__firecrawl__firecrawl_scrape` |
+| `firecrawl_crawl` | `mcp__firecrawl__firecrawl_crawl` |
+| `firecrawl_crawl_status` | `mcp__firecrawl__firecrawl_check_crawl_status` |
+| `firecrawl_map` | `mcp__firecrawl__firecrawl_map` |
+| `firecrawl_search` | `mcp__firecrawl__firecrawl_search` |
+| `firecrawl_load` | Pi's built-in `tool_search` with `deferred` exposure, or codemode discovery; no extension loader. |
+| `/firecrawl` | `/mcp` for server state, connection, and tool exposure. |
+| `toolMode` | `codemode`, `deferred`, or `direct` exposure for each selected MCP tool. |
+| `tools` availability | Set unwanted tools to `hidden`; do not expose the entire server unintentionally. |
+
+Update saved tool allowlists and automation, including Plan mode selections, to the new names.
+Inspect schemas with codemode's `describeTool()` before porting calls: API options, crawl polling, result formats, and errors are server-owned and are not guaranteed to match this extension.
+
+Pi does not read `pi-firecrawl.json` or legacy `pi-firecrawl-settings.json` for native MCP.
+Leave those files untouched as backups until the replacement works; there is no automatic conversion or deletion.
+For a custom endpoint, explicitly configure the server's documented `FIRECRAWL_API_URL` in its `env` after reviewing its API requirements; the extension's `FIRECRAWL_BASE_URL` alias is not an automatic migration path.
+
+The extension's activity status, settings menu, 50 KB artifacts, and artifact cleanup are not preserved as contracts.
+Pi owns MCP result truncation and temporary output, and the MCP server owns network retries.
+URLs, queries, and extraction inputs still go to the configured Firecrawl service; review its privacy policy before sending private data.
+
+## 🚀 Historical quick start
 
 Set `FIRECRAWL_API_KEY`, enable Pi's codemode with `"defaultTools": ["+codemode"]` in Pi's `settings.json`, and start Pi with the extension.
 Ask the agent to search or scrape a page through Firecrawl using codemode.
@@ -227,7 +285,7 @@ Call `firecrawl_crawl` to start a crawl with Markdown extraction:
 ## 🗂️ Package layout
 
 ```text
-packages/pi-firecrawl/
+deprecated/pi-firecrawl/
 ├── src/                               # Authoritative implementation and helpers
 │   ├── index.ts                       # Thin Pi entrypoint
 │   └── firecrawl.ts                   # Web tools and command orchestration

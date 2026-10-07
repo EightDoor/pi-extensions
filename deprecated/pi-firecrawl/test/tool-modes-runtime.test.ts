@@ -92,7 +92,7 @@ for (const fixture of [
         noExtensions: true,
         noSkills: true,
         noContextFiles: true,
-        additionalExtensionPaths: ["builtin:codemode", resolve("packages/pi-firecrawl")],
+        additionalExtensionPaths: ["builtin:codemode", resolve("deprecated/pi-firecrawl")],
       });
       await loader.reload();
       assert.deepEqual(loader.getExtensions().errors, []);

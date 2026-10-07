@@ -97,7 +97,7 @@ for (const toolMode of ["codemode", "direct", "lazy"] as const) {
             noExtensions: true,
             noSkills: true,
             noContextFiles: true,
-            additionalExtensionPaths: ["builtin:codemode", resolve("packages/pi-firecrawl")],
+            additionalExtensionPaths: ["builtin:codemode", resolve("deprecated/pi-firecrawl")],
           });
           await loader.reload();
           assert.deepEqual(loader.getExtensions().errors, []);
