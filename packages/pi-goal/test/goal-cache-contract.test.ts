@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { builtinTool, createMockContext, createMockPi } from "../../../test/support.js";
 import { createGoalContextContract, createInactiveGoalContextContract } from "../src/goal-contract.js";
 import {
@@ -107,6 +107,14 @@ function assistantMessage(content: string) {
     role: "assistant",
     content: [{ type: "text", text: content }],
     stopReason: "stop",
+  };
+}
+
+function timedAssistantMessage(content: string, timestamp: number, totalTokens: number) {
+  return {
+    ...assistantMessage(content),
+    timestamp,
+    usage: { input: totalTokens, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens },
   };
 }
 
@@ -865,7 +873,7 @@ test("compaction without Goal history publishes no inactive contract", async () 
   assert.equal(mock.sentUserMessages.length, 0);
 });
 
-test("deferred streaming persistence is a separate prefix transition, not the idle-compaction guarantee", async () => {
+test("mid-run compaction keeps the restored contract position after deferred persistence", async () => {
   const goal = {
     id: "deferred-compaction-contract",
     text: "Survive streaming compaction",
@@ -879,20 +887,28 @@ test("deferred streaming persistence is a separate prefix transition, not the id
   };
   const restored = restoreStoredGoalForTest(goal, [], { isIdle: () => false });
   const retained = [
-    { role: "compactionSummary", content: "Compacted work" },
-    assistantMessage("Retained assistant tail"),
+    { role: "compactionSummary", content: "Compacted work", timestamp: 1_000 },
+    timedAssistantMessage("Retained assistant tail", 1_100, 400),
   ];
-  await restored.mock.events.get("session_compact")?.[0]?.({ reason: "overflow", willRetry: true }, restored.ctx);
-  const contract = { role: "custom", ...restoredGoalContract(restored.mock), timestamp: 123 };
+  const clock = vi.spyOn(Date, "now").mockReturnValue(2_000);
+  try {
+    await restored.mock.events.get("session_compact")?.[0]?.({ reason: "overflow", willRetry: true }, restored.ctx);
+  } finally {
+    clock.mockRestore();
+  }
+  // Installed Pi queues triggerTurn:false messages while streaming and persists
+  // them when the turn ends, after the retry output; its timestamp is that later time.
+  const contract = { role: "custom", ...restoredGoalContract(restored.mock), timestamp: 2_300 };
   const retry = await captureRequest(restored.mock, restored.ctx, "Retry context", retained, false);
-  // Installed Pi queues triggerTurn:false messages while streaming and flushes
-  // after the retry output. Tail restoration does not fix this delayed delivery.
-  const delivered = [...retained, assistantMessage("Retry output before queued publication"), contract];
+  const delivered = [
+    ...retained,
+    timedAssistantMessage("Retry output before queued publication", 2_100, 500),
+    contract,
+  ];
   const afterDelivery = await captureRequest(restored.mock, restored.ctx, "After retry", delivered, false);
   const retryInput = (await serializeProviderRequest(retry)).input as unknown[];
   const deliveredInput = (await serializeProviderRequest(afterDelivery)).input as unknown[];
-  assert.notDeepEqual(deliveredInput.slice(0, retryInput.length), retryInput);
-  assert.deepEqual(deliveredInput.slice(0, retryInput.length - 1), retryInput.slice(0, -1));
+  assert.deepEqual(deliveredInput.slice(0, retryInput.length), retryInput);
   const next = await captureRequest(
     restored.mock,
     restored.ctx,
