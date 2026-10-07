@@ -34,6 +34,29 @@ export interface ProgressWidgetDependencies {
   clearTimeout?: typeof globalThis.clearTimeout;
 }
 
+function prepareProgressArguments(value: unknown): { steps: ProgressStep[] } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return validateProgressArguments(value);
+  }
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.steps)) return validateProgressArguments(value);
+
+  const normalized = {
+    ...input,
+    steps: input.steps.map((entry) => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+      const step = entry as Record<string, unknown>;
+      const status = step.status;
+      const isNonBlockedStatus = status === "pending" || status === "in_progress" || status === "completed";
+      if (!isNonBlockedStatus || !Object.hasOwn(step, "reason")) return entry;
+      const withoutReason = { ...step };
+      delete withoutReason.reason;
+      return withoutReason;
+    }),
+  };
+  return validateProgressArguments(normalized);
+}
+
 export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: ProgressWidgetDependencies = {}): void {
   const readSettings = dependencies.loadSettings ?? loadProgressSettings;
   const scheduleTimeout = dependencies.setTimeout ?? globalThis.setTimeout;
@@ -134,7 +157,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
       "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
     ],
     parameters: ProgressParameters,
-    prepareArguments: validateProgressArguments,
+    prepareArguments: prepareProgressArguments,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();
       if (!ownsSession(ctx)) {
