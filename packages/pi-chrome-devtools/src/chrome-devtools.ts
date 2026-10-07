@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { shutdownManagedBrowser, startManagedBrowserSession, syncManagedBrowserSettings } from "./browser-manager.js";
 import { setActivePageId } from "./cdp-client.js";
 import {
-  availableChromeDevtoolsTools,
   configureChromeDevtoolsToolExposure,
   initializeAvailableChromeDevtoolsTools,
   registerChromeDevtoolsCapabilities,
@@ -116,9 +115,7 @@ export default function chromeDevtools(pi: ExtensionAPI) {
     const availableTools =
       settings.kind === "loaded" && settings.settings.tools
         ? settings.settings.tools
-        : settings.kind === "loaded" && settings.settings.toolMode === "lazy"
-          ? availableChromeDevtoolsTools(pi)
-          : allChromeDevtoolsTools(ctx.sessionManager);
+        : allChromeDevtoolsTools(ctx.sessionManager);
     configureChromeDevtoolsToolExposure(
       pi,
       availableTools,

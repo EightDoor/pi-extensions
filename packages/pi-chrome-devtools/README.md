@@ -193,7 +193,7 @@ Confirmed menu changes apply before the next browser connection and close only a
 Manual JSON edits and unpacked-extension changes apply after `/reload` or session replacement.
 
 `toolMode` accepts `codemode` (default), `lazy`, or `direct` and is user-only. It applies at session start, including `/reload`; availability edits apply immediately without overwriting a pending mode change.
-Missing settings and valid older files without `toolMode` now use codemode. To restore the previous loader behavior, save `"toolMode": "lazy"` and reload. Without an explicit catalog, codemode and direct make all stable capabilities available; lazy retains the initial host catalog.
+Missing settings and valid older files without `toolMode` now use codemode. To restore the previous loader behavior, save `"toolMode": "lazy"` and reload. Without an explicit catalog, all modes make the stable capabilities available; the active declaration list does not determine configured availability.
 A valid saved catalog is restored on Pi startup and `/reload`. Invalid settings are ignored with a warning and cannot be overwritten by a save.
 A missing file is created by the first confirmed browser or tool setting.
 Within one Pi process, all browser and tool saves run in invocation order, reread the latest valid document, publish by temporary-file rename, and preserve unknown fields.

@@ -42,11 +42,11 @@ test("main menu presents consequential state and five goal-oriented actions with
 
     await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-    assert.match(rendered, /Tool catalog: 2 of 5 available · not\s+saved/);
+    assert.match(rendered, /Tool catalog: 5 of 5 available · not\s+saved/);
     assert.match(rendered, /Browser: not started · attaches or\s+launches on first use/);
     assert.match(rendered, /Endpoint: http:\/\/127\.0\.0\.1:9222/);
     assert.match(rendered, /[→›] Choose available browser tools…/);
-    assert.match(rendered, /Make all browser tools available…/);
+    assert.match(rendered, /Make all browser tools unavailable…/);
     assert.match(rendered, /Browser status/);
     assert.match(rendered, /Browser settings/);
     assert.match(rendered, /Help/);
@@ -316,7 +316,7 @@ test("bulk preview and nested detail navigation return without side effects", as
 
     await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-    assert.match(details[0] ?? "", /Proposed availability: 5\/5/);
+    assert.match(details[0] ?? "", /Proposed availability: 0\/5/);
     assert.match(details[1] ?? "", /does not probe the endpoint or launch Chrome/);
     assert.match(details[2] ?? "", /DevTools endpoint/);
     assert.match(details[2] ?? "", /Auto-launch/);

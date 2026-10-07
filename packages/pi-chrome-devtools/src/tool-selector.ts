@@ -18,6 +18,7 @@ import {
   CHROME_DEVTOOLS_LOAD_TOOL_NAME,
   chromeDevtoolsToolExposureMode,
   chromeDevtoolsToolMode,
+  configuredChromeDevtoolsTools,
 } from "./lazy-tools.js";
 import { invalidateWebMcpOperations, state, webMcpEnabled } from "./runtime.js";
 import { loadSettings, saveSettings, settingsFilePath } from "./settings.js";
@@ -118,6 +119,7 @@ async function transactSelectedToolsNow(
   }
   const previousActiveTools = pi.getActiveTools();
   const previousAvailableTools = availableChromeDevtoolsTools(pi);
+  const previousConfiguredTools = configuredChromeDevtoolsTools(pi);
   try {
     const previousWebMcpTools = previousAvailableTools.filter(isWebMcpToolName);
     const selectedWebMcpTools = selectedTools.filter(isWebMcpToolName);
@@ -131,8 +133,7 @@ async function transactSelectedToolsNow(
     if (expectedGeneration !== state.sessionGeneration) return "failed";
     let rollbackError: unknown;
     try {
-      applyAvailableChromeDevtoolsTools(pi, previousAvailableTools);
-      pi.setActiveTools(previousActiveTools);
+      applyAvailableChromeDevtoolsTools(pi, previousConfiguredTools, previousActiveTools);
     } catch (caught) {
       rollbackError = caught;
     }

@@ -779,7 +779,7 @@ test("Chrome DevTools main menu dispatches declarative actions at narrow widths"
   });
   await mock.commands.get("chrome-devtools")?.handler("", ctx);
   assert.ok(renders.flat().every((line) => visibleWidth(line) <= 20));
-  assert.match(renders.flat().join("\n"), /Tool catalog: 0 of 5/);
+  assert.match(renders.flat().join("\n"), /Tool catalog: 5 of 5/);
   assert.deepEqual(notifications, []);
 });
 

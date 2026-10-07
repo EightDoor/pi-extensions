@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, vi } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 import { createMockPi } from "./mock-pi.js";
+
+// Load the large SDK dependency outside the per-test budget. Extension imports
+// still happen fresh after the fixture sets PI_CODING_AGENT_DIR.
+beforeAll(async () => {
+  await import("@earendil-works/pi-coding-agent");
+});
 
 async function fixture(run: (root: string) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "chrome-tool-modes-"));

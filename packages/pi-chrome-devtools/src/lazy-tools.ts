@@ -103,11 +103,9 @@ export function setChromeDevtoolsSessionOwner(pi: ExtensionAPI, owner: object) {
 
 export function initializeAvailableChromeDevtoolsTools(pi: ExtensionAPI) {
   if (availableToolsByApi.has(pi)) return;
-  const activeTools = new Set(pi.getActiveTools());
-  setAvailableTools(
-    pi,
-    CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => activeTools.has(name)),
-  );
+  // Availability is configuration, not the provider-visible declaration list.
+  // In particular, codemode starts with no active capability names.
+  setAvailableTools(pi, CHROME_DEVTOOLS_TOOL_NAMES);
 }
 
 export function configureChromeDevtoolsToolExposure(
@@ -151,19 +149,23 @@ export function requireEagerChromeDevtoolsToolExposure(pi: ExtensionAPI) {
   publishActiveTools(pi, unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...available]), active);
 }
 
-export function applyAvailableChromeDevtoolsTools(pi: ExtensionAPI, availableTools: readonly ChromeDevToolsToolName[]) {
+export function applyAvailableChromeDevtoolsTools(
+  pi: ExtensionAPI,
+  availableTools: readonly ChromeDevToolsToolName[],
+  restoredActiveTools?: readonly string[],
+) {
   setAvailableTools(pi, availableTools);
   const available = effectiveAvailableTools(pi);
   const lazyExposure = lazyExposureByApi.get(pi) === true;
-  const active = pi
-    .getActiveTools()
-    .filter(
-      (name) =>
-        !CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) ||
-        (lazyExposure && available.has(name as ChromeDevToolsToolName)),
-    );
+  const before = restoredActiveTools
+    ? restoreCapabilityPositions(pi.getActiveTools(), restoredActiveTools, available)
+    : pi.getActiveTools();
+  const active = before.filter(
+    (name) =>
+      !CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) ||
+      (lazyExposure && available.has(name as ChromeDevToolsToolName)),
+  );
   const mode = chromeDevtoolsToolMode(pi);
-  const before = pi.getActiveTools();
   const eagerTools =
     mode === "codemode"
       ? before.filter((name) => available.has(name as ChromeDevToolsToolName))
@@ -316,6 +318,23 @@ function compatString(value: unknown, key: string) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   return typeof record[key] === "string" ? record[key] : undefined;
+}
+
+// Rollback may reinsert capabilities, but must not undo unrelated additions,
+// removals, or ordering changes made while persistence was awaiting I/O.
+function restoreCapabilityPositions(
+  current: readonly string[],
+  previous: readonly string[],
+  available: ReadonlySet<ChromeDevToolsToolName>,
+) {
+  const restored = [...current];
+  for (const [index, name] of previous.entries()) {
+    if (!available.has(name as ChromeDevToolsToolName) || restored.includes(name)) continue;
+    const following = previous.slice(index + 1).find((candidate) => restored.includes(candidate));
+    const insertion = following === undefined ? restored.length : restored.indexOf(following);
+    restored.splice(insertion, 0, name);
+  }
+  return restored;
 }
 
 function unique(values: readonly string[]) {
