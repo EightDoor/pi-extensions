@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.54.10
+
+### Patch Changes
+
+- 847a17f: Append missing Goal contracts after retained history following compaction so transient restoration and immediately persisted contracts use the same message position, preserving the retained request prefix. Persist missing inactive contracts at the compaction boundary instead of repeatedly restoring them at a moving tail.
+
 ## 0.54.9
 
 ### Patch Changes
