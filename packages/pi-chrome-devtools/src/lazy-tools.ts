@@ -109,6 +109,23 @@ class ActivationProvenanceError extends Error {
   }
 }
 
+function formatProvenanceWarning(error: ActivationProvenanceError) {
+  return sanitizeChromeDevtoolsDisplay(
+    `Activation ownership could not be saved: ${error.message}. Activation is not rolled back; durable ownership may be incomplete until a later loader call or lifecycle update retries successfully.`,
+  );
+}
+
+function publishLifecycleTools(pi: ExtensionAPI, names: string[], before: readonly string[]) {
+  try {
+    publishActiveTools(pi, names, before);
+  } catch (error) {
+    if (!(error instanceof ActivationProvenanceError)) throw error;
+    // Exposure has already succeeded. Lifecycle events are not rejected saves;
+    // keep the accepted policy and let callers warn without stopping setup.
+    return formatProvenanceWarning(error);
+  }
+}
+
 function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
   ownership.available = new Set(configuredChromeDevtoolsTools(pi));
   ownership.mode = chromeDevtoolsToolMode(pi);
@@ -126,7 +143,9 @@ function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
   }
 }
 
-function restoredOwnership(entries: readonly { type: string; customType?: string; data?: unknown }[]) {
+function restoredOwnership(
+  entries: readonly { type: string; customType?: string; data?: unknown }[],
+): ActivationOwnership | undefined {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry.type !== "custom" || entry.customType !== PROVENANCE_ENTRY) continue;
@@ -224,8 +243,18 @@ export function setChromeDevtoolsSessionOwner(
   sessionOwnerByApi.set(pi, owner);
   if (entries) {
     const ownership = restoredOwnership(entries);
-    if (ownership) ownedBySession.set(owner, ownership);
-    else {
+    if (ownership) {
+      const pending = ownedBySession.get(owner);
+      // An append can advance this branch before persistence fails. Restoring
+      // that same validated policy must not erase its pending retry marker.
+      if (
+        pending &&
+        pending.serialized === undefined &&
+        ownership.serialized === JSON.stringify(ownershipData(pending))
+      )
+        ownership.serialized = undefined;
+      ownedBySession.set(owner, ownership);
+    } else {
       // Tree navigation can reuse a manager while replacing its active branch.
       // Never lend another branch's activation or policy provenance to it.
       ownedBySession.delete(owner);
@@ -287,7 +316,7 @@ export function configureChromeDevtoolsToolExposure(
     ...(mode === "lazy" ? [CHROME_DEVTOOLS_LOAD_TOOL_NAME] : []),
     ...exposedTools,
   ]);
-  publishActiveTools(pi, unique([...before.filter((name) => target.has(name)), ...target]), before);
+  return publishLifecycleTools(pi, unique([...before.filter((name) => target.has(name)), ...target]), before);
 }
 
 export function requireEagerChromeDevtoolsToolExposure(pi: ExtensionAPI) {
@@ -295,7 +324,7 @@ export function requireEagerChromeDevtoolsToolExposure(pi: ExtensionAPI) {
   lazyExposureByApi.set(pi, false);
   const active = pi.getActiveTools();
   const available = availableChromeDevtoolsTools(pi);
-  publishActiveTools(pi, unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...available]), active);
+  return publishLifecycleTools(pi, unique([...active, CHROME_DEVTOOLS_LOAD_TOOL_NAME, ...available]), active);
 }
 
 export function applyAvailableChromeDevtoolsTools(
@@ -428,9 +457,7 @@ export function createChromeDevtoolsLoadTool(pi: ExtensionAPI) {
         if (!(error instanceof ActivationProvenanceError)) throw error;
         // Native loading must remain additive. Activation succeeded; do not
         // remove tools or claim it failed because its bookkeeping could not save.
-        provenanceWarning = sanitizeChromeDevtoolsDisplay(
-          `Activation ownership could not be saved: ${error.message}. Activation is not rolled back; durable ownership may be incomplete until a later loader call retries successfully.`,
-        );
+        provenanceWarning = formatProvenanceWarning(error);
       }
 
       const text =

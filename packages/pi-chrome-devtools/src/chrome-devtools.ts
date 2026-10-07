@@ -127,12 +127,14 @@ export default function chromeDevtools(pi: ExtensionAPI) {
       : settings.kind === "loaded" && settings.settings.tools
         ? settings.settings.tools
         : allChromeDevtoolsTools(ctx.sessionManager);
-    configureChromeDevtoolsToolExposure(
+    const provenanceWarning = configureChromeDevtoolsToolExposure(
       pi,
       availableTools,
       ctx.model,
       preserveToolPolicy ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
     );
+    if (generation !== state.sessionGeneration) return;
+    if (provenanceWarning) ctx.ui.notify(provenanceWarning, "warning");
     const active = new Set(pi.getActiveTools());
     if (
       chromeDevtoolsToolMode(pi) === "codemode" &&
@@ -147,9 +149,11 @@ export default function chromeDevtools(pi: ExtensionAPI) {
   });
 
   pi.on("model_select", (event, ctx) => {
+    const generation = state.sessionGeneration;
     invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools model and tool exposure changed");
     if (!supportsNativeDeferredToolLoading(event.model)) {
-      requireEagerChromeDevtoolsToolExposure(pi);
+      const provenanceWarning = requireEagerChromeDevtoolsToolExposure(pi);
+      if (generation === state.sessionGeneration && provenanceWarning) ctx.ui.notify(provenanceWarning, "warning");
     }
   });
 
