@@ -14,7 +14,7 @@ for (const native of [false, true]) {
           native,
           toolMode: "codemode",
           tools,
-          extensionPath: resolve("packages/pi-chrome-devtools/test/fixtures/predecessor-loader.ts"),
+          extensionPath: resolve("deprecated/pi-chrome-devtools/test/fixtures/predecessor-loader.ts"),
         },
         async ({ session, faux, fauxModule, file, setExtensionPath }) => {
           if (native) {
@@ -35,7 +35,7 @@ for (const native of [false, true]) {
           const document = await readFile(file, "utf8");
           const oldPrompt = session.systemPrompt;
           const owner = session.sessionManager;
-          setExtensionPath(resolve("packages/pi-chrome-devtools"));
+          setExtensionPath(resolve("deprecated/pi-chrome-devtools"));
           await session.reload();
           assert.equal(session.sessionManager, owner);
           assert.deepEqual(

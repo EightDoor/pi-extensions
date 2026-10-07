@@ -1,4 +1,8 @@
-# Pi Chrome DevTools browser setup reference
+# Archived Pi Chrome DevTools browser setup reference
+
+> [!WARNING]
+> This document describes the deprecated extension, not the replacement MCP server.
+> Follow the [native MCP migration guide](../README.md#-migration-to-native-mcp) for maintained browser tooling.
 
 [Back to README](../README.md)
 

@@ -1,7 +1,7 @@
 {
   "name": "@narumitw/pi-chrome-devtools",
   "version": "0.54.0",
-  "description": "Pi extension that exposes Chrome DevTools Protocol tools.",
+  "description": "Deprecated Pi extension that exposes Chrome DevTools Protocol tools.",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -51,6 +51,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/narumiruna/pi-extensions",
-    "directory": "packages/pi-chrome-devtools"
+    "directory": "deprecated/pi-chrome-devtools"
   }
 }
