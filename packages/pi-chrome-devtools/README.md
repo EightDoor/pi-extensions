@@ -46,7 +46,7 @@ Review third-party extension source before installing it.
 
 ## 🚀 Quick start
 
-If `codemode` is already in your active tool list, no additional Pi setting is needed.
+If `codemode` is already in your active tool list, no additional Pi setting is needed. Startup warns when enabled capabilities require codemode but the host tool is inactive; empty catalogs and fully explicit host selections do not produce this warning.
 Otherwise, enable Pi's built-in codemode in Pi's `settings.json`:
 
 ```json
@@ -195,7 +195,7 @@ Manual JSON edits and unpacked-extension changes apply after `/reload` or sessio
 `toolMode` accepts `codemode` (default), `lazy`, or `direct` and is user-only. It applies at session start, including `/reload`; availability edits apply immediately without overwriting a pending mode change.
 Missing settings and valid older files without `toolMode` now use codemode. To restore the previous loader behavior, save `"toolMode": "lazy"` and reload. Without an explicit catalog, all modes make the stable capabilities available; the active declaration list does not determine configured availability.
 A first `/reload` from the previous loader implementation clears carried-over Chrome declarations when applying codemode; enabled capabilities remain callable through codemode. Pi exposes no activation-origin API, so an active loader plus Chrome capabilities without known session provenance is treated as the predecessor's cohort. Capability-only host selections and known explicit activations are preserved. This is an intentional reload-time model-visible prefix transition, not an ordinary-turn change.
-Activation provenance is stored as versioned, non-model session metadata and restored from the current branch on session start, so transcript-restoring resume/fork paths can apply codemode without carrying extension-owned declarations forward. Recordless sessions retain the legacy loader-cohort migration policy; unknown capability-only selections remain conservative host selections.
+Activation provenance is stored as versioned, non-model session metadata and restored from the current branch on session start; a branch without valid provenance drops abandoned-branch caches, so transcript-restoring resume/fork paths can apply codemode without carrying extension-owned declarations forward. Recordless sessions retain the legacy loader-cohort migration policy; unknown capability-only selections remain conservative host selections.
 A valid saved catalog is restored on Pi startup and `/reload`. Invalid settings retain the known effective availability and running mode with a warning; without a recoverable catalog, only already active capabilities are retained and no new capability is enabled. A fresh invalid configuration therefore leaves browser capabilities disabled until the file is repaired. Invalid settings cannot be overwritten by a save.
 A missing file is created by the first confirmed browser or tool setting.
 Within one Pi process, all browser and tool saves run in invocation order, reread the latest valid document, publish by temporary-file rename, and preserve unknown fields.
