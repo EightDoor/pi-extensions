@@ -63,11 +63,11 @@ test("chrome-devtools factory registers without reading action methods", () => {
   assert.ok(mock.events.has("session_start"));
 });
 
-test("chrome-devtools registers codemode CDP tools without a loader", () => {
+test("chrome-devtools factory registers inactive codemode tools before session_start", () => {
   const mock = createMockPi();
   chromeDevtools(mock.pi);
 
-  assert.equal(mock.tools.length, 7);
+  assert.equal(mock.tools.length, 8);
   assert.deepEqual(
     mock.tools.map((tool) => tool.name),
     [
@@ -78,9 +78,12 @@ test("chrome-devtools registers codemode CDP tools without a loader", () => {
       "chrome_devtools_screenshot",
       "chrome_devtools_webmcp_list_tools",
       "chrome_devtools_webmcp_call_tool",
+      LOAD_TOOL,
     ],
   );
-  for (const tool of mock.tools.filter((candidate) => candidate.name !== LOAD_TOOL)) {
+  for (const tool of mock.tools) {
+    assert.equal(tool.defaultActive, false);
+    assert.equal(tool.exposure, "codemode");
     assert.equal(tool.promptSnippet, undefined);
   }
   assert.ok(mock.commands.has("chrome-devtools"));

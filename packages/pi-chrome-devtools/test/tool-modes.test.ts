@@ -122,3 +122,34 @@ test("mode validation blocks corrupt documents and recovers after atomic failure
     assert.equal(result.kind, "loaded");
     if (result.kind === "loaded") assert.equal(result.settings.toolMode, "direct");
   }));
+
+for (const cohort of ["capability-only", "unknown-loader", "known-explicit-loader"] as const) {
+  test(`first codemode configuration handles ${cohort} provenance`, async () =>
+    fixture(async () => {
+      const { CORE_CHROME_DEVTOOLS_TOOL_NAMES: names } = await import("../src/tool-names.js");
+      const { default: extension } = await import("../src/chrome-devtools.js");
+      const { ctx } = createMockContext();
+      if (cohort === "known-explicit-loader") {
+        const previous = createMockPi({ activeTools: ["other-a", names[0], "other-b"] });
+        extension(previous.pi);
+        await previous.events.get("session_start")?.[0]?.({}, ctx);
+      }
+      const mock = createMockPi({
+        activeTools: [
+          "other-a",
+          ...(cohort === "capability-only" ? [] : ["chrome_devtools_load"]),
+          names[0],
+          "other-b",
+        ],
+      });
+      extension(mock.pi);
+      await mock.events.get("session_start")?.[0]?.({}, ctx);
+      assert.deepEqual(mock.rawPi.getActiveTools(), [
+        "other-a",
+        ...(cohort === "unknown-loader" ? [] : [names[0]]),
+        "other-b",
+      ]);
+      assert.equal(mock.tools.find((tool) => tool.name === "chrome_devtools_load")?.exposure, "hidden");
+      await mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+    }));
+}

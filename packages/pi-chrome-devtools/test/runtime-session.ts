@@ -18,7 +18,7 @@ import type { ChromeDevToolsToolMode } from "../src/settings.js";
 
 const fauxSpecifier = "@earendil-works/pi-ai/providers/faux";
 export async function withChromeRuntime(
-  options: { native: boolean; toolMode: ChromeDevToolsToolMode; tools?: readonly string[] },
+  options: { native: boolean; toolMode: ChromeDevToolsToolMode; tools?: readonly string[]; extensionPath?: string },
   run: (fixture: {
     session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     faux: ReturnType<typeof import("@earendil-works/pi-ai/providers/faux")["createFauxCore"]>;
@@ -26,6 +26,7 @@ export async function withChromeRuntime(
     model: NonNullable<ExtensionContext["model"]>;
     file: string;
     errors: unknown[];
+    setExtensionPath: (path: string) => void;
   }) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), "chrome-runtime-regression-"));
@@ -69,6 +70,7 @@ export async function withChromeRuntime(
     const builtinSpecifier = new URL("extensions/index.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
       .href;
     const { builtInExtensions } = (await import(builtinSpecifier)) as { builtInExtensions: InlineExtension[] };
+    const extensionPaths = ["builtin:codemode", options.extensionPath ?? resolve("packages/pi-chrome-devtools")];
     const loader = new DefaultResourceLoader({
       cwd: root,
       agentDir,
@@ -77,7 +79,7 @@ export async function withChromeRuntime(
       noExtensions: true,
       noSkills: true,
       noContextFiles: true,
-      additionalExtensionPaths: ["builtin:codemode", resolve("packages/pi-chrome-devtools")],
+      additionalExtensionPaths: extensionPaths,
     });
     await loader.reload();
     assert.deepEqual(loader.getExtensions().errors, []);
@@ -98,7 +100,17 @@ export async function withChromeRuntime(
       uiContext: (context.ctx as ExtensionContext).ui,
       onError: (error) => errors.push(error),
     });
-    await run({ session, faux, fauxModule, model, file, errors });
+    await run({
+      session,
+      faux,
+      fauxModule,
+      model,
+      file,
+      errors,
+      setExtensionPath: (path) => {
+        extensionPaths[1] = path;
+      },
+    });
     assert.deepEqual(errors, []);
   } finally {
     await session?.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

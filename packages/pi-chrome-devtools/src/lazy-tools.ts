@@ -54,6 +54,16 @@ const definitionsByApi = new WeakMap<ExtensionAPI, ToolDefinition[]>();
 export function registerChromeDevtoolsCapabilities(pi: ExtensionAPI, tools: ToolDefinition[]) {
   definitionsByApi.set(pi, tools);
   for (const tool of tools) pi.registerTool({ ...tool, exposure: "codemode", defaultActive: false });
+  // Keep a carried-over predecessor loader observable until session_start.
+  // Pi drops unregistered/hidden active names while rebuilding on /reload.
+  pi.registerTool({
+    ...createChromeDevtoolsLoadTool(pi),
+    exposure: "codemode",
+    defaultActive: false,
+    promptSnippet: undefined,
+    promptGuidelines: undefined,
+  });
+  loaderRegistered.add(pi);
 }
 
 export function chromeDevtoolsToolMode(pi: ExtensionAPI): ChromeDevToolsToolMode {
@@ -121,7 +131,18 @@ export function configureChromeDevtoolsToolExposure(
   lazyExposureByApi.set(pi, lazyExposure);
   const before = pi.getActiveTools();
   const owner = sessionOwnerByApi.get(pi);
-  const owned = owner ? ownedBySession.get(owner)?.owned : undefined;
+  let ownership = owner ? ownedBySession.get(owner) : undefined;
+  if (owner && !ownership && before.includes(CHROME_DEVTOOLS_LOAD_TOOL_NAME)) {
+    // The predecessor always activated its loader but had no provenance store.
+    // With no public activation-origin API, this loader cohort is migrated as
+    // extension-owned; capability-only host selections remain explicit.
+    ownership = {
+      explicit: new Set(),
+      owned: new Set(before.filter((name) => CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName))),
+    };
+    ownedBySession.set(owner, ownership);
+  }
+  const owned = ownership?.owned;
   const exposedTools =
     mode === "codemode"
       ? before.filter((name) => available.has(name as ChromeDevToolsToolName) && !owned?.has(name))

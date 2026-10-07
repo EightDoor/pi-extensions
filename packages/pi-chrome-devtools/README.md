@@ -194,6 +194,7 @@ Manual JSON edits and unpacked-extension changes apply after `/reload` or sessio
 
 `toolMode` accepts `codemode` (default), `lazy`, or `direct` and is user-only. It applies at session start, including `/reload`; availability edits apply immediately without overwriting a pending mode change.
 Missing settings and valid older files without `toolMode` now use codemode. To restore the previous loader behavior, save `"toolMode": "lazy"` and reload. Without an explicit catalog, all modes make the stable capabilities available; the active declaration list does not determine configured availability.
+A first `/reload` from the previous loader implementation clears carried-over Chrome declarations when applying codemode; enabled capabilities remain callable through codemode. Pi exposes no activation-origin API, so an active loader plus Chrome capabilities without known session provenance is treated as the predecessor's cohort. Capability-only host selections and known explicit activations are preserved. This is an intentional reload-time model-visible prefix transition, not an ordinary-turn change.
 A valid saved catalog is restored on Pi startup and `/reload`. Invalid settings are ignored with a warning and cannot be overwritten by a save.
 A missing file is created by the first confirmed browser or tool setting.
 Within one Pi process, all browser and tool saves run in invocation order, reread the latest valid document, publish by temporary-file rename, and preserve unknown fields.
