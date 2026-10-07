@@ -83,8 +83,9 @@ function reconcileContract(
   },
 ) {
   if (latestGoalContractContent(messages) === expected.content) return messages;
-  // Match Pi's persisted-message tail position so restoration does not reorder
-  // retained history when the transient contract becomes durable.
+  // Match Pi's immediate persisted-message position after retained history.
+  // Streaming publication can be deferred past new output; tail insertion alone
+  // does not preserve the prefix across that separate delivery boundary.
   return [...messages, expected];
 }
 

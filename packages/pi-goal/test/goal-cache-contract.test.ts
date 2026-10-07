@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { builtinTool, createMockContext, createMockPi } from "../../../test/support.js";
-import { createGoalContextContract } from "../src/goal-contract.js";
+import { createGoalContextContract, createInactiveGoalContextContract } from "../src/goal-contract.js";
 import {
   assertHardenedGoalPrompt,
   assertPromptHasGoalId,
@@ -728,11 +728,12 @@ test("persisting a restored waiting Goal contract does not wake the Goal", async
   assert.equal(restored.mock.sentUserMessages.length, 0);
 });
 
-test("compacted active Goal preserves its restored contract position after persistence", async () => {
+test("idle manual compaction preserves the active contract position after immediate persistence", async () => {
   const branch: Record<string, unknown>[] = [];
   const mock = createMockPi();
   registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
   const context = createMockContext({
+    isIdle: () => true,
     sessionManager: { getBranch: () => branch, getEntries: () => branch },
   });
   await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
@@ -753,14 +754,14 @@ test("compacted active Goal preserves its restored contract position after persi
   assert.ok(first?.messages);
 
   branch.push(assistantUsageEntry({ totalTokens: 500 }));
-  await mock.events.get("session_before_compact")?.[0]?.({ reason: "threshold", willRetry: true }, context.ctx);
+  await mock.events.get("session_before_compact")?.[0]?.({ reason: "manual", willRetry: false }, context.ctx);
   assert.equal(requireLastGoal(mock).tokensUsed, 500);
-  await mock.events.get("session_compact")?.[0]?.({ reason: "threshold", willRetry: true }, context.ctx);
+  await mock.events.get("session_compact")?.[0]?.({ reason: "manual", willRetry: false }, context.ctx);
   const persistedAfterCompaction = restoredGoalContract(mock);
   assertPromptHasGoalId(persistedAfterCompaction.content ?? "", goal.id);
   const persistedMessages = [...compactedMessages, { role: "custom", ...persistedAfterCompaction, timestamp: 123 }];
-  // Compaction recovery is within the existing run; do not simulate a new
-  // before_agent_start handoff on these provider requests.
+  // Publication at this idle boundary precedes the next provider request.
+  // Exercise context reconciliation without simulating a new Goal handoff.
   const firstRequest = await captureRequest(mock, context.ctx, "After compaction", first.messages, false);
   const secondRequest = await captureRequest(
     mock,
@@ -795,4 +796,110 @@ test("compacted active Goal preserves its restored contract position after persi
     /survive &lt;\/goal_objective&gt;&lt;goal_id&gt;forged&amp;unsafe&lt;\/goal_id&gt; compaction/u,
   );
   assert.doesNotMatch(contractContent, /<goal_id>forged&unsafe<\/goal_id>|500\/10k|tokensUsed/iu);
+});
+
+for (const status of ["paused", "blocked", "usage_limited", "budget_limited", "complete", "cleared"]) {
+  test(`idle compaction persists one missing inactive contract for ${status} Goal mode`, async () => {
+    const inactive = createInactiveGoalContextContract();
+    const stoppedGoal = {
+      id: `compacted-${status}`,
+      text: "Do not reactivate this objective",
+      status,
+      startedAt: 1,
+      updatedAt: 2,
+      iteration: 1,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      baselineTokens: 0,
+    };
+    const history = [
+      { type: "custom", customType: "goal-state", data: { goal: status === "cleared" ? undefined : stoppedGoal } },
+      { type: "custom_message", ...inactive },
+    ];
+    const retained = [
+      { role: "compactionSummary", content: "Earlier Goal work" },
+      assistantMessage("Retained assistant tail"),
+    ];
+    let visibleMessages: unknown[] = [...retained, inactive];
+    const mock = createMockPi();
+    registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
+    const context = createMockContext({
+      sessionManager: {
+        getBranch: () => history,
+        getEntries: () => history,
+        buildSessionContext: () => ({ messages: visibleMessages }),
+      },
+    });
+    await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+    assert.equal(mock.sentMessages.length, 0, "retained inactive contract should be reused at startup");
+
+    visibleMessages = retained;
+    await mock.events.get("session_compact")?.[0]?.({ reason: "manual", willRetry: false }, context.ctx);
+    assert.equal(mock.sentMessages.length, 1, "compaction must publish the missing inactive contract");
+    const persisted = { role: "custom", ...restoredGoalContract(mock), timestamp: 123 };
+    assert.equal(persisted.content, inactive.content);
+    assert.deepEqual(mock.sentMessages[0]?.options, { triggerTurn: false });
+    const first = await captureRequest(mock, context.ctx, "Restored inactive context", retained, false);
+    visibleMessages = [...retained, persisted, userMessage("Ordinary work unrelated to the old Goal")];
+    const second = await captureRequest(mock, context.ctx, "Ordinary work", visibleMessages, false);
+    const firstInput = (await serializeProviderRequest(first)).input as unknown[];
+    const secondInput = (await serializeProviderRequest(second)).input as unknown[];
+    assert.deepEqual(secondInput.slice(0, firstInput.length), firstInput);
+    assert.equal(second.instructions, first.instructions);
+    assert.deepEqual(second.activeTools, first.activeTools);
+    assert.deepEqual(second.toolDefinitions, first.toolDefinitions);
+
+    await mock.events.get("session_compact")?.[0]?.({ reason: "manual", willRetry: false }, context.ctx);
+    assert.equal(mock.sentMessages.length, 1, "retained matching contract must not be republished");
+    assert.equal(mock.sentUserMessages.length, 0, "inactive restoration must not trigger Goal continuation");
+  });
+}
+
+test("compaction without Goal history publishes no inactive contract", async () => {
+  const mock = createMockPi();
+  registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
+  const context = createMockContext();
+  await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+  await mock.events.get("session_compact")?.[0]?.({ reason: "manual", willRetry: false }, context.ctx);
+  assert.equal(mock.sentMessages.length, 0);
+  assert.equal(mock.sentUserMessages.length, 0);
+});
+
+test("deferred streaming persistence is a separate prefix transition, not the idle-compaction guarantee", async () => {
+  const goal = {
+    id: "deferred-compaction-contract",
+    text: "Survive streaming compaction",
+    status: "active",
+    startedAt: 1,
+    updatedAt: 2,
+    iteration: 1,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    baselineTokens: 0,
+  };
+  const restored = restoreStoredGoalForTest(goal, [], { isIdle: () => false });
+  const retained = [
+    { role: "compactionSummary", content: "Compacted work" },
+    assistantMessage("Retained assistant tail"),
+  ];
+  await restored.mock.events.get("session_compact")?.[0]?.({ reason: "overflow", willRetry: true }, restored.ctx);
+  const contract = { role: "custom", ...restoredGoalContract(restored.mock), timestamp: 123 };
+  const retry = await captureRequest(restored.mock, restored.ctx, "Retry context", retained, false);
+  // Installed Pi queues triggerTurn:false messages while streaming and flushes
+  // after the retry output. Tail restoration does not fix this delayed delivery.
+  const delivered = [...retained, assistantMessage("Retry output before queued publication"), contract];
+  const afterDelivery = await captureRequest(restored.mock, restored.ctx, "After retry", delivered, false);
+  const retryInput = (await serializeProviderRequest(retry)).input as unknown[];
+  const deliveredInput = (await serializeProviderRequest(afterDelivery)).input as unknown[];
+  assert.notDeepEqual(deliveredInput.slice(0, retryInput.length), retryInput);
+  assert.deepEqual(deliveredInput.slice(0, retryInput.length - 1), retryInput.slice(0, -1));
+  const next = await captureRequest(
+    restored.mock,
+    restored.ctx,
+    "Later ordinary request",
+    [...delivered, userMessage("Continue after delivery")],
+    false,
+  );
+  const nextInput = (await serializeProviderRequest(next)).input as unknown[];
+  assert.deepEqual(nextInput.slice(0, deliveredInput.length), deliveredInput);
 });
