@@ -188,7 +188,9 @@ export class S3Client {
         method,
         url,
         body,
-        extraHeaders,
+        // Transfer compression can weaken an object's ETag (R2 JSON responses).
+        // Read the original representation for exact checksums and strong If-Match tokens.
+        extraHeaders: method === "GET" ? { ...extraHeaders, "accept-encoding": "identity" } : extraHeaders,
         accessKeyId: this.config.profile.accessKeyId,
         secretAccessKey: this.config.profile.secretAccessKey,
         sessionToken,

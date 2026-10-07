@@ -52,6 +52,7 @@ import {
   readMergeJournal,
   writeMergeJournal,
 } from "./merge-journal.js";
+import { mergeTransferError } from "./merge-transfer-error.js";
 import { acceptedMergeFiles, type PartialProgress, progressState } from "./partial-progress.js";
 import {
   formatRemoteSelectionStatus,
@@ -497,10 +498,7 @@ export async function mergeSync(
         }
         // Cancellation before publication is safe only if no backend attempt began.
         // Every uncertain/after-commit outcome retains evidence and is never blindly retried.
-        throw new Error(
-          "Merged transfer interrupted; journal and backup retained. Run /sync sync to reconcile before further mutations.",
-          { cause: error },
-        );
+        throw mergeTransferError(error, config.backend);
       }
       const completed = await completeJournal(ctx, config, backend, journal, validate, options.signal, options.auto);
       if (!completed) {
