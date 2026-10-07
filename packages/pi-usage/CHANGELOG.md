@@ -1,5 +1,11 @@
 # @narumitw/pi-usage
 
+## 0.63.1
+
+### Patch Changes
+
+- 6d1150e: Hide ChatGPT app reset windows from the statusline while preserving plan percentages and resets and the detailed app report.
+
 ## 0.63.0
 
 ### Minor Changes
