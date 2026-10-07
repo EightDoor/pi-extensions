@@ -77,7 +77,7 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++state.sessionGeneration;
-    setChromeDevtoolsSessionOwner(pi, ctx.sessionManager);
+    setChromeDevtoolsSessionOwner(pi, ctx.sessionManager, ctx.sessionManager.getBranch());
     initializeAvailableChromeDevtoolsTools(pi);
     setWebMcpSessionOwner(ctx.sessionManager);
     replaceSessionController("Chrome DevTools session replaced");

@@ -25,7 +25,8 @@ const sessionOwnerByApi = new WeakMap<ExtensionAPI, object>();
 // A redundant host selection of an already-owned active name has no public
 // provenance signal; keep known ownership rather than treating carryover as intent.
 const PROVENANCE_STORE = Symbol.for("@narumitw/pi-chrome-devtools.activation-provenance");
-type ActivationOwnership = { explicit: Set<string>; owned: Set<string> };
+const PROVENANCE_ENTRY = "chrome-devtools.activation-provenance";
+type ActivationOwnership = { explicit: Set<string>; owned: Set<string>; serialized?: string };
 const provenanceGlobal = globalThis as typeof globalThis & {
   [PROVENANCE_STORE]?: WeakMap<object, ActivationOwnership>;
 };
@@ -47,7 +48,49 @@ function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly 
       if (CHROME_DEVTOOLS_TOOL_NAMES.includes(name as ChromeDevToolsToolName) && !ownership.explicit.has(name))
         ownership.owned.add(name);
   }
+  if (chromeDevtoolsToolMode(pi) === "codemode") ownership.owned.clear();
   ownedBySession.set(owner, ownership);
+  persistOwnership(pi, ownership);
+}
+
+function ownershipData(ownership: ActivationOwnership) {
+  return {
+    version: 1,
+    explicit: CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.explicit.has(name)),
+    owned: CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => ownership.owned.has(name)),
+  };
+}
+
+function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
+  const data = ownershipData(ownership);
+  const serialized = JSON.stringify(data);
+  if (ownership.serialized === serialized) return;
+  pi.appendEntry(PROVENANCE_ENTRY, data);
+  ownership.serialized = serialized;
+}
+
+function restoredOwnership(entries: readonly { type: string; customType?: string; data?: unknown }[]) {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry.type !== "custom" || entry.customType !== PROVENANCE_ENTRY) continue;
+    const data = entry.data;
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+    const record = data as Record<string, unknown>;
+    const validNames = (value: unknown): value is ChromeDevToolsToolName[] =>
+      Array.isArray(value) &&
+      value.length <= CHROME_DEVTOOLS_TOOL_NAMES.length &&
+      value.every((name) => CHROME_DEVTOOLS_TOOL_NAMES.includes(name));
+    if (
+      record.version !== 1 ||
+      !validNames(record.explicit) ||
+      !validNames(record.owned) ||
+      record.owned.some((name) => (record.explicit as string[]).includes(name))
+    )
+      return undefined;
+    const restored = { explicit: new Set<string>(record.explicit), owned: new Set<string>(record.owned) };
+    return { ...restored, serialized: JSON.stringify(ownershipData(restored)) };
+  }
+  return undefined;
 }
 const definitionsByApi = new WeakMap<ExtensionAPI, ToolDefinition[]>();
 
@@ -107,8 +150,16 @@ const SEARCH_TEXT: Record<ChromeDevToolsToolName, string> = {
   chrome_devtools_webmcp_call_tool: "call invoke page provided website webmcp tool confirmation experimental",
 };
 
-export function setChromeDevtoolsSessionOwner(pi: ExtensionAPI, owner: object) {
+export function setChromeDevtoolsSessionOwner(
+  pi: ExtensionAPI,
+  owner: object,
+  entries?: readonly { type: string; customType?: string; data?: unknown }[],
+) {
   sessionOwnerByApi.set(pi, owner);
+  if (entries) {
+    const ownership = restoredOwnership(entries);
+    if (ownership) ownedBySession.set(owner, ownership);
+  }
 }
 
 export function initializeAvailableChromeDevtoolsTools(pi: ExtensionAPI) {
@@ -159,7 +210,6 @@ export function configureChromeDevtoolsToolExposure(
     ...exposedTools,
   ]);
   publishActiveTools(pi, unique([...before.filter((name) => target.has(name)), ...target]), before);
-  if (mode === "codemode") owned?.clear();
 }
 
 export function requireEagerChromeDevtoolsToolExposure(pi: ExtensionAPI) {
