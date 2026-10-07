@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { shutdownManagedBrowser, startManagedBrowserSession, syncManagedBrowserSettings } from "./browser-manager.js";
 import { setActivePageId } from "./cdp-client.js";
 import {
+  availableChromeDevtoolsTools,
   chromeDevtoolsToolMode,
   configureChromeDevtoolsToolExposure,
   initializeAvailableChromeDevtoolsTools,
@@ -130,6 +131,17 @@ export default function chromeDevtools(pi: ExtensionAPI) {
       ctx.model,
       settings.kind === "invalid" ? previousMode : settings.kind === "loaded" ? settings.settings.toolMode : "codemode",
     );
+    const active = new Set(pi.getActiveTools());
+    if (
+      chromeDevtoolsToolMode(pi) === "codemode" &&
+      !active.has("codemode") &&
+      availableChromeDevtoolsTools(pi).some((name) => !active.has(name))
+    ) {
+      ctx.ui.notify(
+        "Chrome DevTools capabilities require Pi's codemode tool, but it is not active. Add '+codemode' to defaultTools and reload, or choose direct/lazy mode in Chrome DevTools settings. Chrome DevTools does not activate host tools automatically.",
+        "warning",
+      );
+    }
   });
 
   pi.on("model_select", (event, ctx) => {

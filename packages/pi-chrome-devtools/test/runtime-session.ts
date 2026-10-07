@@ -31,6 +31,9 @@ export async function withChromeRuntime(
     restoreTranscript?: boolean;
     activeCapabilities?: readonly string[];
     invalidSettings?: boolean;
+    settingsText?: string | null;
+    legacySettings?: boolean;
+    hostCodemode?: boolean;
   },
   run: (fixture: {
     session: Awaited<ReturnType<typeof createAgentSession>>["session"];
@@ -39,6 +42,7 @@ export async function withChromeRuntime(
     model: NonNullable<ExtensionContext["model"]>;
     file: string;
     errors: unknown[];
+    notifications: Array<{ message: string; level?: string }>;
     setExtensionPath: (path: string) => void;
   }) => Promise<void>,
 ) {
@@ -49,17 +53,22 @@ export async function withChromeRuntime(
   try {
     await mkdir(agentDir);
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const file = join(agentDir, "pi-chrome-devtools.json");
-    await writeFile(
-      file,
-      options.invalidSettings
-        ? "{"
-        : JSON.stringify({
-            toolMode: options.toolMode,
-            browser: { autoLaunch: false },
-            ...(options.tools ? { tools: options.tools, updatedAt: 1 } : {}),
-          }),
+    const file = join(
+      agentDir,
+      options.legacySettings ? "pi-chrome-devtools-settings.json" : "pi-chrome-devtools.json",
     );
+    if (options.settingsText !== null)
+      await writeFile(
+        file,
+        options.settingsText ??
+          (options.invalidSettings
+            ? "{"
+            : JSON.stringify({
+                toolMode: options.toolMode,
+                browser: { autoLaunch: false },
+                ...(options.tools ? { tools: options.tools, updatedAt: 1 } : {}),
+              })),
+      );
     const fauxModule = (await import(fauxSpecifier)) as typeof import("@earendil-works/pi-ai/providers/faux");
     const faux = fauxModule.createFauxCore({
       api: options.native ? "openai-responses" : `chrome-${crypto.randomUUID()}`,
@@ -78,7 +87,14 @@ export async function withChromeRuntime(
     const model = registry.find(faux.provider, "test");
     assert.ok(model);
     const settingsManager = SettingsManager.inMemory({
-      defaultTools: ["+codemode", ...(options.activeCapabilities ?? []).map((name) => `+${name}`)],
+      ...(options.hostCodemode !== false || options.activeCapabilities?.length
+        ? {
+            defaultTools: [
+              ...(options.hostCodemode === false ? [] : ["+codemode"]),
+              ...(options.activeCapabilities ?? []).map((name) => `+${name}`),
+            ],
+          }
+        : {}),
       retry: { enabled: false },
       compaction: { enabled: false },
     });
@@ -142,6 +158,7 @@ export async function withChromeRuntime(
       model,
       file,
       errors,
+      notifications: context.notifications,
       setExtensionPath: (path) => {
         extensionPaths[1] = path;
       },

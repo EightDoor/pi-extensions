@@ -193,7 +193,8 @@ test("session start warns when deprecated environment overrides remain active", 
     assert.equal(state.host, "127.0.0.1");
     assert.equal(state.port, 9444);
     assert.equal(state.endpointSource, "environment");
-    assert.equal(notifications.length, 1);
+    assert.equal(notifications.length, 2);
+    assert.match(notifications[1]?.message ?? "", /codemode tool, but it is not active/);
     assert.equal(notifications[0]?.level, "warning");
     assert.match(notifications[0]?.message ?? "", /environment settings are deprecated/i);
     assert.match(notifications[0]?.message ?? "", /browser\.endpoint/);

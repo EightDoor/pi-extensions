@@ -135,7 +135,8 @@ test("chrome-devtools preserves explicit activation in codemode when settings ar
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
     assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", EVALUATE_TOOL]);
-    assert.deepEqual(notifications, []);
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0]?.message ?? "", /codemode tool, but it is not active/);
   });
 });
 
@@ -439,7 +440,7 @@ test("chrome-devtools loader does not expose tools outside the saved catalog", a
   });
 });
 
-test("chrome-devtools loads the new settings file as the tool catalog without a warning", async () => {
+test("chrome-devtools loads the new settings file as the tool catalog without a settings warning", async () => {
   await withTempAgentDir(async (agentDir) => {
     writeSettings(agentDir, NEW_SETTINGS_FILE, [SCREENSHOT_TOOL]);
     const chromeDevtoolsModule = await importFreshChromeDevtools();
@@ -450,7 +451,8 @@ test("chrome-devtools loads the new settings file as the tool catalog without a 
     await mock.events.get("session_start")?.[0]?.({}, ctx);
 
     assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool"]);
-    assert.deepEqual(notifications, []);
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0]?.message ?? "", /codemode tool, but it is not active/);
   });
 });
 
