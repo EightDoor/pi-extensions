@@ -72,19 +72,33 @@ test("skill example preserves token and unknown fields without exposing them", (
     assert.equal(JSON.parse(result.stdout).apiTokenPresent, true);
     assert.doesNotMatch(result.stdout + result.stderr, /private-token-value|private-unknown-value/u);
     if (process.platform !== "win32") assert.equal(statSync(destination).mode & 0o777, 0o600);
-    const saved = readFileSync(destination, "utf8");
-    for (const patch of [{ apiToken: "replacement" }, { limit: 99 }]) {
-      const rejected = runExample(directory, patch);
-      assert.equal(rejected.status, 1);
-      assert.equal(readFileSync(destination, "utf8"), saved);
-      assert.doesNotMatch(rejected.stdout + rejected.stderr, /replacement|private-token-value/u);
-    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test("inspection does not create missing settings and malformed files block edits", () => {
+// Give each child process its own test budget instead of accumulating startup costs.
+for (const { name, patch } of [
+  { name: "credential replacement", patch: { apiToken: "replacement" } },
+  { name: "invalid preference", patch: { limit: 99 } },
+]) {
+  test(`skill example rejects ${name} without modifying or exposing settings`, () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "web-search-skill-reject-"));
+    const destination = path.join(directory, "pi-web-search.json");
+    const saved = JSON.stringify({ apiToken: "private-token-value", limit: 3, future: "private-unknown-value" });
+    try {
+      writeFileSync(destination, saved, { mode: 0o600 });
+      const rejected = runExample(directory, patch);
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.equal(readFileSync(destination, "utf8"), saved);
+      assert.doesNotMatch(rejected.stdout + rejected.stderr, /replacement|private-token-value|private-unknown-value/u);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("inspection does not create missing settings", () => {
   const directory = mkdtempSync(path.join(tmpdir(), "web-search-skill-read-"));
   const destination = path.join(directory, "pi-web-search.json");
   try {
@@ -92,6 +106,15 @@ test("inspection does not create missing settings and malformed files block edit
     assert.equal(inspection.status, 0, inspection.stderr);
     assert.equal(JSON.parse(inspection.stdout).saved, false);
     assert.throws(() => statSync(destination), { code: "ENOENT" });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("malformed files block edits without exposing parser excerpts", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "web-search-skill-malformed-"));
+  const destination = path.join(directory, "pi-web-search.json");
+  try {
     const malformed = '{"apiToken":"private-parser-excerpt",';
     writeFileSync(destination, malformed, { mode: 0o600 });
     const result = runExample(directory, { limit: 3 });
