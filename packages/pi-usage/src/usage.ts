@@ -50,6 +50,7 @@ import { createUsageTargetSelectOptions, listUsageTargets, resolveUsageTarget } 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const STATUS_COUNTDOWN_REFRESH_MS = 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 15_000;
+const COMMAND_CODE_REVALIDATION_RESERVE_MS = 1_000;
 const ALL_PROVIDER_CONCURRENCY = 2;
 const FAILURE_BACKOFF_MS = 30_000;
 const MAX_ACCOUNT_STATES = 32;
@@ -415,11 +416,17 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       querySequence += 1;
       queryId = querySequence;
       setBoundedMap(latestQueries, failureKey, queryId, MAX_ACCOUNT_STATES);
+      // Command Code can retain partial data after an optional transport timeout. Keep time
+      // inside the overall deadline for its remaining auth guards and publication guard.
+      const queryTimeoutMs = Math.max(
+        1,
+        deadlineAt - Date.now() - (adapter.id === "command-code" ? COMMAND_CODE_REVALIDATION_RESERVE_MS : 0),
+      );
       const report = await queryProviderUsage(
         adapter,
         auth,
         signal,
-        Math.max(1, deadlineAt - Date.now()),
+        queryTimeoutMs,
         requiresRequestBoundaryGuard ? guard : undefined,
         target.targetId,
       );
