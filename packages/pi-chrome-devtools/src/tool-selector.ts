@@ -21,7 +21,13 @@ import {
   configuredChromeDevtoolsTools,
 } from "./lazy-tools.js";
 import { invalidateWebMcpOperations, state, webMcpEnabled } from "./runtime.js";
-import { loadSettings, saveSettings, settingsFilePath, ToolCatalogApplicationError } from "./settings.js";
+import {
+  loadSettings,
+  type SettingsLoadResult,
+  saveSettings,
+  settingsFilePath,
+  ToolCatalogApplicationError,
+} from "./settings.js";
 import {
   CHROME_DEVTOOLS_TOOL_NAMES,
   type ChromeDevToolsToolName,
@@ -127,11 +133,13 @@ async function transactSelectedToolsNow(
       const previousConfiguredTools = configuredChromeDevtoolsTools(pi);
       try {
         const previousWebMcpTools = previousAvailableTools.filter(isWebMcpToolName);
-        const selectedWebMcpTools = selectedTools.filter(isWebMcpToolName);
-        if (!arraysEqual(previousWebMcpTools, selectedWebMcpTools)) {
+        applyChromeDevtoolsTools(pi, selectedTools);
+        const publishedWebMcpTools = availableChromeDevtoolsTools(pi).filter(isWebMcpToolName);
+        // Abort is irreversible: rejected publication must leave current work
+        // alive, and gated configured names are not an effective policy change.
+        if (!arraysEqual(previousWebMcpTools, publishedWebMcpTools)) {
           invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools WebMCP gateway availability changed");
         }
-        applyChromeDevtoolsTools(pi, selectedTools);
       } catch (error) {
         if (expectedGeneration === state.sessionGeneration) {
           try {
@@ -192,9 +200,16 @@ function getToolStatusSummary(pi: ExtensionAPI, owner: object): ToolStatusSummar
 }
 
 export async function buildToolStatusMessage(pi: ExtensionAPI, owner: object) {
-  const summary = getToolStatusSummary(pi, owner);
-  const persistedSetting = await persistedSettingLabel();
+  const generation = state.sessionGeneration;
+  await waitForChromeDevtoolsSettings();
+  if (generation !== state.sessionGeneration) return "";
   const settings = await loadSettings();
+  // Command callers discard replaced-session output; avoid retired API reads.
+  if (generation !== state.sessionGeneration) return "";
+  // Do not combine a pre-save runtime summary with a post-save document.
+  // All saved labels use this one snapshot; no I/O follows the runtime read.
+  const summary = getToolStatusSummary(pi, owner);
+  const persistedSetting = persistedSettingLabel(settings);
   const savedMode =
     settings.userFile.kind === "invalid"
       ? undefined
@@ -332,8 +347,7 @@ function formatRuntimeStatus(summary: ToolStatusSummary) {
   return `${summary.availabilityStatus} (${summary.availableChromeToolCount}/${summary.capabilityCount} available)`;
 }
 
-async function persistedSettingLabel() {
-  const settings = await loadSettings();
+function persistedSettingLabel(settings: SettingsLoadResult) {
   if (settings.kind === "loaded" && settings.settings.tools) {
     return formatPersistedSelection(settings.settings.tools);
   }
