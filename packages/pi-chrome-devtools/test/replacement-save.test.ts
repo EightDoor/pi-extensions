@@ -52,14 +52,18 @@ for (const toolMode of ["codemode", "lazy", "direct"] as const)
           const started = deferred();
           const release = deferred();
           const save = settings.saveSettings;
-          vi.spyOn(settings, "saveSettings").mockImplementation((value) =>
-            save(value, {
-              [boundary]: async () => {
-                started.resolve();
-                await release.promise;
-                throw new Error(`${boundary} failed`);
+          vi.spyOn(settings, "saveSettings").mockImplementation((value, _operations, apply) =>
+            save(
+              value,
+              {
+                [boundary]: async () => {
+                  started.resolve();
+                  await release.promise;
+                  throw new Error(`${boundary} failed`);
+                },
               },
-            }),
+              apply,
+            ),
           );
           const command = first.commands
             .get("chrome-devtools")
@@ -111,14 +115,18 @@ for (const toolMode of ["codemode", "lazy", "direct"] as const)
     const started = deferred();
     const release = deferred();
     const save = settings.saveSettings;
-    vi.spyOn(settings, "saveSettings").mockImplementation((value) =>
-      save(value, {
-        write: async (temporaryPath, data) => {
-          writeFileSync(temporaryPath, data);
-          started.resolve();
-          await release.promise;
+    vi.spyOn(settings, "saveSettings").mockImplementation((value, _operations, apply) =>
+      save(
+        value,
+        {
+          write: async (temporaryPath, data) => {
+            writeFileSync(temporaryPath, data);
+            started.resolve();
+            await release.promise;
+          },
         },
-      }),
+        apply,
+      ),
     );
     const command = first.commands.get("chrome-devtools")?.handler("disable", ctx);
     let start: unknown;

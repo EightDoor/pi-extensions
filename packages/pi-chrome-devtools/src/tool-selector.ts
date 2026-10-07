@@ -21,7 +21,7 @@ import {
   configuredChromeDevtoolsTools,
 } from "./lazy-tools.js";
 import { invalidateWebMcpOperations, state, webMcpEnabled } from "./runtime.js";
-import { loadSettings, saveSettings, settingsFilePath } from "./settings.js";
+import { loadSettings, saveSettings, settingsFilePath, ToolCatalogApplicationError } from "./settings.js";
 import {
   CHROME_DEVTOOLS_TOOL_NAMES,
   type ChromeDevToolsToolName,
@@ -117,35 +117,44 @@ async function transactSelectedToolsNow(
     );
     return "active-tools-changed";
   }
-  const previousActiveTools = pi.getActiveTools();
-  const previousAvailableTools = availableChromeDevtoolsTools(pi);
-  const previousConfiguredTools = configuredChromeDevtoolsTools(pi);
   try {
-    // Publish runtime policy and session provenance only after durability. A
-    // replacement waits for this queue and must never restore an unsaved intent.
-    await persistSettings(selectedTools);
-    if (expectedGeneration !== state.sessionGeneration) return "failed";
-    const previousWebMcpTools = previousAvailableTools.filter(isWebMcpToolName);
-    const selectedWebMcpTools = selectedTools.filter(isWebMcpToolName);
-    if (!arraysEqual(previousWebMcpTools, selectedWebMcpTools)) {
-      invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools WebMCP gateway availability changed");
-    }
-    applyChromeDevtoolsTools(pi, selectedTools);
-    return "saved";
+    await persistSettings(selectedTools, () => {
+      if (expectedGeneration !== state.sessionGeneration) return;
+      // Capture at publication, not before I/O: host edits during the save are
+      // current intent. A persistence failure never touches runtime policy.
+      const previousActiveTools = pi.getActiveTools();
+      const previousAvailableTools = availableChromeDevtoolsTools(pi);
+      const previousConfiguredTools = configuredChromeDevtoolsTools(pi);
+      try {
+        const previousWebMcpTools = previousAvailableTools.filter(isWebMcpToolName);
+        const selectedWebMcpTools = selectedTools.filter(isWebMcpToolName);
+        if (!arraysEqual(previousWebMcpTools, selectedWebMcpTools)) {
+          invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools WebMCP gateway availability changed");
+        }
+        applyChromeDevtoolsTools(pi, selectedTools);
+      } catch (error) {
+        if (expectedGeneration === state.sessionGeneration) {
+          try {
+            applyAvailableChromeDevtoolsTools(pi, previousConfiguredTools, previousActiveTools);
+          } catch (rollbackError) {
+            throw new Error(`${formatError(error)}; active-tool rollback failed: ${formatError(rollbackError)}`, {
+              cause: error,
+            });
+          }
+        }
+        // The storage queue restores only the tool-owned durable fields before
+        // it releases dependent settings reads or replacement session starts.
+        throw error;
+      }
+    });
+    return expectedGeneration === state.sessionGeneration ? "saved" : "failed";
   } catch (error) {
-    if (expectedGeneration !== state.sessionGeneration) return "failed";
-    let rollbackError: unknown;
-    try {
-      applyAvailableChromeDevtoolsTools(pi, previousConfiguredTools, previousActiveTools);
-    } catch (caught) {
-      rollbackError = caught;
-    }
     if (expectedGeneration !== state.sessionGeneration) return "failed";
     ctx.ui.notify(
       sanitizeChromeDevtoolsDisplay(
-        rollbackError
-          ? `Chrome DevTools settings save failed: ${formatError(error)}; active-tool rollback failed: ${formatError(rollbackError)}`
-          : `Chrome DevTools settings save failed; active tools restored: ${formatError(error)}`,
+        error instanceof ToolCatalogApplicationError
+          ? `Chrome DevTools tool application failed: ${formatError(error)}`
+          : `Chrome DevTools settings save failed; active tools unchanged: ${formatError(error)}`,
       ),
       "warning",
     );
@@ -346,6 +355,6 @@ function effectiveCatalog(owner: object): ChromeDevToolsToolName[] {
   return webMcpEnabled(owner) ? [...CHROME_DEVTOOLS_TOOL_NAMES] : [...CORE_CHROME_DEVTOOLS_TOOL_NAMES];
 }
 
-async function persistSettings(selectedTools: readonly ChromeDevToolsToolName[]) {
-  await saveSettings({ tools: [...selectedTools], updatedAt: Date.now() });
+async function persistSettings(selectedTools: readonly ChromeDevToolsToolName[], applyAfterSave?: () => void) {
+  await saveSettings({ tools: [...selectedTools], updatedAt: Date.now() }, {}, applyAfterSave);
 }

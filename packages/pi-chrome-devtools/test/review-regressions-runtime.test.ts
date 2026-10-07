@@ -93,28 +93,23 @@ for (const native of [false, true]) {
 }
 
 for (const change of ["model", "other-tools"] as const) {
-  test(`real Pi/Jiti failed-save rollback preserves concurrent ${change}`, async () => {
+  test(`real Pi/Jiti rejected save makes no runtime publication before later ${change}`, async () => {
     await withChromeRuntime({ native: true, toolMode: "lazy", tools: names }, async ({ session, file, model }) => {
       const prior = ["read", names[0], "bash", names[1], "edit", "write", "codemode", "chrome_devtools_load"];
       session.setActiveToolsByName(prior);
       await writeFile(file, "{");
-      let applied!: () => void;
-      const runtimeApplied = new Promise<void>((done) => {
-        applied = done;
-      });
       const setActive = session.setActiveToolsByName.bind(session);
-      let first = true;
+      let publications = 0;
       session.setActiveToolsByName = (tools) => {
+        publications++;
         setActive(tools);
-        if (first) {
-          first = false;
-          applied();
-        }
       };
       const command = session.prompt("/chrome-devtools disable");
       let others: string[];
       try {
-        await runtimeApplied;
+        await command;
+        assert.equal(publications, 0);
+        assert.deepEqual(session.getActiveToolNames(), prior);
         if (change === "model") {
           await session.extensionRunner.emit({
             type: "model_select",
@@ -136,9 +131,8 @@ for (const change of ["model", "other-tools"] as const) {
         active.filter((name) => !name.startsWith("chrome_devtools_")),
         others,
       );
-      // Persistence now precedes application. With malformed JSON, the first
-      // publication is failure recovery, so the later host withdrawal wins.
-      // rollback.test.ts gates I/O to exercise changes during persistence.
+      // A rejected write makes no runtime publication. The later host action
+      // wins; application-recovery.test.ts gates I/O to cover the concurrent path.
       const expected = change === "model" ? names : [];
       assert.deepEqual(
         active.filter((name) => names.includes(name as never)),

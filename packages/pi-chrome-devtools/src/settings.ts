@@ -509,9 +509,24 @@ function orderedUnique(values: readonly string[]) {
   return [...new Set(values)];
 }
 
+export class ToolCatalogApplicationError extends Error {
+  constructor(
+    error: unknown,
+    readonly rollbackError?: unknown,
+  ) {
+    super(
+      rollbackError
+        ? `${formatError(error)}; saved catalog rollback failed: ${formatError(rollbackError)}`
+        : `${formatError(error)}; previous catalog restored`,
+      { cause: error },
+    );
+  }
+}
+
 export function saveSettings(
   settings: ChromeDevToolsSettings,
   operations: Partial<SettingsFileOperations> = {},
+  applyAfterSave?: () => void,
 ): Promise<void> {
   return queueSettingsMutation(
     (current) => ({
@@ -520,6 +535,7 @@ export function saveSettings(
       updatedAt: settings.updatedAt,
     }),
     operations,
+    applyAfterSave,
   );
 }
 
@@ -564,8 +580,9 @@ export function saveBrowserSettings(
 function queueSettingsMutation(
   mutate: (current: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>,
   operations: Partial<SettingsFileOperations>,
+  applyToolCatalog?: () => void,
 ) {
-  const operation = settingsSaveQueue.then(() => saveSettingsMutationNow(mutate, operations));
+  const operation = settingsSaveQueue.then(() => saveSettingsMutationNow(mutate, operations, applyToolCatalog));
   settingsSaveQueue = operation.catch(() => undefined);
   return operation;
 }
@@ -573,6 +590,7 @@ function queueSettingsMutation(
 async function saveSettingsMutationNow(
   mutate: (current: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>,
   operations: Partial<SettingsFileOperations>,
+  applyToolCatalog?: () => void,
 ): Promise<void> {
   const filePath = settingsFilePath();
   let current = await readSettingsDocument(filePath, "user");
@@ -593,6 +611,29 @@ async function saveSettingsMutationNow(
   } catch (error) {
     await rm(tempFile, { force: true }).catch(() => undefined);
     throw error;
+  }
+  if (!applyToolCatalog) return;
+  try {
+    // Synchronous runtime publication and its compensating write remain inside
+    // this queue, so dependent reads/replacements cannot see a rejected catalog.
+    applyToolCatalog();
+  } catch (error) {
+    let rollbackError: unknown;
+    try {
+      await saveSettingsMutationNow((latest) => {
+        const restored = { ...latest };
+        for (const field of ["tools", "updatedAt"] as const) {
+          if (JSON.stringify(latest[field]) !== JSON.stringify(nextDocument[field]))
+            throw new Error("Tool catalog changed after save; refusing to overwrite newer settings");
+          delete restored[field];
+          if (current.document?.[field] !== undefined) restored[field] = current.document[field];
+        }
+        return restored;
+      }, operations);
+    } catch (caught) {
+      rollbackError = caught;
+    }
+    throw new ToolCatalogApplicationError(error, rollbackError);
   }
 }
 

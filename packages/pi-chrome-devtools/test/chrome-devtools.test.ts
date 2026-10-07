@@ -637,7 +637,7 @@ test("chrome-devtools rejects invalid settings updates and restores active tools
   });
 });
 
-test("chrome-devtools keeps failed-save rollback eager after an unsupported model switch", async () => {
+test("chrome-devtools preserves runtime after a failed save and unsupported model switch", async () => {
   await withTempAgentDir(async (agentDir) => {
     const settingsPath = path.join(agentDir, NEW_SETTINGS_FILE);
     writeFileSync(settingsPath, '{"tools":["invalid"]}\n');
@@ -648,19 +648,8 @@ test("chrome-devtools keeps failed-save rollback eager after an unsupported mode
     await mock.events.get("session_start")?.[0]?.({}, ctx);
     assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CAPABILITY_TOOLS]);
 
-    let markRuntimeApply: (() => void) | undefined;
-    const runtimeApplied = new Promise<void>((resolve) => {
-      markRuntimeApply = resolve;
-    });
-    const setActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
-    mock.rawPi.setActiveTools = (names) => {
-      setActiveTools(names);
-      markRuntimeApply?.();
-      markRuntimeApply = undefined;
-    };
-
     const command = mock.commands.get("chrome-devtools")?.handler("disable", ctx);
-    await runtimeApplied;
+    await Promise.resolve();
     await mock.events.get("model_select")?.[0]?.(
       {
         model: {

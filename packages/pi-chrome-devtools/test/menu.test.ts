@@ -499,7 +499,7 @@ test("a failed confirmed save restores runtime and retains the draft for retry",
     assert.equal(reviewScreen, 2);
     assert.match(retryReview, /Proposed availability: 4\/5/);
     assert.deepEqual(mock.rawPi.getActiveTools(), ["other_tool", ...CHROME_TOOLS]);
-    assert.match(notifications.at(-1)?.message ?? "", /settings save failed; active tools restored/i);
+    assert.match(notifications.at(-1)?.message ?? "", /settings save failed; active tools unchanged/i);
   });
 });
 

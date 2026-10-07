@@ -60,14 +60,18 @@ for (const mode of ["codemode", "lazy", "direct"] as const) {
         const started = deferred();
         const release = deferred();
         const save = settings.saveSettings;
-        vi.spyOn(settings, "saveSettings").mockImplementation((value) =>
-          save(value, {
-            [boundary]: async () => {
-              started.resolve();
-              await release.promise;
-              throw new Error(`${boundary} failed`);
+        vi.spyOn(settings, "saveSettings").mockImplementation((value, _operations, apply) =>
+          save(
+            value,
+            {
+              [boundary]: async () => {
+                started.resolve();
+                await release.promise;
+                throw new Error(`${boundary} failed`);
+              },
             },
-          }),
+            apply,
+          ),
         );
         const command = mock.commands.get("chrome-devtools")?.handler("disable", ctx);
         let expectedOthers = ["other-a", "other-b", "other-c"];
@@ -100,7 +104,7 @@ for (const mode of ["codemode", "lazy", "direct"] as const) {
         );
         assert.deepEqual(
           active.filter((name) => names.includes(name as never)),
-          eager ? names : names.slice(0, 2),
+          change === "other-tools" ? [] : eager ? names : names.slice(0, 2),
         );
         if (change === "none") assert.deepEqual(active, prior);
         assert.match(notifications.at(-1)?.message ?? "", new RegExp(`save failed.*${boundary} failed`));

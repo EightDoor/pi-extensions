@@ -42,6 +42,16 @@ provenanceGlobal[PROVENANCE_STORE] = ownedBySession;
 const modeByApi = new WeakMap<ExtensionAPI, ChromeDevToolsToolMode>();
 const loaderRegistered = new WeakSet<ExtensionAPI>();
 
+function retainedExplicitTools(pi: ExtensionAPI, before: readonly string[]) {
+  const owner = sessionOwnerByApi.get(pi);
+  const ownership = owner ? ownedBySession.get(owner) : undefined;
+  const observed = new Set(before);
+  // Only our own last publication can prove suppression rather than withdrawal.
+  return CHROME_DEVTOOLS_TOOL_NAMES.filter(
+    (name) => ownership?.explicit.has(name) && (observed.has(name) || ownership.published?.has(name) === false),
+  );
+}
+
 function publishActiveTools(pi: ExtensionAPI, names: string[], before: readonly string[]) {
   pi.setActiveTools(names);
   const owner = sessionOwnerByApi.get(pi);
@@ -93,8 +103,15 @@ function persistOwnership(pi: ExtensionAPI, ownership: ActivationOwnership) {
   const data = ownershipData(ownership);
   const serialized = JSON.stringify(data);
   if (ownership.serialized === serialized) return;
-  pi.appendEntry(PROVENANCE_ENTRY, data);
-  ownership.serialized = serialized;
+  try {
+    pi.appendEntry(PROVENANCE_ENTRY, data);
+    ownership.serialized = serialized;
+  } catch (error) {
+    // Pi can advance its in-memory branch before disk persistence throws. Force
+    // recovery to append its policy even when it matches the last saved record.
+    ownership.serialized = undefined;
+    throw error;
+  }
 }
 
 function restoredOwnership(entries: readonly { type: string; customType?: string; data?: unknown }[]) {
@@ -243,7 +260,9 @@ export function configureChromeDevtoolsToolExposure(
   const owned = ownership?.owned;
   const exposedTools =
     mode === "codemode"
-      ? before.filter((name) => available.has(name as ChromeDevToolsToolName) && !owned?.has(name))
+      ? unique([...before.filter((name) => !owned?.has(name)), ...retainedExplicitTools(pi, before)]).filter((name) =>
+          available.has(name as ChromeDevToolsToolName),
+        )
       : lazyExposure
         ? []
         : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
@@ -286,7 +305,9 @@ export function applyAvailableChromeDevtoolsTools(
   const mode = chromeDevtoolsToolMode(pi);
   const eagerTools =
     mode === "codemode"
-      ? before.filter((name) => available.has(name as ChromeDevToolsToolName))
+      ? unique([...before, ...retainedExplicitTools(pi, before)]).filter((name) =>
+          available.has(name as ChromeDevToolsToolName),
+        )
       : lazyExposure
         ? []
         : CHROME_DEVTOOLS_TOOL_NAMES.filter((name) => available.has(name));
