@@ -19,14 +19,16 @@ test("drops reason from non-blocked progress steps before strict validation", ()
         { text: "queued", status: "pending" },
         { text: "working", status: "in_progress" },
         { text: "done", status: "completed" },
-        { text: "waiting", status: "blocked", reason: "needs approval" },
+        { text: "waiting — needs approval", status: "blocked" },
       ],
     },
   );
 });
 
-test("keeps blocked reason validation strict", () => {
+test("blocked steps no longer require reason", () => {
   const { tool } = createHarness();
 
-  assert.throws(() => tool.prepareArguments({ steps: [{ text: "waiting", status: "blocked" }] }), /blocked.*reason/iu);
+  assert.deepEqual(tool.prepareArguments({ steps: [{ text: "waiting for approval", status: "blocked" }] }), {
+    steps: [{ text: "waiting for approval", status: "blocked" }],
+  });
 });

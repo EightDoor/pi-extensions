@@ -23,14 +23,13 @@ const canonical: ProgressStep[] = [
   { text: "queued", status: "pending" },
   { text: "working", status: "in_progress" },
   { text: "done", status: "completed" },
-  { text: "waiting", status: "blocked", reason: "needs approval" },
+  { text: "waiting — needs approval", status: "blocked" },
 ];
 
 // This also makes the repository's emitted-test typecheck enforce schema/type agreement.
 expectTypeOf<Static<typeof ProgressParameters>["steps"][number]>().toEqualTypeOf<ProgressStep>();
 
 const blockedReasons: [string, Record<string, unknown>][] = [
-  ["missing", {}],
   ["empty", { reason: "" }],
   ["whitespace", { reason: " \n " }],
   ["wrong type", { reason: 1 }],
@@ -48,8 +47,8 @@ const cases: Array<{ name: string; input: unknown; schemaValid: boolean; prepare
     prepared: true,
   },
   {
-    name: "maximum text and reason lengths",
-    input: { steps: [{ text: "x".repeat(300), status: "blocked", reason: "x".repeat(200) }] },
+    name: "maximum text length",
+    input: { steps: [{ text: "x".repeat(503), status: "blocked" }] },
     schemaValid: true,
     prepared: true,
   },
@@ -68,7 +67,7 @@ const cases: Array<{ name: string; input: unknown; schemaValid: boolean; prepare
   ...blockedReasons.map(([name, fields]) => ({
     name: `blocked reason ${name}`,
     input: { steps: [{ text: "work", status: "blocked", ...fields }] },
-    schemaValid: name === "whitespace",
+    schemaValid: false,
     prepared: false,
   })),
   {
@@ -92,16 +91,16 @@ const cases: Array<{ name: string; input: unknown; schemaValid: boolean; prepare
   },
   {
     name: "text too long",
-    input: { steps: [{ text: "x".repeat(301), status: "pending" }] },
-    schemaValid: false,
+    input: { steps: [{ text: "x".repeat(504), status: "pending" }] },
+    schemaValid: true,
     prepared: false,
   },
   { name: "blank text", input: { steps: [{ text: " ", status: "pending" }] }, schemaValid: true, prepared: false },
   { name: "multiple active steps", input: { steps: [canonical[1], canonical[1]] }, schemaValid: true, prepared: false },
   {
     name: "grapheme-aware runtime limit",
-    input: { steps: [{ text: "e\u0301".repeat(151), status: "pending" }] },
-    schemaValid: false,
+    input: { steps: [{ text: "e\u0301".repeat(252), status: "pending" }] },
+    schemaValid: true,
     prepared: true,
   },
   { name: "non-array steps", input: { steps: "work" }, schemaValid: false, prepared: false },
@@ -150,11 +149,15 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
     const current = createContext({ mode });
     await harness.emit("session_start", current.ctx);
     try {
-      const raw = canonical.map((step) => (step.status === "blocked" ? step : { ...step, reason: "note" }));
+      const raw = canonical.map((step) =>
+        step.status === "blocked"
+          ? { text: "waiting", status: "blocked", reason: "needs approval" }
+          : { ...step, reason: "note" },
+      );
       const before = structuredClone(raw);
       const updated = await runProgressCall(harness, current.ctx, raw);
       assert.equal(updated.isError, false);
-      assert.deepEqual(updated.result.details, { version: 4, steps: canonical });
+      assert.deepEqual(updated.result.details, { version: 5, steps: canonical });
       assert.deepEqual(raw, before);
       assert.deepEqual(cloneProgressSteps(canonical), canonical);
       assert.equal(
@@ -162,7 +165,7 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
         mode === "tui",
       );
       const publicationCount = current.widgets.length;
-      const invalid = await runProgressCall(harness, current.ctx, [{ text: "wait", status: "blocked" }]);
+      const invalid = await runProgressCall(harness, current.ctx, [{ text: "wait", status: "blocked", extra: true }]);
       assert.equal(invalid.isError, true);
       assert.equal(current.widgets.length, publicationCount);
       const summary = { role: "compactionSummary", summary: "Earlier work", tokensBefore: 100, timestamp: 0 } as const;
@@ -172,7 +175,7 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
       assert.equal(String(state.content).endsWith(JSON.stringify({ steps: canonical })), true);
       const cleared = await runProgressCall(harness, current.ctx, []);
       assert.equal(cleared.isError, false);
-      assert.deepEqual(cleared.result.details, { version: 4, steps: [] });
+      assert.deepEqual(cleared.result.details, { version: 5, steps: [] });
     } finally {
       await harness.emit("session_shutdown", current.ctx);
     }
@@ -182,12 +185,12 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 test("retained normalized calls suppress redundant compaction context without repairing invalid results", () => {
   const summary = { role: "compactionSummary", summary: "Earlier work", tokensBefore: 100, timestamp: 0 } as const;
   const raw = canonical.map((step) => (step.status === "blocked" ? step : { ...step, reason: "note" }));
-  const messages = [summary, progressToolCallMessage(raw), progressToolResultMessage({ version: 4, steps: canonical })];
+  const messages = [summary, progressToolCallMessage(raw), progressToolResultMessage({ version: 5, steps: canonical })];
   assert.equal(reconcileProgressContext(messages, canonical), messages);
   assert.deepEqual(
     reconstructProgress([
-      toolResultEntry({ version: 4, steps: canonical }),
-      toolResultEntry({ version: 4, steps: raw }, undefined, "invalid"),
+      toolResultEntry({ version: 5, steps: canonical }),
+      toolResultEntry({ version: 5, steps: raw }, undefined, "invalid"),
     ]),
     canonical,
   );
@@ -199,7 +202,7 @@ test("retained normalized calls suppress redundant compaction context without re
     const badCall = [
       summary,
       progressToolCallMessage(invalid),
-      progressToolResultMessage({ version: 4, steps: canonical }),
+      progressToolResultMessage({ version: 5, steps: canonical }),
     ];
     assert.equal(reconcileProgressContext(badCall, canonical).filter((message) => message.role === "custom").length, 1);
   }

@@ -125,12 +125,12 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
     name: TOOL_NAME,
     label: "Progress",
     description:
-      "Replace the current session progress state with the complete supplied steps. Call update_progress whenever actual step state changes; keep at most one step in_progress, require a reason for each blocked step, and send an empty steps array to clear it.",
+      "Replace the current session progress state with the complete supplied steps. Call update_progress whenever actual step state changes; keep at most one step in_progress and send an empty steps array to clear it.",
     promptSnippet: "Maintain the complete session progress state as multi-step work progresses",
     promptGuidelines: [
       "Use update_progress to track work with multiple meaningful steps; skip it for simple, single-step tasks.",
       "Use update_progress to keep the progress state aligned with actual work: mark a step in_progress before starting it, mark it completed as soon as it finishes, and revise the steps before continuing when the plan changes.",
-      "Use blocked with a concise reason only when progress depends on an external action or condition; blocked does not mean completed.",
+      "Use blocked only when progress depends on an external action or condition, and include what is needed to continue in the step text; blocked does not mean completed.",
       "Before a progress report or final response, call update_progress to reconcile every step with actual work; do not report completion while the progress state is stale.",
       "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
     ],
@@ -271,7 +271,6 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
 export {
   LEGACY_TODO_CONTEXT_MESSAGE_TYPE,
   LEGACY_TODO_RESTORED_BOUNDARY_ENTRY_TYPE,
-  MAX_PROGRESS_REASON_LENGTH,
   MAX_PROGRESS_STEPS,
   MAX_PROGRESS_TEXT_LENGTH,
   PROGRESS_CONTEXT_MESSAGE_TYPE,

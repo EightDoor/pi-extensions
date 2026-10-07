@@ -4,12 +4,14 @@ import { Type } from "typebox";
 
 export const TOOL_NAME = "update_progress";
 export const PROGRESS_CONTEXT_MESSAGE_TYPE = "progress-status";
-export const PROGRESS_CONTEXT_VERSION = 4;
-export const PROGRESS_DETAILS_VERSION = 4;
+export const PROGRESS_CONTEXT_VERSION = 5;
+export const PROGRESS_DETAILS_VERSION = 5;
 export const PROGRESS_RESTORED_BOUNDARY_ENTRY_TYPE = "progress-restored-context-boundary";
 export const MAX_PROGRESS_STEPS = 50;
-export const MAX_PROGRESS_TEXT_LENGTH = 300;
-export const MAX_PROGRESS_REASON_LENGTH = 200;
+// Losslessly accommodates the old text, separator, and reason.
+export const MAX_PROGRESS_TEXT_LENGTH = 503;
+const LEGACY_TEXT_LENGTH = 300;
+const LEGACY_REASON_LENGTH = 200;
 
 export const LEGACY_TODO_CONTEXT_MESSAGE_TYPE = "todo-list-status";
 export const LEGACY_TODO_RESTORED_BOUNDARY_ENTRY_TYPE = "todo-restored-context-boundary";
@@ -26,9 +28,14 @@ const RESUBMIT_GUIDANCE = "Fix the input and resubmit the complete steps array."
 
 type ProgressStatus = (typeof PROGRESS_STATUSES)[number];
 type PreviousTodoStatus = (typeof NON_BLOCKED_STATUSES)[number];
-type SupportedStateVersion = 1 | 2 | 3 | 4;
+type SupportedStateVersion = 1 | 2 | 3 | 4 | 5;
 
-export type ProgressStep =
+export interface ProgressStep {
+  text: string;
+  status: ProgressStatus;
+}
+
+type ProgressV4 =
   | { text: string; status: "pending" | "in_progress" | "completed" }
   | { text: string; status: "blocked"; reason: string };
 
@@ -51,37 +58,23 @@ interface LegacyTodoItem {
   status: PreviousTodoStatus;
 }
 
+// JSON Schema maxLength counts code points, not the historical grapheme clusters.
+// Enforce the grapheme limit in prepareArguments so migrated Unicode can be resubmitted.
 const progressTextSchema = Type.String({
   minLength: 1,
-  maxLength: MAX_PROGRESS_TEXT_LENGTH,
-  description: "A concise, action-oriented step",
+  description: "A concise, action-oriented step (at most 503 grapheme clusters)",
 });
 
 export const ProgressParameters = Type.Object(
   {
     steps: Type.Array(
-      Type.Union([
-        Type.Object(
-          {
-            text: progressTextSchema,
-            status: StringEnum(NON_BLOCKED_STATUSES, { description: "The step's current status" }),
-          },
-          { additionalProperties: false },
-        ),
-        Type.Object(
-          {
-            text: progressTextSchema,
-            status: StringEnum(["blocked"] as const, { description: "The step's current status" }),
-            reason: Type.String({
-              minLength: 1,
-              maxLength: MAX_PROGRESS_REASON_LENGTH,
-              description:
-                "Explain the external action or condition required to unblock this step; not a general progress note",
-            }),
-          },
-          { additionalProperties: false },
-        ),
-      ]),
+      Type.Object(
+        {
+          text: progressTextSchema,
+          status: StringEnum(PROGRESS_STATUSES, { description: "The step's current status" }),
+        },
+        { additionalProperties: false },
+      ),
       {
         maxItems: MAX_PROGRESS_STEPS,
         description: "The complete current progress state; send an empty array to clear it",
@@ -105,8 +98,16 @@ export function prepareProgressArguments(value: unknown): { steps: ProgressStep[
       const step = entry as Record<string, unknown>;
       const status = step.status;
       const isNonBlockedStatus = status === "pending" || status === "in_progress" || status === "completed";
-      if (!isNonBlockedStatus || !Object.hasOwn(step, "reason")) return entry;
-      const withoutReason = { ...step };
+      if ((!isNonBlockedStatus && status !== "blocked") || !Object.hasOwn(step, "reason")) return entry;
+      if (status === "blocked" && !isProgressV4Steps([step])) {
+        rejectProgress(
+          "legacy blocked input must have valid text (up to 300 characters) and a non-whitespace reason (up to 200 characters), with no unsupported fields.",
+        );
+      }
+      const withoutReason: Record<string, unknown> = {
+        ...step,
+        ...(status === "blocked" ? { text: mergeBlockedText(step.text as string, step.reason as string) } : {}),
+      };
       delete withoutReason.reason;
       return withoutReason;
     }),
@@ -128,7 +129,7 @@ export function validateProgressArguments(value: unknown): { steps: ProgressStep
   for (const [index, entry] of value.steps.entries()) {
     const item = index + 1;
     if (!isRecord(entry)) rejectProgress(`item ${item} must be an object.`);
-    if (!hasOnlyKeys(entry, ["text", "status", "reason"])) {
+    if (!hasOnlyKeys(entry, ["text", "status"])) {
       rejectProgress(`item ${item} contains an unsupported field.`);
     }
     if (typeof entry.text !== "string") rejectProgress(`item ${item} text must be a string.`);
@@ -144,19 +145,6 @@ export function validateProgressArguments(value: unknown): { steps: ProgressStep
     const status = entry.status as ProgressStatus;
     if (status === "in_progress") inProgressIndices.push(item);
 
-    if (status === "blocked") {
-      if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) {
-        rejectProgress(`item ${item} is blocked and requires a non-whitespace reason.`);
-      }
-      if (!hasMaxGraphemeLength(entry.reason, MAX_PROGRESS_REASON_LENGTH)) {
-        rejectProgress(`item ${item} reason exceeds ${MAX_PROGRESS_REASON_LENGTH} characters.`);
-      }
-      steps.push({ text: entry.text, status, reason: entry.reason });
-      continue;
-    }
-    if (Object.hasOwn(entry, "reason")) {
-      rejectProgress(`item ${item} may include reason only when status is blocked.`);
-    }
     steps.push({ text: entry.text, status });
   }
 
@@ -167,11 +155,7 @@ export function validateProgressArguments(value: unknown): { steps: ProgressStep
 }
 
 export function cloneProgressSteps(steps: readonly ProgressStep[]): ProgressStep[] {
-  return steps.map((step) =>
-    step.status === "blocked"
-      ? { text: step.text, status: step.status, reason: step.reason }
-      : { text: step.text, status: step.status },
-  );
+  return steps.map((step) => ({ text: step.text, status: step.status }));
 }
 
 export function allProgressCompleted(steps: readonly ProgressStep[]): boolean {
@@ -318,6 +302,24 @@ function contextDescriptor(
     }
   }
 
+  const oldProgressPrefix = "[PI PROGRESS STATUS v4]\nCurrent progress steps as JSON data:\n";
+  if (content.startsWith(oldProgressPrefix)) {
+    try {
+      const value: unknown = JSON.parse(content.slice(oldProgressPrefix.length));
+      if (!isRecord(value) || !hasOnlyKeys(value, ["steps"]) || !isProgressV4Steps(value.steps)) return undefined;
+      const canonical = value.steps.map((step) =>
+        step.status === "blocked"
+          ? { text: step.text, status: step.status, reason: step.reason }
+          : { text: step.text, status: step.status },
+      );
+      if (canonical.length === 0 || `${oldProgressPrefix}${JSON.stringify({ steps: canonical })}` !== content)
+        return undefined;
+      return { customType: PROGRESS_CONTEXT_MESSAGE_TYPE, version: 4 };
+    } catch {
+      return undefined;
+    }
+  }
+
   for (const version of [3, 2, 1] as const) {
     const prefix = todoContextPrefix(version);
     if (!content.startsWith(prefix)) continue;
@@ -373,7 +375,11 @@ function decodePersistedResult(
   if (!isRecord(value) || typeof value.version !== "number") return undefined;
   if (toolName === TOOL_NAME && value.version === PROGRESS_DETAILS_VERSION) {
     if (!hasOnlyKeys(value, ["version", "steps"]) || !isProgressSteps(value.steps)) return undefined;
-    return { version: 4, steps: cloneProgressSteps(value.steps) };
+    return { version: 5, steps: cloneProgressSteps(value.steps) };
+  }
+  if (toolName === TOOL_NAME && value.version === 4) {
+    if (!hasOnlyKeys(value, ["version", "steps"]) || !isProgressV4Steps(value.steps)) return undefined;
+    return { version: 4, steps: migrateProgressV4(value.steps) };
   }
   if (toolName === UPDATE_TODO_TOOL_NAME && value.version === TODO_DETAILS_VERSION) {
     if (!hasOnlyKeys(value, ["version", "todos"]) || !isTodoV3Array(value.todos)) return undefined;
@@ -402,7 +408,7 @@ function decodeToolArguments(
   value: unknown,
 ): ProgressStep[] | undefined {
   if (!isRecord(value)) return undefined;
-  if (toolName === TOOL_NAME && version === 4) {
+  if (toolName === TOOL_NAME && version === 5) {
     // Pi retains raw calls but stores prepared results. Match the same narrow input
     // normalization as execution without loosening persisted-result validation.
     try {
@@ -410,6 +416,16 @@ function decodeToolArguments(
     } catch {
       return undefined;
     }
+  }
+  if (toolName === TOOL_NAME && version === 4) {
+    if (!hasOnlyKeys(value, ["steps"]) || !Array.isArray(value.steps)) return undefined;
+    const normalized = value.steps.map((step: unknown) => {
+      if (!isRecord(step) || !NON_BLOCKED_STATUSES.includes(step.status as PreviousTodoStatus)) return step;
+      const withoutReason = { ...step };
+      delete withoutReason.reason;
+      return withoutReason;
+    });
+    return isProgressV4Steps(normalized) ? migrateProgressV4(normalized) : undefined;
   }
   if (toolName === UPDATE_TODO_TOOL_NAME && version === 3) {
     return hasOnlyKeys(value, ["todos"]) && isTodoV3Array(value.todos) ? migrateTodoV3(value.todos) : undefined;
@@ -428,6 +444,15 @@ function decodeToolArguments(
 }
 
 function isProgressSteps(value: unknown): value is ProgressStep[] {
+  try {
+    validateProgressArguments({ steps: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isProgressV4Steps(value: unknown): value is ProgressV4[] {
   if (!Array.isArray(value) || value.length > MAX_PROGRESS_STEPS) return false;
   let inProgressCount = 0;
   for (const entry of value) {
@@ -435,7 +460,7 @@ function isProgressSteps(value: unknown): value is ProgressStep[] {
     if (
       typeof entry.text !== "string" ||
       entry.text.trim().length === 0 ||
-      !hasMaxGraphemeLength(entry.text, MAX_PROGRESS_TEXT_LENGTH) ||
+      !hasMaxGraphemeLength(entry.text, LEGACY_TEXT_LENGTH) ||
       !PROGRESS_STATUSES.includes(entry.status as ProgressStatus)
     ) {
       return false;
@@ -445,7 +470,7 @@ function isProgressSteps(value: unknown): value is ProgressStep[] {
       if (
         typeof entry.reason !== "string" ||
         entry.reason.trim().length === 0 ||
-        !hasMaxGraphemeLength(entry.reason, MAX_PROGRESS_REASON_LENGTH)
+        !hasMaxGraphemeLength(entry.reason, LEGACY_REASON_LENGTH)
       ) {
         return false;
       }
@@ -464,7 +489,7 @@ function isTodoV3Array(value: unknown): value is TodoV3[] {
     if (
       typeof entry.step !== "string" ||
       entry.step.trim().length === 0 ||
-      !hasMaxGraphemeLength(entry.step, MAX_PROGRESS_TEXT_LENGTH) ||
+      !hasMaxGraphemeLength(entry.step, LEGACY_TEXT_LENGTH) ||
       !PROGRESS_STATUSES.includes(entry.status as ProgressStatus)
     ) {
       return false;
@@ -474,7 +499,7 @@ function isTodoV3Array(value: unknown): value is TodoV3[] {
       if (
         typeof entry.reason !== "string" ||
         entry.reason.trim().length === 0 ||
-        !hasMaxGraphemeLength(entry.reason, MAX_PROGRESS_REASON_LENGTH)
+        !hasMaxGraphemeLength(entry.reason, LEGACY_REASON_LENGTH)
       ) {
         return false;
       }
@@ -502,7 +527,7 @@ function hasPreviousTodoShape(value: unknown, textProperty: "step" | "text"): bo
     if (
       typeof text !== "string" ||
       text.trim().length === 0 ||
-      !hasMaxGraphemeLength(text, MAX_PROGRESS_TEXT_LENGTH) ||
+      !hasMaxGraphemeLength(text, LEGACY_TEXT_LENGTH) ||
       !NON_BLOCKED_STATUSES.includes(entry.status as PreviousTodoStatus)
     ) {
       return false;
@@ -512,12 +537,22 @@ function hasPreviousTodoShape(value: unknown, textProperty: "step" | "text"): bo
   return inProgressCount <= 1;
 }
 
+function mergeBlockedText(text: string, reason: string): string {
+  return `${text} — ${reason}`;
+}
+
+function migrateProgressV4(steps: readonly ProgressV4[]): ProgressStep[] {
+  return steps.map((step) => ({
+    text: step.status === "blocked" ? mergeBlockedText(step.text, step.reason) : step.text,
+    status: step.status,
+  }));
+}
+
 function migrateTodoV3(todos: readonly TodoV3[]): ProgressStep[] {
-  return todos.map((todo) =>
-    todo.status === "blocked"
-      ? { text: todo.step, status: todo.status, reason: todo.reason }
-      : { text: todo.step, status: todo.status },
-  );
+  return todos.map((todo) => ({
+    text: todo.status === "blocked" ? mergeBlockedText(todo.step, todo.reason) : todo.step,
+    status: todo.status,
+  }));
 }
 
 function migratePreviousTodos(todos: readonly PreviousTodo[]): ProgressStep[] {
@@ -539,12 +574,7 @@ function cloneTodoV3(todos: readonly TodoV3[]): TodoV3[] {
 function progressStepsEqual(left: readonly ProgressStep[], right: readonly ProgressStep[]): boolean {
   return (
     left.length === right.length &&
-    left.every(
-      (step, index) =>
-        step.text === right[index]?.text &&
-        step.status === right[index]?.status &&
-        (step.status !== "blocked" || (right[index]?.status === "blocked" && step.reason === right[index].reason)),
-    )
+    left.every((step, index) => step.text === right[index]?.text && step.status === right[index]?.status)
   );
 }
 
@@ -593,7 +623,7 @@ function hasLeadingSummary(messages: ContextEvent["messages"], boundary: number)
   return boundary > summaryStart;
 }
 
-// Keep this aligned with TypeBox's maxLength guard so custom validation and schema validation agree.
+// Preserve the historical cluster-counting rules for both legacy decoding and current input.
 function hasMaxGraphemeLength(value: string, maximum: number): boolean {
   let count = 0;
   let index = 0;
