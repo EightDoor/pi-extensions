@@ -1,46 +1,28 @@
-import { MoonIcon, SunIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Heading, IconButton, Text, Theme } from "@radix-ui/themes";
-import { useEffect, useState } from "react";
+import { HamburgerMenuIcon, MoonIcon, ReaderIcon, SunIcon } from "@radix-ui/react-icons";
+import { Badge, Callout, Heading, IconButton, Theme } from "@radix-ui/themes";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
-import type { BranchView, DetailView, Snapshot } from "../model.ts";
-import { type Filters, matches, matchesCall } from "./format.ts";
+import type { BranchView, Snapshot } from "../model.ts";
+import { generation, headers, request, useDetail } from "./api.ts";
+import { type Filters, matches } from "./format.ts";
 import { Inspector } from "./inspector.tsx";
+import { LiveDrawer } from "./live-drawer.tsx";
 import { Overview } from "./overview.tsx";
+import { PaneDrawer, ResizeHandle, useNarrow } from "./panes.tsx";
 import { Trace } from "./trace.tsx";
 import { Sidebar } from "./tree.tsx";
 
-const params = new URLSearchParams(location.hash.slice(1));
-const token = params.get("token") ?? sessionStorage.getItem("inspector-token") ?? "";
-const generation = params.get("generation") ?? sessionStorage.getItem("inspector-generation") ?? "";
-if (token) sessionStorage.setItem("inspector-token", token);
-if (generation) sessionStorage.setItem("inspector-generation", generation);
-history.replaceState(null, "", location.pathname);
-async function request<T>(route: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(
-    `/api/${route}${route.includes("?") ? "&" : "?"}generation=${encodeURIComponent(generation)}`,
-    { headers: { "X-Inspector-Token": token }, signal, cache: "no-store" },
-  );
-  if (!response.ok)
-    throw new Error(
-      response.status === 409 || response.status === 401
-        ? "Session expired; open a new viewer from Pi."
-        : "Viewer unavailable; reconnecting requires a running Pi session.",
-    );
-  return response.json() as Promise<T>;
-}
-
+type Selection = { kind: "entry" | "call"; id: string; serial: number; filterVersion?: number };
 function App() {
   const [appearance, setAppearance] = useState<"dark" | "light">("dark");
   const [revision, setRevision] = useState(-1);
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [branch, setBranch] = useState<BranchView>();
-  const [detail, setDetail] = useState<DetailView>();
-  const [leaf, setLeaf] = useState("");
-  const [selected, setSelected] = useState("");
-  const [offset, setOffset] = useState(0);
-  const [view, setView] = useState("timeline");
+  const [selection, setSelection] = useState<Selection>();
+  const [view, setView] = useState("list");
+  const [liveOpen, setLiveOpen] = useState(false);
   const [filters, setFilters] = useState<Filters>({
     query: "",
     kind: "all",
@@ -48,9 +30,40 @@ function App() {
     errorsOnly: false,
     slowOnly: false,
   });
+  const [filterVersion, setFilterVersion] = useState(0);
+  function changeFilters(value: Filters) {
+    setFilters(value);
+    setFilterVersion((previous) => previous + 1);
+  }
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState("raw");
+  const navTrigger = useRef<HTMLButtonElement>(null);
+  const inspectorTrigger = useRef<HTMLButtonElement>(null);
+  const [navOpen, setNavOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [navDrawer, setNavDrawer] = useState(false);
+  const [inspectorDrawer, setInspectorDrawer] = useState(false);
+  const [navWidth, setNavWidth] = useState(() => Math.max(200, Math.min(360, window.innerWidth * 0.185)));
+  const [inspectorWidth, setInspectorWidth] = useState(() => Math.max(280, Math.min(520, window.innerWidth * 0.235)));
+  const narrow = useNarrow((navOpen ? navWidth : 0) + (inspectorOpen ? inspectorWidth : 0));
+  const calls = snapshot?.calls ?? [];
+  const entries = snapshot?.nodes ?? [];
+  const selectedCall = selection?.kind === "call" ? calls.find((call) => call.id === selection.id) : undefined;
+  const entryId = selection?.kind === "entry" ? selection.id : (selectedCall?.branchAnchor ?? "");
+  const { detail } = useDetail(selection?.kind === "entry" ? entryId : undefined);
+  const selectedNode = entries.find((node) => node.id === entryId);
+  const matching = useMemo(
+    () => new Set(entries.filter((node) => matches(node, filters, calls)).map((node) => node.id)),
+    [entries, calls, filters],
+  );
+  function selectEntry(id: string) {
+    setSelection((old) => ({ kind: "entry", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
+  }
+  function selectCall(id: string) {
+    setSelection((old) => ({ kind: "call", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
+    setLiveOpen(true);
+  }
   useEffect(() => {
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -58,7 +71,7 @@ function App() {
     const connect = async () => {
       try {
         const response = await fetch(`/api/events?generation=${encodeURIComponent(generation)}`, {
-          headers: { "X-Inspector-Token": token },
+          headers: headers(),
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
@@ -112,55 +125,66 @@ function App() {
       clearTimeout(refresh);
     };
   }, []);
+
   useEffect(() => {
     if (revision < 0) return;
     const controller = new AbortController();
     void request<Snapshot>("snapshot", controller.signal)
-      .then((s) => {
+      .then((value) => {
         if (controller.signal.aborted) return;
-        setSnapshot(s);
+        setSnapshot(value);
         setError("");
-        setLeaf((old) => old || s.leafId || s.nodes[0]?.id || "");
-        setSelected((old) => old || s.leafId || s.nodes[0]?.id || "");
+        const id = value.leafId ?? value.nodes[0]?.id;
+        if (id) setSelection((old) => old ?? { kind: "entry", id, serial: 0 });
       })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(String(e.message));
+      .catch((error) => {
+        if (!controller.signal.aborted) setError(String(error.message));
       });
     return () => controller.abort();
   }, [revision]);
   useEffect(() => {
-    if (!leaf || revision < 0) return;
+    if (!entryId) {
+      setBranch(undefined);
+      return;
+    }
     const controller = new AbortController();
     setBranch(undefined);
-    void request<BranchView>(`branch?leaf=${encodeURIComponent(leaf)}&offset=${offset}`, controller.signal)
-      .then((b) => {
-        if (!controller.signal.aborted) setBranch(b);
+    void request<BranchView>(`branch?leaf=${encodeURIComponent(entryId)}&offset=0`, controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setBranch(value);
       })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(String(e.message));
+      .catch((error) => {
+        if (!controller.signal.aborted) setError(String(error.message));
       });
     return () => controller.abort();
-  }, [leaf, offset, revision]);
-  useEffect(() => {
-    if (!selected || !leaf || revision < 0) return;
-    const controller = new AbortController();
-    setDetail(undefined);
-    void request<DetailView>(
-      `detail?id=${encodeURIComponent(selected)}&leaf=${encodeURIComponent(leaf)}`,
-      controller.signal,
-    )
-      .then((d) => {
-        if (!controller.signal.aborted) setDetail(d);
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(String(e.message));
-      });
-    return () => controller.abort();
-  }, [leaf, selected, revision]);
+  }, [entryId]);
 
-  const calls = snapshot?.calls ?? [];
-  const nodes = snapshot?.nodes.filter((node) => matches(node, filters, calls)) ?? [];
-  const selectedNode = snapshot?.nodes.find((node) => node.id === selected);
+  const sidebar = (
+    <Sidebar
+      nodes={entries}
+      matches={matching}
+      total={snapshot?.totalEntries ?? 0}
+      selected={entryId}
+      filters={filters}
+      change={changeFilters}
+      revealSelected={selection?.filterVersion === filterVersion}
+      choose={selectEntry}
+    />
+  );
+  const inspector = (
+    <Inspector
+      selected={selection?.id ?? ""}
+      node={selectedNode}
+      detail={detail}
+      call={selectedCall}
+      branch={branch}
+      snapshot={snapshot}
+      tab={tab}
+      changeTab={setTab}
+      select={selectEntry}
+      selectCall={selectCall}
+    />
+  );
   return (
     <Theme
       className="inspector-app"
@@ -168,35 +192,44 @@ function App() {
       accentColor="blue"
       grayColor="slate"
       radius="medium"
-      scaling="90%"
+      scaling="100%"
     >
       <header className="app-header">
         <div className="brand">
           <div className="brand-logo" aria-hidden="true">
             π
           </div>
-          <div>
-            <Heading size="5">Pi Session Inspector</Heading>
-            <Text size="2" color="gray">
-              Inspect and explore Pi agent sessions in real time
-            </Text>
-          </div>
+          <Heading size="4">Pi Session Inspector</Heading>
         </div>
         <div className="header-context">
           <span>{snapshot?.name ?? "Connecting"}</span>
           <span>
             Pi leaf: <strong>{snapshot?.leafId ?? "none"}</strong>
           </span>
-          <span>Capture: {snapshot ? new Date(snapshot.captureStartedAt).toISOString().slice(0, 19) : "—"}</span>
           <span>
-            Browser preview: <strong>{leaf || "none"}</strong>
+            Browser selection: <strong>{selection?.id ?? "none"}</strong>
           </span>
         </div>
         <div className="header-actions">
-          <Badge color={connected ? "green" : "amber"} className="connection-badge">
-            <span className="status-dot" />
-            {connected ? "Live" : "Disconnected"}
-          </Badge>
+          <IconButton
+            ref={navTrigger}
+            aria-label="Toggle navigator"
+            aria-expanded={narrow ? navDrawer : navOpen}
+            variant="ghost"
+            onClick={() => (narrow ? setNavDrawer(!navDrawer) : setNavOpen(!navOpen))}
+          >
+            <HamburgerMenuIcon />
+          </IconButton>
+          <IconButton
+            ref={inspectorTrigger}
+            aria-label="Toggle inspector"
+            aria-expanded={narrow ? inspectorDrawer : inspectorOpen}
+            variant="ghost"
+            onClick={() => (narrow ? setInspectorDrawer(!inspectorDrawer) : setInspectorOpen(!inspectorOpen))}
+          >
+            <ReaderIcon />
+          </IconButton>
+          <Badge color={connected ? "green" : "amber"}>{connected ? "Live" : "Disconnected"}</Badge>
           <Badge>Read-only</Badge>
           <IconButton
             aria-label="Toggle appearance"
@@ -205,9 +238,6 @@ function App() {
           >
             {appearance === "dark" ? <SunIcon /> : <MoonIcon />}
           </IconButton>
-          <span className="brand-avatar" aria-hidden="true">
-            P
-          </span>
         </div>
       </header>
       {(error || snapshot?.incomplete) && (
@@ -219,65 +249,93 @@ function App() {
           )}
           {snapshot?.incomplete && (
             <Callout.Root color="amber">
-              <Callout.Text>Inventory truncated; not all session entries or resources are shown.</Callout.Text>
+              <Callout.Text>Indexed data is incomplete; existing entry/capture limits apply.</Callout.Text>
             </Callout.Root>
           )}
         </div>
       )}
-      <main className="app-grid">
-        <Sidebar
-          nodes={nodes}
-          total={snapshot?.totalEntries ?? 0}
-          selected={leaf}
-          filters={filters}
-          change={setFilters}
-          choose={(id) => {
-            setLeaf(id);
-            setSelected(id);
-            setOffset(0);
-          }}
-        />
+      <main
+        className={`app-grid ${narrow ? "narrow-layout" : ""}`}
+        style={
+          narrow
+            ? undefined
+            : {
+                gridTemplateColumns: `${navOpen ? navWidth : 0}px ${navOpen ? 6 : 0}px minmax(0, 1fr) ${inspectorOpen ? 6 : 0}px ${inspectorOpen ? inspectorWidth : 0}px`,
+              }
+        }
+      >
+        {!narrow && (
+          <>
+            <div className="side-slot nav-slot" hidden={!navOpen}>
+              {sidebar}
+            </div>
+            {navOpen && (
+              <ResizeHandle name="Resize navigator" value={navWidth} change={setNavWidth} min={180} max={420} />
+            )}
+          </>
+        )}
         <div className="center-column">
           <Overview snapshot={snapshot} />
           <Trace
+            entries={entries}
+            matches={matching}
+            selected={entryId}
+            serial={selection?.serial ?? 0}
+            revealSelected={selection?.filterVersion === filterVersion}
+            select={selectEntry}
             view={view}
             changeView={setView}
-            key={`${leaf}-${offset}`}
-            entries={branch?.entries.filter((entry) => matches(entry, filters, calls)) ?? []}
-            branch={branch}
-            selected={selected}
-            select={setSelected}
-            detail={detail}
-            calls={calls.filter((call) => matchesCall(call, filters))}
-            allCalls={calls}
+            calls={calls}
+          />
+          <LiveDrawer
+            entries={entries}
+            calls={calls}
+            selected={selectedCall?.id}
+            select={selectCall}
+            open={liveOpen}
+            changeOpen={setLiveOpen}
+            view={view}
             dropped={snapshot?.droppedCalls ?? 0}
-            offset={offset}
-            page={setOffset}
-            prompt={() => setTab("prompt")}
+            filters={filters}
           />
         </div>
-        <Inspector
-          selected={selected}
-          node={selectedNode}
-          detail={detail}
-          branch={branch}
-          snapshot={snapshot}
-          tab={tab}
-          changeTab={setTab}
-          select={setSelected}
-        />
+        {!narrow && (
+          <>
+            {inspectorOpen ? (
+              <ResizeHandle
+                name="Resize inspector"
+                value={inspectorWidth}
+                change={setInspectorWidth}
+                min={260}
+                max={600}
+                inverse
+              />
+            ) : null}
+            <div className="side-slot inspector-slot" hidden={!inspectorOpen}>
+              {inspector}
+            </div>
+          </>
+        )}
       </main>
+      {narrow && (
+        <>
+          <PaneDrawer trigger={navTrigger} name="Session navigator" side="left" open={navDrawer} change={setNavDrawer}>
+            {sidebar}
+          </PaneDrawer>
+          <PaneDrawer
+            trigger={inspectorTrigger}
+            name="Event inspector"
+            side="right"
+            open={inspectorDrawer}
+            change={setInspectorDrawer}
+          >
+            {inspector}
+          </PaneDrawer>
+        </>
+      )}
       <footer className="app-footer">
-        <div>
-          <span className={`footer-status ${connected ? "online" : ""}`}>
-            <span className="status-dot" />
-            {connected ? "Live session" : "Session disconnected"}
-          </span>
-          <span>Real-time event streaming</span>
-          <span>Authenticated loopback</span>
-          <span>Capture in memory</span>
-        </div>
-        <span>{connected ? "Connected · watching for new events" : "Disconnected · reopen from Pi"}</span>
+        <span>{connected ? "Connected · observing live events" : "Disconnected · reopen from Pi"}</span>
+        <span>Read-only · bounded display copies · no provider transport spans</span>
       </footer>
     </Theme>
   );

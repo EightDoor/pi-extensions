@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { Collector } from "../collector.ts";
 import { branch, detail, snapshot } from "../projection.ts";
 import { startServer, type ViewerServer } from "../server.ts";
@@ -24,63 +24,144 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await server.close();
 });
+const nav = (page: Page, id: string) => page.locator(`.node[data-entry-id="${id}"]`);
+const row = (page: Page, id: string) => page.locator(`[data-trace-id="${id}"]`);
+async function openLive(page: Page) {
+  await page.getByRole("button", { name: /^Live calls/ }).click();
+}
+async function openObjects(page: Page, section: string) {
+  const container = page
+    .locator(".inspector-panel .data")
+    .filter({ has: page.getByRole("button", { name: section, exact: true }) });
+  await container.locator(".json-object").evaluateAll((elements) => {
+    for (const element of elements) (element as HTMLDetailsElement).open = true;
+  });
+}
 
-test("Radix views, branch preview, prompt diff, search, filters, keyboard and narrow layout", async ({ page }) => {
+test("existing prompt/tools/skills/context/codemode, filtering, read-only selection and narrow layout", async ({
+  page,
+}) => {
   const initialLeaf = data.manager.getLeafId();
   const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(server.url);
-  await expect(page.getByText("Live", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Pi Session Inspector" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(page.url()).not.toContain("token");
-  const alternate = page.locator(`[data-entry-id="${data.alternate}"]`);
-  await alternate.click();
-  await expect(page.getByText(`Browser preview: ${data.alternate}`, { exact: false })).toBeVisible();
+  await nav(page, data.alternate).click();
+  await expect(page.getByText(`Browser selection: ${data.alternate}`, { exact: false })).toBeVisible();
   expect(data.manager.getLeafId()).toBe(initialLeaf);
   await page.getByRole("tab", { name: "prompt", exact: true }).click();
-  await expect(page.getByText("Historical prompt · browser preview branch")).toBeVisible();
-  await expect(page.getByText("Current runtime effective prompt · may not yet be sent")).toBeVisible();
-  await page.locator(`[data-entry-id="${data.delta}"]`).click();
+  await expect(
+    page.getByRole("button", { name: "Historical prompt · browser preview branch", exact: true }),
+  ).toBeVisible();
+  await nav(page, data.delta).click();
   await expect(page.getByText("+ changed", { exact: false })).toBeVisible();
   await page.getByRole("tab", { name: "tools", exact: true }).click();
   await expect(page.getByText("mcp__docs__search", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "skills", exact: true }).click();
-  await expect(page.getByText("successfully read (nested metadata)", { exact: false })).toBeVisible();
+  await openObjects(page, "Evidence on preview branch");
+  await expect(page.getByText('"successfully read (nested metadata)"', { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "context", exact: true }).click();
-  await expect(page.getByText("Projected branch entries", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Projected branch entries", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "raw", exact: true }).click();
-  await expect(page.getByText("Raw selected entry · redacted display copy")).toBeVisible();
   await page.getByRole("textbox", { name: "Search session" }).fill("Alternative");
-  await expect(page.locator(".node")).toHaveCount(2); // Entry and its label-change record both match.
-  await expect(page.locator(`[data-entry-id="${data.alternate}"]`)).toBeVisible();
+  await expect(page.locator('.node[data-match="true"]')).toHaveCount(2);
   await page.getByRole("textbox", { name: "Search session" }).fill("");
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("combobox", { name: "Filter entry type" }).click();
   await page.getByRole("option", { name: "assistant", exact: true }).click();
-  await expect(page.locator(".node")).toHaveCount(1);
-  await page.locator(".node").focus();
+  await expect(page.locator('.node[data-match="true"]')).toHaveCount(1);
+  await nav(page, data.assistant).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("tab", { name: "codemode", exact: true }).click();
   await expect(
     page.getByText('await tools.read({path:"/skills/example/SKILL.md"}); text("done")', { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Toggle appearance" }).click();
-  await expect(page.locator(".radix-themes")).toHaveClass(/light/);
+  await expect(page.locator(".inspector-app")).toHaveClass(/light/);
   await page.setViewportSize({ width: 375, height: 812 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.locator(".app-grid")).toHaveClass(/narrow-layout/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.reload();
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
-test("live child results, error expansion, raster preview, no script execution or remote requests", async ({
+test("true hierarchy, independent selection/disclosure, retained descendants, keyboard and inline objects", async ({
   page,
 }) => {
+  data.manager.branch(data.user);
+  const root = data.manager.appendCustomEntry("Flow", { heading: "root" });
+  const a = data.manager.appendCustomEntry("Stage A", { input: "value" });
+  const b = data.manager.appendCustomEntry("Stage B", { nested: { deeper: { answer: 42 } } });
+  const c = data.manager.appendCustomEntry("Stage C", { output: "done" });
+  data.manager.branch(root);
+  const sibling = data.manager.appendCustomEntry("Sibling", { marker: true });
+  data.manager.branch(c);
+  const initial = data.manager.getLeafId();
+  await page.goto(server.url);
+  await expect(row(page, c)).toBeVisible();
+  await expect(page.locator(`[data-trace-entry-id="${c}"]`)).toHaveAttribute("data-parent-id", b);
+  await expect(row(page, c)).toHaveAttribute("aria-level", "6");
+  await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
+  await expect(row(page, a)).toHaveCount(0);
+  await expect(page.getByText(`Browser selection: ${c}`, { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
+  await expect(row(page, c)).toBeVisible();
+  await expect(row(page, a)).toHaveAttribute("aria-expanded", "true");
+  await expect(row(page, sibling)).toBeVisible();
+  await row(page, root).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(row(page, a)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(nav(page, a)).toHaveAttribute("aria-current", "true");
+  await expect(row(page, a)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press(" ");
+  await expect(row(page, b)).toHaveCount(0);
+  await page.keyboard.press(" ");
+  await expect(row(page, b)).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await expect(row(page, b)).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(row(page, b)).toHaveAttribute("aria-expanded", "false");
+  await page.keyboard.press("ArrowRight");
+  const inline = page.locator(`[data-trace-entry-id="${b}"] .inline-entry`);
+  await expect(inline.getByRole("button", { name: "Recorded content", exact: true })).toBeVisible();
+  await inline.locator("summary").filter({ hasText: "nested" }).click();
+  await inline.locator("summary").filter({ hasText: "deeper" }).click();
+  await expect(inline.getByText("42", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
+  await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
+  await expect(inline.getByText("42", { exact: true })).toBeVisible();
+  expect(data.manager.getLeafId()).toBe(initial);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+});
+
+test("related navigation reveals a filtered-out child without clearing filters or expansion", async ({ page }) => {
+  await page.goto(server.url);
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await nav(page, data.assistant).click();
+  await page.locator(".inspector-panel").getByRole("button", { name: "Related entries", exact: true }).click();
+  await page
+    .locator(".related")
+    .getByRole("button", { name: `tool_result · ${data.result}`, exact: true })
+    .click();
+  await expect(row(page, data.result)).toBeVisible();
+  await expect(row(page, data.result)).toHaveAttribute("aria-selected", "true");
+  await expect(nav(page, data.result)).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("button", { name: "Model", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("selected outside filters", { exact: true })).toBeVisible();
+});
+
+test("live drawer stays compact and closed during updates; hostile text/raster remains safe", async ({ page }) => {
   const external: string[] = [];
-  page.on("request", (req) => {
-    if (!req.url().startsWith(server.origin)) external.push(req.url());
+  page.on("request", (request) => {
+    if (!request.url().startsWith(server.origin)) external.push(request.url());
   });
   await page.goto(server.url);
-  await expect(page.getByText("Live", { exact: true })).toBeVisible();
+  const drawer = page.getByRole("button", { name: /^Live calls/ });
+  await expect(drawer).toHaveAttribute("aria-expanded", "false");
+  expect((await page.locator(".live-drawer").boundingBox())?.height).toBeLessThan(50);
   collector.start(
     {
       type: "tool_execution_start",
@@ -92,9 +173,10 @@ test("live child results, error expansion, raster preview, no script execution o
     data.assistant,
   );
   server.invalidate(++revision);
-  const trigger = page.getByRole("button", { name: "mcp__docs__search · running", exact: true });
-  await expect(trigger).toBeVisible();
-  await trigger.click();
+  await expect(drawer).toContainText("1 captured");
+  await expect(drawer).toHaveAttribute("aria-expanded", "false");
+  await openLive(page);
+  await page.getByRole("button", { name: "mcp__docs__search · running", exact: true }).click();
   collector.end(
     {
       type: "tool_execution_end",
@@ -118,7 +200,8 @@ test("live child results, error expansion, raster preview, no script execution o
   );
   server.invalidate(++revision);
   await expect(page.getByRole("button", { name: "mcp__docs__search · error", exact: true })).toBeVisible();
-  await expect(page.getByText("<script>globalThis.hacked=true", { exact: false }).first()).toBeVisible();
+  await openObjects(page, "Result · observed tool event");
+  await expect(page.getByText('"<script>globalThis.hacked=true</script>error"', { exact: true })).toBeVisible();
   await expect(page.getByAltText("Captured raster tool output")).toBeVisible();
   expect(await page.evaluate(() => "hacked" in globalThis)).toBe(false);
   expect(external).toEqual([]);
@@ -126,45 +209,48 @@ test("live child results, error expansion, raster preview, no script execution o
   await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
 });
 
-test("screenshot-form layout, trace controls, formatted JSON, filters and bounded copy", async ({ page }) => {
-  await page.setViewportSize({ width: 1672, height: 941 });
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "clipboard", {
-      value: {
-        writeText: async (text: string) => {
-          Object.defineProperty(window, "copiedDisplay", { value: text, configurable: true });
-        },
-      },
-      configurable: true,
-    });
-  });
+test("list is default; timeline uses a shared axis and log points, never duration-only spans", async ({ page }) => {
+  collector.start({ type: "tool_execution_start", toolCallId: "timed", toolName: "read", args: {} }, data.assistant);
   collector.end(
-    {
-      type: "tool_execution_end",
-      toolCallId: "parent",
-      toolName: "codemode",
-      isError: false,
-      durationMs: 4280,
-      result: { content: [{ type: "text", text: "done" }] },
-    },
+    { type: "tool_execution_end", toolCallId: "timed", toolName: "read", isError: false, result: {}, durationMs: 50 },
     data.assistant,
   );
   collector.end(
     {
       type: "tool_execution_end",
-      toolCallId: "parent/1",
-      parentToolCallId: "parent",
+      toolCallId: "unknown-start",
       toolName: "read",
-      isError: true,
-      durationMs: 11000,
-      result: { content: [{ type: "text", text: "fixture read failure" }] },
+      isError: false,
+      result: {},
+      durationMs: 10000,
     },
     data.assistant,
   );
   await page.goto(server.url);
-  await expect(page.getByRole("heading", { name: "Session overview" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Trace explorer" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Event inspector" })).toBeVisible();
+  await expect(page.locator(".trace-list")).toBeVisible();
+  await expect(page.locator(".timeline-span")).toHaveCount(0);
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await expect(page.locator(".trace-tree .timeline-point").first()).toBeVisible();
+  await expect(page.locator(".trace-tree .timeline-span")).toHaveCount(0);
+  await openLive(page);
+  await expect(page.locator('[id="live-call-unknown-start"] .timeline-span')).toHaveCount(0);
+  await expect(page.locator('[id="live-call-unknown-start"] .timeline-point')).toBeVisible();
+  await nav(page, data.alternate).click();
+  await expect(page.locator(".trace-timeline")).toBeVisible();
+});
+
+test("compact desktop layout, resizing/collapse, overview/JSON, copy and screenshot", async ({ page }) => {
+  await page.setViewportSize({ width: 1672, height: 941 });
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) =>
+          Object.defineProperty(window, "copiedDisplay", { value: text, configurable: true }),
+      },
+    }),
+  );
+  await page.goto(server.url);
+  await expect(page.getByRole("region", { name: "Session overview" })).toBeVisible();
   const positions = await page.locator(".sidebar, .center-column, .inspector-panel").evaluateAll((elements) =>
     elements.map((element) => ({
       x: element.getBoundingClientRect().x,
@@ -173,41 +259,65 @@ test("screenshot-form layout, trace controls, formatted JSON, filters and bounde
   );
   expect(positions[0]?.x).toBeLessThan(positions[1]?.x ?? 0);
   expect(positions[1]?.width).toBeGreaterThan(positions[2]?.width ?? 0);
-  expect(positions[1]?.x).toBeLessThan(positions[2]?.x ?? 0);
-  await page.getByRole("button", { name: "Expand all", exact: true }).click();
-  await expect(page.locator(".trace-item[data-state=open]")).toHaveCount(
-    data.manager.getBranch(data.manager.getLeafId() ?? undefined).length,
-  );
-  await page.getByRole("button", { name: "Collapse all", exact: true }).click();
-  await expect(page.locator(".trace-item[data-state=open]")).toHaveCount(0);
-  await page.getByRole("button", { name: "List", exact: true }).click();
-  await expect(page.locator(".trace-list")).toBeVisible();
-  await page.locator(`[data-entry-id="${data.alternate}"]`).click();
-  await expect(page.locator(".trace-list")).toBeVisible();
-  await page.locator(`[data-entry-id="${data.manager.getLeafId()}"]`).click();
-  await expect(page.locator(".trace-list")).toBeVisible();
-  await page.getByRole("button", { name: "Timeline", exact: true }).click();
-  await page.getByRole("button", { name: `Expand event ${data.assistant}` }).click();
-  await expect(page.locator(".event-overview-grid")).toBeVisible();
-  await page.getByRole("button", { name: "JSON", exact: true }).click();
+  const splitter = page.getByRole("separator", { name: "Resize navigator" });
+  const width = Number(await splitter.getAttribute("aria-valuenow"));
+  await splitter.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(splitter).toHaveAttribute("aria-valuenow", String(width + 10));
+  const box = await splitter.boundingBox();
+  if (!box) throw new Error("No splitter");
+  await page.mouse.move(box.x + 2, box.y + 60);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 42, box.y + 60);
+  await page.mouse.up();
+  expect(Number(await splitter.getAttribute("aria-valuenow"))).toBeGreaterThan(width + 10);
+  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await expect(page.locator(".sidebar")).not.toBeVisible();
+  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await expect(page.locator(".sidebar")).toBeVisible();
+  await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
   await expect(page.locator(".inspector-metadata")).toHaveCount(0);
-  await page.getByRole("button", { name: "Formatted", exact: true }).click();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
   await expect(page.locator(".inspector-metadata")).toBeVisible();
   await page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first().click();
   expect(await page.evaluate(() => Reflect.get(window, "copiedDisplay"))).toContain("future-state");
-  await page.getByRole("checkbox", { name: "Errors only", exact: true }).check();
-  await expect(page.locator(".call-trigger")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: "Slow tool calls (> 10s)", exact: true }).check();
-  await expect(page.locator(".call-trigger")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: "Errors only", exact: true }).uncheck();
-  await page.getByRole("checkbox", { name: "Slow tool calls (> 10s)", exact: true }).uncheck();
-  await page.getByRole("button", { name: "Model", exact: true }).click();
-  await expect(page.locator(".node")).toHaveCount(1);
-  await page.getByRole("button", { name: "All", exact: true }).click();
-  await page.screenshot({ path: test.info().outputPath("session-inspector-desktop.png") });
+  await page.getByRole("button", { name: `Expand event ${data.assistant}`, exact: true }).click();
+  await page.getByRole("button", { name: `Expand event ${data.assistant}`, exact: true }).click();
+  const resultToggle = page.getByRole("button", { name: `Expand event ${data.result}`, exact: true });
+  if ((await resultToggle.getAttribute("aria-expanded")) === "true") await resultToggle.click();
+  await resultToggle.click();
+  await expect(
+    page
+      .locator(`[data-trace-entry-id="${data.result}"] .inline-entry`)
+      .getByText("Script completed", { exact: false }),
+  ).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("session-explorer-desktop.png"), animations: "disabled" });
 });
 
-test("clipboard denial is observable and preview rendering stays bounded", async ({ page }) => {
+test("medium/narrow and effective 150% viewport use accessible drawers without page scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1115, height: 627 });
+  await page.goto(server.url);
+  await expect(page.getByRole("heading", { name: "Trace explorer" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expect(page.locator(".app-grid")).toHaveClass(/narrow-layout/);
+  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search session" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Toggle navigator" })).toBeFocused();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.locator(".inspector-panel")).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("session-explorer-narrow.png"), animations: "disabled" });
+  await page.keyboard.press("Escape");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+});
+
+test("clipboard failure and long plain previews retain bounded literal rendering", async ({ page }) => {
   await page.addInitScript(() =>
     Object.defineProperty(navigator, "clipboard", {
       value: {
@@ -217,9 +327,6 @@ test("clipboard denial is observable and preview rendering stays bounded", async
       },
     }),
   );
-  data.manager.appendCustomEntry("large-preview", {
-    text: Array.from({ length: 1200 }, (_, i) => `line ${i}`).join("\n"),
-  });
   data.manager.appendMessage({
     role: "system",
     content: Array.from({ length: 1200 }, (_, i) => `prompt line ${i}`).join("\n"),
@@ -228,32 +335,112 @@ test("clipboard denial is observable and preview rendering stays bounded", async
   await page.goto(server.url);
   await page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first().click();
   await expect(page.getByText("Copy failed", { exact: true })).toBeVisible();
-  // A plain multiline historical prompt exercises the DOM line cap, not JSON escaping.
   await page.getByRole("tab", { name: "prompt", exact: true }).click();
-  await expect(page.locator(".code-line").first()).toBeVisible();
   const preview = page
-    .locator(".data")
-    .filter({ has: page.getByText("Historical prompt · browser preview branch", { exact: true }) });
+    .locator(".inspector-panel .data")
+    .filter({ has: page.getByRole("button", { name: "Historical prompt · browser preview branch", exact: true }) });
   await expect(preview.locator(".code-line")).toHaveCount(1000);
   await expect(preview.locator(".preview-limit")).toBeVisible();
 });
 
-test("large-session inventory and paginated lazy details stay bounded", async ({ page }) => {
+test("inline detail requests are bounded and cancelled when rows collapse", async ({ page }) => {
+  let hold = false;
+  let active = 0;
+  let peak = 0;
+  let requests = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let ready: () => void = () => {};
+  const fourRequests = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/detail**", async (route) => {
+    if (!hold) {
+      await route.continue();
+      return;
+    }
+    active++;
+    requests++;
+    peak = Math.max(peak, active);
+    if (active === 4) ready();
+    await gate;
+    try {
+      await route.continue();
+    } catch {
+      /* Request was cancelled by its unmounted inline row. */
+    }
+    active--;
+  });
+  try {
+    await page.goto(server.url);
+    await expect(
+      page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first(),
+    ).toBeVisible();
+    hold = true;
+    await page.getByRole("button", { name: "Expand all", exact: true }).click();
+    await fourRequests;
+    expect(peak).toBe(4);
+    expect(requests).toBe(4);
+    await page.getByRole("button", { name: "Collapse all", exact: true }).click();
+    hold = false;
+    release();
+    await nav(page, data.assistant).click();
+    await expect(page.locator(".inspector-identity")).toContainText(data.assistant);
+    await expect(
+      page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first(),
+    ).toBeVisible();
+    expect(errors).toEqual([]);
+  } finally {
+    release();
+  }
+});
+
+test("long labels/tab overflow and resize cancellation preserve readable panes", async ({ page }) => {
+  await page.setViewportSize({ width: 1672, height: 941 });
+  const long = data.manager.appendCustomEntry(`thinking_level_change_${"long-name-".repeat(30)}`, { value: "test" });
+  await page.goto(server.url);
+  await expect(nav(page, long)).toBeVisible();
+  const title = nav(page, long).locator(".node-title strong");
+  expect(await title.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("nowrap");
+  const descriptions = await page.locator(".node-description").allTextContents();
+  expect(descriptions.every((description) => !description.trim().startsWith("{"))).toBe(true);
+  const separator = page.getByRole("separator", { name: "Resize inspector" });
+  await separator.focus();
+  await page.keyboard.press("Home");
+  const list = page.locator(".inspector-tabs > [role=tablist]");
+  expect(await list.evaluate((element) => getComputedStyle(element).flexWrap)).toBe("nowrap");
+  await list.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect(page.getByRole("tab", { name: "codemode", exact: true })).toBeVisible();
+  const navSplitter = page.getByRole("separator", { name: "Resize navigator" });
+  const box = await navSplitter.boundingBox();
+  if (!box) throw new Error("Missing handle");
+  await page.mouse.move(box.x + 2, box.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 32, box.y + 20);
+  await page.keyboard.press("Escape");
+  const stopped = await navSplitter.getAttribute("aria-valuenow");
+  await page.mouse.move(box.x + 62, box.y + 20);
+  await page.mouse.up();
+  await expect(navSplitter).toHaveAttribute("aria-valuenow", stopped ?? "");
+  await page.setViewportSize({ width: 1115, height: 627 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("large history pages visible rows lazily and preserves arbitrary absolute depth", async ({ page }) => {
   for (let i = 0; i < 1500; i++)
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });
-  const before = performance.now();
-  const view = snapshot(data.manager, collector, "browser-fixture", 0, "prompt", tools, [], skills);
-  const elapsed = performance.now() - before;
-  expect(view.nodes.length).toBeGreaterThan(1500);
-  expect(JSON.stringify(view).length).toBeLessThan(1000000);
   const requests: string[] = [];
-  page.on("request", (req) => requests.push(req.url()));
+  page.on("request", (request) => requests.push(request.url()));
   await page.goto(server.url);
-  await expect(page.locator(".node")).toHaveCount(view.nodes.length);
-  await expect(page.locator(".transcript-entry")).toHaveCount(50);
+  await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
+  expect(await page.locator(".node").count()).toBeLessThanOrEqual(100);
+  expect(await page.locator(".trace-item").count()).toBeLessThanOrEqual(50);
+  expect(Number(await row(page, data.manager.getLeafId() ?? "").getAttribute("aria-level"))).toBeGreaterThan(1500);
   expect(requests.filter((url) => url.includes("/api/detail"))).toHaveLength(1);
-  test.info().annotations.push({
-    type: "performance",
-    description: `1500-entry snapshot: ${elapsed.toFixed(1)} ms; ${JSON.stringify(view).length} chars`,
-  });
 });

@@ -13,6 +13,7 @@ import { Badge, Button, Flex, Text } from "@radix-ui/themes";
 import { useEffect, useRef, useState } from "react";
 import type { Call, Capture, Json } from "../model.ts";
 import { duration, group, output } from "./format.ts";
+import { JsonTree } from "./json-tree.tsx";
 
 export function Glyph({ kind }: { kind: string }) {
   const Icon =
@@ -139,51 +140,80 @@ function colored(line: string, budget: { remaining: number }) {
   fragments.push(line.slice(cursor));
   return fragments;
 }
-export function Data({ data, label }: { data?: Capture; label: string }) {
+export function Data({
+  data,
+  label,
+  defaultOpen = true,
+  scope = label,
+}: {
+  data?: Capture;
+  label: string;
+  defaultOpen?: boolean;
+  scope?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [format, setFormat] = useState("tree");
   const value = data ? output(data.value) : "unavailable";
   const lines = value.split("\n");
   const budget = { remaining: 512 };
   let sourceOffset = 0;
+  const structured = data?.value !== null && typeof data?.value === "object";
   return (
     <section className="data">
       <div className="data-toolbar">
-        <Text size="2" weight="medium">
-          <FileTextIcon />
-          {label}
-        </Text>
+        <button type="button" className="section-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <ChevronRightIcon className={open ? "chevron-open" : ""} />
+          <span>{label}</span>
+        </button>
         <Flex align="center" gap="2">
           {data?.truncated && <Badge color="amber">truncated</Badge>}
           {data && <Copy key={value} value={value} />}
         </Flex>
       </div>
-      <pre className="code-preview">
-        {lines.slice(0, 1000).map((line, index) => {
-          const start = sourceOffset;
-          sourceOffset += line.length + 1;
-          return (
-            <span className="code-line" key={`line-${start}`}>
-              <span className="line-number" aria-hidden="true">
-                {index + 1}
-              </span>
-              <code>{colored(line, budget)}</code>
-            </span>
-          );
-        })}
-        {lines.length > 1000 && (
-          <span className="preview-limit">
-            Preview limited to 1,000 lines; Copy includes the bounded display value.
-          </span>
+      <div hidden={!open}>
+        {structured && (
+          <div className="data-mode">
+            {["tree", "text"].map((mode) => (
+              <button type="button" key={mode} aria-pressed={format === mode} onClick={() => setFormat(mode)}>
+                {mode === "tree" ? "Objects" : "JSON text"}
+              </button>
+            ))}
+            <span>Redacted display copy</span>
+          </div>
         )}
-      </pre>
-      {data &&
-        images(data.value).map((image) => (
-          <img
-            key={`${image.mimeType}-${image.data}`}
-            className="preview-image"
-            src={`data:${image.mimeType};base64,${image.data}`}
-            alt="Captured raster tool output"
-          />
-        ))}
+        {structured && format === "tree" && data ? (
+          <JsonTree value={data.value} scope={scope} />
+        ) : (
+          <pre className="code-preview">
+            {lines.slice(0, 1000).map((line, index) => {
+              const start = sourceOffset;
+              sourceOffset += line.length + 1;
+              return (
+                <span className="code-line" key={`line-${start}`}>
+                  <span className="line-number" aria-hidden="true">
+                    {index + 1}
+                  </span>
+                  <code>{colored(line, budget)}</code>
+                </span>
+              );
+            })}
+            {lines.length > 1000 && (
+              <span className="preview-limit">
+                Preview limited to 1,000 lines; Copy includes the bounded display value.
+              </span>
+            )}
+          </pre>
+        )}
+        {data &&
+          images(data.value).map((image) => (
+            <img
+              key={`${image.mimeType}-${image.data}`}
+              className="preview-image"
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt="Captured raster tool output"
+            />
+          ))}
+      </div>
     </section>
   );
 }
@@ -210,6 +240,15 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
       <Metadata
         rows={[
           ["Call ID", call.id],
+          ["Source", "Observed tool execution"],
+          [
+            "Start observed",
+            call.observedStartedAt === undefined ? undefined : new Date(call.observedStartedAt).toISOString(),
+          ],
+          [
+            "End observed",
+            call.observedEndedAt === undefined ? undefined : new Date(call.observedEndedAt).toISOString(),
+          ],
           ["Duration", duration(call.durationMs)],
           ["Children", String(all.filter((child) => child.parentId === call.id).length)],
         ]}
@@ -225,8 +264,12 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
             Parent {call.parentId} (not captured)
           </Text>
         ))}
-      <Data label="Arguments" data={call.args} />
-      <Data label={call.result ? "Result · tool_execution event" : "Result · not captured"} data={call.result} />
+      <Data label="Arguments" data={call.args} scope={`${call.id}-args`} defaultOpen={false} />
+      <Data
+        label={call.result ? "Result · tool_execution event" : "Result · not captured"}
+        data={call.result}
+        scope={`${call.id}-result`}
+      />
     </div>
   );
 }

@@ -1,36 +1,69 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronRightIcon, CubeIcon } from "@radix-ui/react-icons";
 import { Badge, Button, Card, Flex, Heading, Tabs, Text } from "@radix-ui/themes";
-import { useState } from "react";
-import type { BranchView, DetailView, EntrySummary, Snapshot } from "../model.ts";
+import { useEffect, useMemo, useState } from "react";
+import type { BranchView, Call, Capture, DetailView, EntrySummary, Json, Snapshot } from "../model.ts";
 import { CallView, Copy, Data, Metadata, Status } from "./components.tsx";
+import { entryCalls } from "./entry-calls.ts";
 import { count, duration, eventName, output, promptDiff, record, scripts } from "./format.ts";
 
 export function Inspector({
   selected,
   node,
   detail,
+  call,
   branch,
   snapshot,
   tab,
   changeTab,
   select,
+  selectCall,
 }: {
   selected: string;
   node?: EntrySummary;
   detail?: DetailView;
+  call?: Call;
   branch?: BranchView;
   snapshot?: Snapshot;
   tab: string;
   changeTab(tab: string): void;
   select(id: string): void;
+  selectCall(id: string): void;
 }) {
   const [format, setFormat] = useState("formatted");
   const raw = record(detail?.raw.value);
   const message = record(raw?.message);
   const payload = raw?.data ?? message?.content;
   const related = snapshot?.nodes.filter((entry) => entry.parentId === selected || entry.id === node?.parentId) ?? [];
-  const call = snapshot?.calls.find((call) => call.id === node?.toolCallId);
+  const recordedCall = snapshot?.calls.find((item) => item.id === node?.toolCallId);
+  const liveRaw: Capture | undefined = call
+    ? {
+        value: JSON.parse(JSON.stringify(call)) as Json,
+        truncated: Boolean(call.args.truncated || call.result?.truncated),
+      }
+    : undefined;
+  const activeRaw = liveRaw ?? detail?.raw;
+  const captured = entryCalls(detail?.raw, snapshot?.calls ?? []);
+  const code = call ? (record(call.args.value)?.code as Json | undefined) : scripts(detail?.raw)?.value;
+  const codemode = call?.name === "codemode" || Boolean(scripts(detail?.raw)) || message?.toolName === "codemode";
+  const isCall = Boolean(call);
+  const hasSkills = Boolean(
+    snapshot?.skills.length || (Array.isArray(branch?.skillEvidence.value) && branch.skillEvidence.value.length),
+  );
+  const enabled = useMemo(
+    () => [
+      "raw",
+      "prompt",
+      "tools",
+      ...(isCall ? [] : ["context"]),
+      ...(hasSkills ? ["skills"] : []),
+      ...(codemode ? ["codemode"] : []),
+    ],
+    [isCall, hasSkills, codemode],
+  );
+  useEffect(() => {
+    if (!enabled.includes(tab)) changeTab("raw");
+  }, [enabled, tab, changeTab]);
   return (
     <section className="panel inspector-panel">
       <div className="panel-heading">
@@ -38,20 +71,20 @@ export function Inspector({
           <CubeIcon />
           Event inspector
         </Heading>
-        {detail && <Copy key={selected} value={output(detail.raw.value)} />}
+        {activeRaw && <Copy key={selected} value={output(activeRaw.value)} />}
       </div>
       <div className="inspector-identity">
         <Heading size="4">
-          {node ? eventName(node.kind) : "Entry"} · {selected || "no selection"}
+          {call ? "Captured execution" : node ? eventName(node.kind) : "Entry"} · {selected || "no selection"}
         </Heading>
         <Text size="2" color="gray">
-          {node?.name ?? "Persisted session data"}
+          {call?.name ?? node?.name ?? "Session log entry"}
         </Text>
       </div>
       <Tabs.Root value={tab} onValueChange={changeTab} className="inspector-tabs">
-        <Tabs.List wrap="wrap">
+        <Tabs.List wrap="nowrap" aria-label="Event detail views">
           {["raw", "prompt", "tools", "context", "skills", "codemode"].map((tab) => (
-            <Tabs.Trigger key={tab} value={tab}>
+            <Tabs.Trigger key={tab} value={tab} disabled={!enabled.includes(tab)}>
               {tab}
             </Tabs.Trigger>
           ))}
@@ -61,60 +94,104 @@ export function Inspector({
             <div className="view-switch">
               {["formatted", "json"].map((mode) => (
                 <button type="button" key={mode} aria-pressed={format === mode} onClick={() => setFormat(mode)}>
-                  {mode === "formatted" ? "Formatted" : "JSON"}
+                  {mode === "formatted" ? "Overview" : "Raw JSON"}
                 </button>
               ))}
             </div>
           </div>
           {format === "formatted" && (
-            <div className="detail-box inspector-metadata">
+            <div className="inspector-metadata">
               <Metadata
-                rows={[
-                  ["Type", node?.kind ?? (typeof raw?.type === "string" ? raw.type : undefined)],
-                  [
-                    node?.kind === "custom" || node?.kind === "custom_message"
-                      ? "Custom type"
-                      : node?.kind === "assistant"
-                        ? "Model"
-                        : "Name",
-                    node?.name,
-                  ],
-                  ["ID", selected],
-                  ["Parent ID", node?.parentId ?? "root"],
-                  ["Timestamp", node?.timestamp],
-                  ["Duration", duration(call?.durationMs)],
-                  ["Indexed children", count(snapshot?.nodes.filter((entry) => entry.parentId === selected).length)],
-                  ["Tokens", count(node?.tokens)],
-                ]}
+                rows={(call
+                  ? [
+                      ["Source", "Observed tool execution"],
+                      ["Tool", call.name],
+                      ["ID", call.id],
+                      ["Parent call", call.parentId],
+                      ["Reported duration", call.durationMs === undefined ? undefined : duration(call.durationMs)],
+                      [
+                        "Start observed",
+                        call.observedStartedAt === undefined
+                          ? undefined
+                          : new Date(call.observedStartedAt).toISOString(),
+                      ],
+                      [
+                        "End observed",
+                        call.observedEndedAt === undefined ? undefined : new Date(call.observedEndedAt).toISOString(),
+                      ],
+                      ["Anchor entry", call.branchAnchor ?? undefined],
+                    ]
+                  : [
+                      ["Source", "Session log entry"],
+                      ["Type", node?.kind ?? (typeof raw?.type === "string" ? raw.type : undefined)],
+                      [
+                        node?.kind === "custom" || node?.kind === "custom_message"
+                          ? "Custom type"
+                          : node?.kind === "assistant"
+                            ? "Model"
+                            : "Name",
+                        node?.name,
+                      ],
+                      ["ID", selected],
+                      ["Parent ID", node?.parentId ?? "root"],
+                      ["Timestamp", node?.timestamp],
+                      [
+                        "Indexed children",
+                        count(snapshot?.nodes.filter((entry) => entry.parentId === selected).length),
+                      ],
+                      ["Tokens", node?.tokens === undefined ? undefined : count(node.tokens)],
+                      [
+                        "Reported tool duration",
+                        recordedCall?.durationMs === undefined ? undefined : duration(recordedCall.durationMs),
+                      ],
+                    ]
+                ).filter((row): row is [string, string] => typeof row[1] === "string")}
               />
-              <div className="detail-status">
-                <Text size="2" color="gray">
-                  Status
-                </Text>
-                <Status value={node?.status} />
-              </div>
+              {(call?.status ?? node?.status) && <Status value={call?.status ?? node?.status} />}
             </div>
           )}
-          <Data
-            label="Raw selected entry · redacted display copy"
-            data={
-              format === "formatted" && payload !== undefined
-                ? { value: payload, truncated: Boolean(detail?.raw.truncated) }
-                : detail?.raw
-            }
-          />
+          {format === "formatted" && call ? (
+            <>
+              <Data label="Arguments · redacted display copy" data={call.args} scope={`${call.id}-args`} />
+              <Data label="Result · observed tool event" data={call.result} scope={`${call.id}-result`} />
+              {call.branchAnchor && (
+                <Button variant="ghost" size="1" onClick={() => select(call.branchAnchor ?? "")}>
+                  Inspect recorded anchor →
+                </Button>
+              )}
+            </>
+          ) : (
+            <Data
+              label="Raw selected entry · redacted display copy"
+              data={
+                format === "formatted" && payload !== undefined
+                  ? { value: payload, truncated: Boolean(detail?.raw.truncated) }
+                  : activeRaw
+              }
+              scope={`${selected}-raw`}
+            />
+          )}
           <Collapsible.Root className="related">
             <Collapsible.Trigger asChild>
               <Button variant="ghost" size="2">
-                Related entries ({related.length})<ChevronRightIcon />
+                Related {call ? "calls" : "entries"}
+                <ChevronRightIcon />
               </Button>
             </Collapsible.Trigger>
             <Collapsible.Content>
-              {related.map((entry) => (
-                <button type="button" key={entry.id} onClick={() => select(entry.id)}>
-                  {eventName(entry.kind)} · {entry.id}
-                </button>
-              ))}
+              {call
+                ? snapshot?.calls
+                    .filter((item) => item.parentId === call.id || item.id === call.parentId)
+                    .map((item) => (
+                      <button type="button" key={item.id} onClick={() => selectCall(item.id)}>
+                        {item.name} · {item.id}
+                      </button>
+                    ))
+                : related.map((entry) => (
+                    <button type="button" key={entry.id} onClick={() => select(entry.id)}>
+                      {eventName(entry.kind)} · {entry.id}
+                    </button>
+                  ))}
             </Collapsible.Content>
           </Collapsible.Root>
         </Tabs.Content>
@@ -190,10 +267,17 @@ export function Inspector({
             activation are not captured. Sandbox variables, discovery-helper results and model-helper responses are
             unavailable unless the script printed them.
           </Text>
-          <Data label="JavaScript source" data={scripts(detail?.raw)} />
+          <Data
+            label="JavaScript source"
+            data={
+              typeof code === "string"
+                ? { value: code, truncated: Boolean(call?.args.truncated || detail?.raw.truncated) }
+                : undefined
+            }
+          />
           <Data label="Source / output / persisted nestedCalls" data={detail?.raw} />
-          {detail?.calls.map((call) => (
-            <CallView key={call.id} call={call} all={detail.calls} group="detail" />
+          {captured.map((call) => (
+            <CallView key={call.id} call={call} all={captured} group="detail" />
           ))}
         </Tabs.Content>
       </Tabs.Root>

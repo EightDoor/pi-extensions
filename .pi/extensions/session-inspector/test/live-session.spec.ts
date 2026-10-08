@@ -131,10 +131,16 @@ test("real Pi codemode, live browser, reload credential rotation and shutdown", 
     await session.prompt("/session-inspector");
     await expect(page.getByText("Live", { exact: true })).toBeVisible();
     await session.prompt("run real codemode");
+    await page.getByRole("button", { name: /^Live calls/ }).click();
+    await expect(page.getByRole("button", { name: "codemode · ok", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Expand calls", exact: true }).click();
     const child = page.getByRole("button", { name: "fixture_child · ok", exact: true });
     await expect(child).toBeVisible();
     await child.click();
-    await expect(page.getByText("answer 42", { exact: false }).first()).toBeVisible();
+    await page.locator(".inspector-panel .json-object").evaluateAll((elements) => {
+      for (const element of elements) (element as HTMLDetailsElement).open = true;
+    });
+    await expect(page.locator(".inspector-panel").getByText('"answer 42"', { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Parent script" })).toHaveAttribute("href", "#live-call-script");
     faux.appendResponses([
       fauxAssistantMessage([
@@ -145,6 +151,8 @@ test("real Pi codemode, live browser, reload credential rotation and shutdown", 
     await waitStarted;
     await session.abort();
     await pendingRun;
+    await expect(page.getByRole("button", { name: "codemode · error", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Expand calls", exact: true }).click();
     await expect(page.getByRole("button", { name: "fixture_wait · error", exact: true })).toBeVisible();
     const old = servers[0];
     expect(old).toBeDefined();

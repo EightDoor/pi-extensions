@@ -1,283 +1,268 @@
-import * as Collapsible from "@radix-ui/react-collapsible";
-import { ChevronDownIcon, ChevronRightIcon, ListBulletIcon, RowsIcon, Share2Icon } from "@radix-ui/react-icons";
-import { Button, Flex, Heading, Tabs, Text } from "@radix-ui/themes";
-import { useState } from "react";
-import type { BranchView, Call, DetailView, EntrySummary } from "../model.ts";
-import { CallView, Data, Glyph, Metadata, Status } from "./components.tsx";
-import { count, duration, eventName, time } from "./format.ts";
+import { ChevronDownIcon, ChevronRightIcon, ListBulletIcon, RowsIcon } from "@radix-ui/react-icons";
+import { Button, Flex, Heading, Text } from "@radix-ui/themes";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Call, EntrySummary } from "../model.ts";
+import { Glyph, Status } from "./components.tsx";
+import { count, eventName, time } from "./format.ts";
+import { flatten, hierarchy, label, reveal, withAncestors } from "./hierarchy.ts";
+import { InlineEntry } from "./inline-entry.tsx";
+import { TimelineMark } from "./timeline.tsx";
+import { axis } from "./timing.ts";
 
-function EntryOverview({
-  entry,
-  call,
-  detail,
-  branch,
-  prompt,
-}: {
-  entry: EntrySummary;
-  call?: Call;
-  detail?: DetailView;
-  branch?: BranchView;
-  prompt(): void;
-}) {
-  return (
-    <Tabs.Root defaultValue="overview" className="inline-tabs">
-      <Tabs.List>
-        <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
-        <Tabs.Trigger value="content">Content</Tabs.Trigger>
-        <Tabs.Trigger value="context">Context</Tabs.Trigger>
-      </Tabs.List>
-      <Tabs.Content value="overview">
-        <div className="event-overview-grid">
-          <div className="detail-box">
-            <Metadata
-              rows={[
-                ["Type", eventName(entry.kind)],
-                ["Name", entry.name],
-                ["Tokens", count(entry.tokens)],
-                ["Parent", entry.parentId ?? "root"],
-              ]}
-            />
-          </div>
-          <div className="detail-box">
-            <div className="detail-status">
-              <Text size="1" color="gray">
-                Status
-              </Text>
-              <Status value={entry.status} />
-            </div>
-            <Metadata
-              rows={[
-                ["Duration", duration(call?.durationMs)],
-                ["Timestamp", time(entry.timestamp)],
-                ["Source", "Persisted session entry"],
-              ]}
-            />
-          </div>
-          <div className="detail-box prompt-preview">
-            <strong>Preview branch prompt</strong>
-            <pre>{typeof branch?.prompt.value === "string" ? branch.prompt.value.slice(0, 220) : "unavailable"}</pre>
-            <button type="button" onClick={prompt}>
-              View full prompt →
-            </button>
-          </div>
-        </div>
-      </Tabs.Content>
-      <Tabs.Content value="content">
-        <Data
-          label={
-            detail ? "Recorded content · redacted display copy" : "Entry summary · select row to load full details"
-          }
-          data={detail?.raw ?? { value: entry.label, truncated: true }}
-        />
-      </Tabs.Content>
-      <Tabs.Content value="context">
-        <Data label="Selected entry contribution" data={detail?.projected} />
-      </Tabs.Content>
-    </Tabs.Root>
-  );
-}
-function depth(call: Call, all: Call[]): number {
-  let current = call;
-  let result = 0;
-  const seen = new Set([call.id]);
-  while (current.parentId && result < 6) {
-    const parent = all.find((item) => item.id === current.parentId);
-    if (!parent || seen.has(parent.id)) break;
-    seen.add(parent.id);
-    current = parent;
-    result++;
-  }
-  return result;
+export function scrollWithin(container: HTMLElement, element: HTMLElement): void {
+  const parent = container.getBoundingClientRect();
+  const child = element.getBoundingClientRect();
+  if (child.top < parent.top) container.scrollTop -= parent.top - child.top;
+  else if (child.bottom > parent.bottom) container.scrollTop += child.bottom - parent.bottom;
 }
 export function Trace({
+  entries,
+  matches,
+  selected,
+  serial,
+  revealSelected,
+  select,
   view,
   changeView,
-  entries,
-  branch,
-  selected,
-  select,
-  detail,
   calls,
-  allCalls,
-  dropped,
-  offset,
-  page,
-  prompt,
 }: {
+  entries: EntrySummary[];
+  matches: Set<string>;
+  selected: string;
+  serial: number;
+  revealSelected: boolean;
+  select(id: string): void;
   view: string;
   changeView(view: string): void;
-  entries: EntrySummary[];
-  branch?: BranchView;
-  selected: string;
-  select(id: string): void;
-  detail?: DetailView;
   calls: Call[];
-  allCalls: Call[];
-  dropped: number;
-  offset: number;
-  page(offset: number): void;
-  prompt(): void;
 }) {
+  const tree = useMemo(() => hierarchy(entries), [entries]);
+  const keep = useMemo(
+    () => withAncestors(tree, new Set([...matches, ...(revealSelected && selected ? [selected] : [])])),
+    [tree, matches, revealSelected, selected],
+  );
   const [expanded, setExpanded] = useState(new Set<string>());
-  const toggle = (id: string, open: boolean) =>
+  const [disclosed, setDisclosed] = useState(new Set<string>());
+  const [offset, setOffset] = useState(0);
+  const [focused, setFocused] = useState("");
+  const lastReveal = useRef(-1);
+  const focusRequest = useRef(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const rows = useMemo(() => flatten(tree, expanded, keep), [tree, expanded, keep]);
+  const pageRows = rows.slice(offset, offset + 50);
+  const baseDepth = pageRows.length ? Math.min(...pageRows.map((row) => row.depth)) : 0;
+  const relativeDepth = Math.max(1, ...pageRows.map((row) => row.depth - baseDepth));
+  const indent = Math.min(14, 140 / relativeDepth); // Scale the visual rail, never cap hierarchy depth.
+  const range = useMemo(() => axis(entries, calls), [entries, calls]);
+  useEffect(() => {
+    if (!tree.nodes.has(selected) || serial === lastReveal.current) return;
+    lastReveal.current = serial;
+    const next = reveal(tree, expanded, selected);
+    setExpanded(next);
+    const index = flatten(tree, next, keep).findIndex((row) => row.node.id === selected);
+    if (index >= 0) {
+      setOffset(Math.floor(index / 50) * 50);
+      setFocused(selected);
+    }
+  }, [tree, selected, serial, expanded, keep]);
+  useEffect(() => {
+    const element = rowRefs.current.get(focused);
+    if (!element || !scroller.current) return;
+    if (focusRequest.current) {
+      element.focus({ preventScroll: true });
+      focusRequest.current = false;
+    }
+    scrollWithin(scroller.current, element);
+  }, [focused]);
+  useEffect(() => {
+    if (offset >= rows.length && offset) setOffset(Math.max(0, Math.floor((rows.length - 1) / 50) * 50));
+  }, [offset, rows.length]);
+  function toggle(id: string): void {
     setExpanded((previous) => {
       const next = new Set(previous);
-      if (open) next.add(id);
-      else next.delete(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
-  const longest = Math.max(1, ...allCalls.map((call) => call.durationMs ?? 0));
+    setDisclosed((previous) => new Set([...previous, id]));
+  }
+  function focus(id: string): void {
+    const index = rows.findIndex((row) => row.node.id === id);
+    if (index === -1) return;
+    focusRequest.current = true;
+    setOffset(Math.floor(index / 50) * 50);
+    setFocused(id);
+    rowRefs.current.get(id)?.focus({ preventScroll: true });
+  }
   return (
-    <section className="panel trace-panel">
+    <section className={`panel trace-panel trace-${view}`}>
       <div className="trace-toolbar">
-        <Heading size="3">
-          <Share2Icon />
-          Trace explorer
-        </Heading>
+        <Heading size="3">Trace explorer</Heading>
         <Text size="1" color="gray">
-          Ordered branch entries
+          Session log hierarchy
         </Text>
         <div className="trace-actions">
           <Button
             size="1"
-            variant="soft"
-            disabled={!entries.length}
-            onClick={() => setExpanded(new Set(entries.map((entry) => entry.id)))}
+            variant="ghost"
+            disabled={!keep.size}
+            onClick={() => {
+              setExpanded(new Set(keep));
+              setDisclosed(new Set(keep));
+            }}
           >
             Expand all
           </Button>
-          <Button size="1" variant="soft" disabled={!expanded.size} onClick={() => setExpanded(new Set())}>
+          <Button size="1" variant="ghost" disabled={!expanded.size} onClick={() => setExpanded(new Set())}>
             Collapse all
           </Button>
           <div className="view-switch">
-            {["timeline", "list"].map((mode) => (
+            {["list", "timeline"].map((mode) => (
               <button type="button" key={mode} aria-pressed={view === mode} onClick={() => changeView(mode)}>
-                {mode === "timeline" ? <RowsIcon /> : <ListBulletIcon />}
-                {mode === "timeline" ? "Timeline" : "List"}
+                {mode === "list" ? <ListBulletIcon /> : <RowsIcon />}
+                {mode === "list" ? "List" : "Timeline"}
               </button>
             ))}
           </div>
         </div>
       </div>
-      <div className="trace-columns">
-        <span>Event</span>
-        <span>Status</span>
-        <span>Duration</span>
-        <span>Tokens</span>
-        <span>Timestamp</span>
+      <div className="trace-hint">
+        Row: select + toggle · Chevron: toggle only · ↑↓ navigate · ←→ collapse/expand · Enter select · Space toggle
       </div>
-      <div className={`trace-scroll trace-${view}`}>
-        <div className="trace-stack">
-          {!entries.length && <div className="empty-state">No branch entries match these filters.</div>}
-          {entries.map((entry) => {
-            const call = allCalls.find((call) => call.id === entry.toolCallId);
+      {view === "timeline" && (
+        <div className="time-axis">
+          <span>{range ? new Date(range.start).toISOString().slice(11, 23) : "No timing"}</span>
+          <span>● Log timestamp · ▰ Observed tool interval (live drawer)</span>
+          <span>{range ? new Date(range.end).toISOString().slice(11, 23) : "—"}</span>
+        </div>
+      )}
+      <div className="trace-scroll" ref={scroller}>
+        <div role="tree" aria-label="Session trace" className="trace-tree">
+          {!rows.length && <div className="empty-state">No entries match. Filters keep actual ancestor context.</div>}
+          {pageRows.map(({ node: entry, depth, childCount }) => {
             const open = expanded.has(entry.id);
+            const selectedRow = selected === entry.id;
             return (
-              <Collapsible.Root
+              <div
                 className="trace-item"
                 key={entry.id}
-                open={open}
-                onOpenChange={(open) => toggle(entry.id, open)}
+                data-trace-entry-id={entry.id}
+                data-parent-id={entry.parentId ?? ""}
+                data-depth={depth}
+                data-state={open ? "open" : "closed"}
+                style={{ marginLeft: (depth - baseDepth) * indent }}
               >
-                <div className={`trace-row ${selected === entry.id ? "selected" : ""}`}>
+                <div
+                  role="treeitem"
+                  aria-level={depth + 1}
+                  aria-expanded={open}
+                  aria-selected={selectedRow}
+                  tabIndex={focused === entry.id || (!focused && pageRows[0]?.node.id === entry.id) ? 0 : -1}
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(entry.id, element);
+                    else rowRefs.current.delete(entry.id);
+                  }}
+                  className={`trace-row ${selectedRow ? "selected" : ""} ${open ? "expanded" : ""}`}
+                  data-trace-id={entry.id}
+                  onFocus={() => setFocused(entry.id)}
+                  onClick={(event) => {
+                    if (event.target !== event.currentTarget && (event.target as HTMLElement).closest("button")) return;
+                    select(entry.id);
+                    toggle(entry.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
+                    const index = rows.findIndex((row) => row.node.id === entry.id);
+                    if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Enter", " "].includes(event.key)) return;
+                    event.preventDefault();
+                    if (event.key === "ArrowDown") {
+                      const next = rows[index + 1];
+                      if (next) focus(next.node.id);
+                    } else if (event.key === "ArrowUp") {
+                      const prev = rows[index - 1];
+                      if (prev) focus(prev.node.id);
+                    } else if (event.key === "ArrowRight") {
+                      if (!open) toggle(entry.id);
+                      else {
+                        const child = rows[index + 1];
+                        if (child && child.depth > depth) focus(child.node.id);
+                      }
+                    } else if (event.key === "ArrowLeft") {
+                      if (open) toggle(entry.id);
+                      else if (entry.parentId) focus(entry.parentId);
+                    } else if (event.key === "Enter") select(entry.id);
+                    else toggle(entry.id);
+                  }}
+                >
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    className="expand-button"
+                    aria-label={`Expand event ${entry.id}`}
+                    aria-expanded={open}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggle(entry.id);
+                    }}
+                  >
+                    {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+                  </button>
                   <div className="trace-event">
-                    <Collapsible.Trigger asChild>
-                      <button className="expand-button" type="button" aria-label={`Expand event ${entry.id}`}>
-                        {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-                      </button>
-                    </Collapsible.Trigger>
-                    <button
-                      type="button"
-                      className="transcript-entry"
-                      aria-current={selected === entry.id ? "true" : undefined}
-                      onClick={() => {
-                        select(entry.id);
-                        toggle(entry.id, true);
-                      }}
-                    >
-                      <Glyph kind={entry.kind} />
+                    <Glyph kind={entry.kind} />
+                    <span className="row-title">
                       <strong>{eventName(entry.kind)}</strong>
-                      <span className="event-name">{entry.name ?? entry.label}</span>
-                      <small>{entry.id}</small>
-                    </button>
+                      <span title={label(entry)}>{label(entry)}</span>
+                    </span>
+                    <code title={entry.id}>{entry.id.slice(0, 8)}</code>
+                    {!matches.has(entry.id) && (
+                      <span className="ancestor-badge">{selectedRow ? "selected outside filters" : "ancestor"}</span>
+                    )}
+                    {depth === 0 && entry.parentId && tree.nodes.has(entry.parentId) && (
+                      <span className="ancestor-badge">recorded parent cycle</span>
+                    )}
                   </div>
-                  <Status value={entry.status} />
-                  <span title="Only captured tool-result duration is available">{duration(call?.durationMs)}</span>
-                  <span>{count(entry.tokens)}</span>
-                  <span>{time(entry.timestamp)}</span>
+                  <div className="row-metrics">
+                    {entry.status && <Status value={entry.status} />}
+                    {entry.tokens !== undefined && (
+                      <span title="Recorded assistant totalTokens">{count(entry.tokens)} tok</span>
+                    )}
+                    <time title={entry.timestamp}>{time(entry.timestamp)}</time>
+                  </div>
+                  {view === "timeline" && <TimelineMark range={range} logTime={entry.timestamp} />}
                 </div>
-                <Collapsible.Content className="entry-expanded">
-                  <EntryOverview
-                    entry={entry}
-                    call={call}
-                    detail={selected === entry.id ? detail : undefined}
-                    branch={branch}
-                    prompt={prompt}
-                  />
-                </Collapsible.Content>
-              </Collapsible.Root>
+                {open && disclosed.has(entry.id) && (
+                  <div className="entry-expanded">
+                    <InlineEntry entry={entry} inspect={select} />
+                    {childCount > 0 && (
+                      <span className="children-label">
+                        {childCount} recorded child {childCount === 1 ? "entry" : "entries"}
+                      </span>
+                    )}
+                    {entry.parentId && !tree.nodes.has(entry.parentId) && (
+                      <span className="children-label">Parent outside indexed data: {entry.parentId}</span>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
-        <div className="live-section-heading">
-          <Heading size="2">Live calls · session-wide</Heading>
-          <Text size="1" color="gray">
-            {dropped} evicted · since activation · not a Promise graph
-          </Text>
-        </div>
-        {calls.length === 0 && <div className="empty-state">No captured tool executions match these filters.</div>}
-        {calls.map((call) => (
-          <Collapsible.Root
-            key={call.id}
-            id={`live-call-${call.id}`}
-            className="live-trace-item"
-            style={{ marginLeft: view === "timeline" ? depth(call, allCalls) * 14 : 0 }}
-          >
-            <Collapsible.Trigger asChild>
-              <button type="button" className="call-trigger trace-row" aria-label={`${call.name} · ${call.status}`}>
-                <span className="trace-event">
-                  <ChevronRightIcon className="call-chevron" />
-                  <Glyph kind="toolResult" />
-                  <strong>{call.name}</strong>
-                  <small>{call.id}</small>
-                </span>
-                <Status value={call.status} />
-                <span className="duration-cell">
-                  {duration(call.durationMs)}
-                  {call.durationMs !== undefined && (
-                    <span
-                      className="duration-bar"
-                      style={{ width: `${Math.max(4, (call.durationMs / longest) * 100)}%` }}
-                    />
-                  )}
-                </span>
-                <span title="Token usage is not part of the execution event">—</span>
-                <span>Live</span>
-              </button>
-            </Collapsible.Trigger>
-            <Collapsible.Content>
-              <CallView call={call} all={allCalls} />
-            </Collapsible.Content>
-          </Collapsible.Root>
-        ))}
       </div>
       <div className="trace-pagination">
-        <Text size="1" color="gray">
-          Browser preview only · Pi is not navigated
-        </Text>
-        <Flex align="center" gap="2">
-          <Button size="1" variant="ghost" disabled={!offset} onClick={() => page(Math.max(0, offset - 50))}>
+        <span>
+          {baseDepth
+            ? `Absolute hierarchy level ${baseDepth + 1}+ · page-local indentation`
+            : "Original parents retained · browser-only selection"}
+        </span>
+        <Flex gap="2" align="center">
+          <Button size="1" variant="ghost" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 50))}>
             Previous
           </Button>
           <Text size="1">
-            {branch?.total ? offset + 1 : 0}–{Math.min(offset + 50, branch?.total ?? 0)} / {branch?.total ?? 0}
+            {rows.length ? offset + 1 : 0}–{Math.min(offset + 50, rows.length)} / {rows.length}
           </Text>
-          <Button
-            size="1"
-            variant="ghost"
-            disabled={!branch || offset + 50 >= branch.total}
-            onClick={() => page(offset + 50)}
-          >
+          <Button size="1" variant="ghost" disabled={offset + 50 >= rows.length} onClick={() => setOffset(offset + 50)}>
             Next
           </Button>
         </Flex>

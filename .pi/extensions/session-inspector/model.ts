@@ -10,6 +10,7 @@ export interface EntrySummary {
   label: string;
   timestamp: string;
   name?: string;
+  nameTruncated?: boolean;
   tokens?: number;
   status?: "success" | "error" | "cancelled";
   toolCallId?: string;
@@ -22,6 +23,8 @@ export interface Call {
   args: Capture;
   result?: Capture;
   durationMs?: number;
+  observedStartedAt?: number;
+  observedEndedAt?: number;
   branchAnchor: string | null;
 }
 export interface ToolView {

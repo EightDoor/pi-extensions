@@ -30,12 +30,14 @@ export function summarize(entry: SessionEntry, label?: string): EntrySummary {
             : message?.role === "toolResult"
               ? message.toolName
               : undefined;
+  const displayName = typeof name === "string" ? displayText(name) : undefined;
   return {
     id: entry.id,
     parentId: entry.parentId,
     kind,
     timestamp: entry.timestamp,
-    name: typeof name === "string" ? displayText(name).slice(0, 128) : undefined,
+    name: displayName?.slice(0, 512),
+    nameTruncated: displayName !== undefined && displayName.length > 512 ? true : undefined,
     tokens:
       message?.role === "assistant" && Number.isFinite(message.usage?.totalTokens)
         ? message.usage?.totalTokens

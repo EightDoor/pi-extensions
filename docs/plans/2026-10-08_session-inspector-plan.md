@@ -115,6 +115,20 @@ The user requests the supplied screenshot's interface form, not a color-only ref
 
 Applicable MUSTs: project-local boundaries, no model-visible mutations, safe display copies, async ownership/cancellation, deterministic tests and both repository gates. Verification methods: Review, local Validator/Test, Chromium visual/interaction Test and Pi Smoke.
 
+## Progressive Session Explorer redesign
+
+The user now authorizes a full interaction redesign: actual-parent hierarchical rows, independent selection/expansion, progressive inline data, keyboard tree navigation, List default, timing-correct Timeline, a compact metrics toolbar, collapsed live drawer, synchronized panels, resizable/collapsible desktop sides and accessible medium/narrow drawers.
+
+- [x] Implement a shared iterative hierarchy/index and selection/reveal semantics without changing recorded parents; verify branches, orphan/cycle diagnostics, three-plus levels, retained descendant expansion, filters with ancestor context, keyboard navigation and bounded pagination.
+- [x] Implement lazy inline details and collapsible JSON objects/arrays; keep selection separate from expansion, limit concurrent/cached detail work, cancel owned fetches and preserve literal/redacted display values; verify deep structured data and cancellation/failure behavior.
+- [x] Record tool-start/end observation timestamps only for events actually observed; never synthesize missing starts from durations; verify shared-axis points/intervals, missing events, running calls, reversed clocks and native reported duration provenance.
+- [x] Implement compact overview, non-auto-opening live drawer, semantic navigator labels, independent pane scrolling, tab overflow, pane resizing/collapse and Radix Dialog drawers; verify desktop, medium, narrow, effective 150% viewport, focus/escape, resize keyboard/pointer and live updates.
+- [ ] Run local build/types/tests, browser layout/interaction screenshots, Pi smoke and both root gates; audit privacy, lifecycle, source timing and model-prefix behavior; update evidence and push a signed PR revision.
+
+UI hierarchy has no nesting-depth cap; existing bounded capture and 10,000-entry index limits remain explicit. Deep log chains use page-local indentation with absolute hierarchy levels and parent IDs retained. Filtering retains actual ancestors rather than inventing parent edges. Tool timing is labeled observer callback timing, not provider transport timing; log timestamps remain points. Model durations remain unavailable. Panel widths/view state are ephemeral UI state, not persisted settings.
+
+Verification: local Validator/Test, Chromium interaction/visual Test, real Pi Smoke and semantic Review against root AGENTS.md and docs/extension-conventions.md; settings/publishing changes remain inapplicable. User acceptance of the original first version remains open.
+
 ## Execution evidence
 
 Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/session-inspector/VERIFICATION.md): 22 local tests, six Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.

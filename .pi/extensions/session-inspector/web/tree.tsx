@@ -7,102 +7,133 @@ import {
   Share2Icon,
 } from "@radix-ui/react-icons";
 import { Checkbox, Flex, Heading, IconButton, Select, Text, TextField } from "@radix-ui/themes";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EntrySummary } from "../model.ts";
 import { Glyph } from "./components.tsx";
 import { eventName, type Filters } from "./format.ts";
+import { flatten, hierarchy, label, reveal, withAncestors } from "./hierarchy.ts";
+import { scrollWithin } from "./trace.tsx";
 
-function Tree({ nodes, selected, choose }: { nodes: EntrySummary[]; selected: string; choose(id: string): void }) {
-  const [collapsed, setCollapsed] = useState(new Set<string>());
+function Tree({
+  nodes,
+  matches,
+  selected,
+  revealSelected,
+  choose,
+}: {
+  nodes: EntrySummary[];
+  matches: Set<string>;
+  selected: string;
+  revealSelected: boolean;
+  choose(id: string): void;
+}) {
+  const tree = useMemo(() => hierarchy(nodes), [nodes]);
+  const keep = useMemo(
+    () => withAncestors(tree, new Set([...matches, ...(revealSelected && selected ? [selected] : [])])),
+    [tree, matches, revealSelected, selected],
+  );
+  const [expanded, setExpanded] = useState(new Set<string>());
+  const [offset, setOffset] = useState(0);
+  const previous = useRef("");
   const nav = useRef<HTMLElement>(null);
-  const hasSelection = nodes.some((node) => node.id === selected);
+  const rows = flatten(tree, expanded, keep);
   useEffect(() => {
-    if (hasSelection && selected)
-      nav.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [hasSelection, selected]);
-  const ids = new Set(nodes.map((n) => n.id));
-  const children = new Map<string, EntrySummary[]>();
-  for (const node of nodes) {
-    const parent = node.parentId && ids.has(node.parentId) ? node.parentId : "";
-    const list = children.get(parent) ?? [];
-    list.push(node);
-    children.set(parent, list);
-  }
-  const rows: { node: EntrySummary; depth: number }[] = [];
-  const visited = new Set<string>();
-  const stack = (children.get("") ?? [])
-    .slice()
-    .reverse()
-    .map((node) => ({ node, depth: 0 }));
-  while (stack.length) {
-    const row = stack.pop();
-    if (!row || visited.has(row.node.id)) continue;
-    visited.add(row.node.id);
-    rows.push(row);
-    if (!collapsed.has(row.node.id))
-      for (const node of (children.get(row.node.id) ?? []).slice().reverse())
-        stack.push({ node, depth: row.depth + 1 });
-  }
+    if (!tree.nodes.has(selected) || previous.current === selected) return;
+    previous.current = selected;
+    const next = reveal(tree, expanded, selected);
+    setExpanded(next);
+    const index = flatten(tree, next, keep).findIndex((row) => row.node.id === selected);
+    if (index >= 0) setOffset(Math.floor(index / 100) * 100);
+  }, [selected, tree, expanded, keep]);
+  useEffect(() => {
+    if (nav.current) {
+      const element = nav.current.querySelector<HTMLElement>('[aria-current="true"]');
+      if (element) scrollWithin(nav.current, element);
+    }
+  }, []);
+  useEffect(() => {
+    if (offset >= rows.length && offset) setOffset(0);
+  }, [offset, rows.length]);
+  const pageRows = rows.slice(offset, offset + 100);
+  const base = pageRows.length ? Math.min(...pageRows.map((row) => row.depth)) : 0;
+  const rail = Math.min(8, 64 / Math.max(1, ...pageRows.map((row) => row.depth - base)));
   return (
-    <nav ref={nav} className="tree-scroll" aria-label="Session branches">
-      {rows.map(({ node, depth }) => (
-        <div key={node.id} className="tree-row" style={{ paddingLeft: Math.min(depth, 5) * 6 }}>
-          {depth > 0 && (
-            <span className="tree-connector" aria-hidden="true" style={{ left: Math.min(depth, 5) * 6 + 9 }} />
-          )}
-          {(children.get(node.id)?.length ?? 0) > 0 ? (
-            <Collapsible.Root
-              open={!collapsed.has(node.id)}
-              onOpenChange={(open) =>
-                setCollapsed((previous) => {
-                  const next = new Set(previous);
-                  if (open) next.delete(node.id);
-                  else next.add(node.id);
-                  return next;
-                })
-              }
+    <>
+      <nav ref={nav} className="tree-scroll" aria-label="Session branches">
+        {pageRows.map(({ node, depth, childCount }) => (
+          <div key={node.id} className="tree-row" style={{ paddingLeft: (depth - base) * rail }}>
+            {childCount ? (
+              <IconButton
+                variant="ghost"
+                size="1"
+                aria-label={`Toggle children of ${node.id}`}
+                aria-expanded={expanded.has(node.id)}
+                onClick={() =>
+                  setExpanded((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(node.id)) next.delete(node.id);
+                    else next.add(node.id);
+                    return next;
+                  })
+                }
+              >
+                {expanded.has(node.id) ? <ChevronDownIcon /> : <ChevronRightIcon />}
+              </IconButton>
+            ) : (
+              <span className="tree-spacer" />
+            )}
+            <button
+              type="button"
+              className="node"
+              data-entry-id={node.id}
+              data-match={matches.has(node.id)}
+              aria-current={selected === node.id ? "true" : undefined}
+              onClick={() => choose(node.id)}
+              title={`${node.kind} · ${node.id}\n${label(node)}${node.nameTruncated ? " [truncated; inspect Raw for the complete captured value]" : ""}`}
             >
-              <Collapsible.Trigger asChild>
-                <IconButton variant="ghost" size="1" aria-label={`Toggle children of ${node.id}`}>
-                  {collapsed.has(node.id) ? <ChevronRightIcon /> : <ChevronDownIcon />}
-                </IconButton>
-              </Collapsible.Trigger>
-            </Collapsible.Root>
-          ) : (
-            <span className="tree-spacer" />
-          )}
-          <button
-            type="button"
-            className="node"
-            data-entry-id={node.id}
-            aria-current={selected === node.id ? "true" : undefined}
-            onClick={() => choose(node.id)}
-          >
-            <Glyph kind={node.kind} />
-            <span className="node-copy">
-              <span className="node-title">
-                <strong>{eventName(node.kind)}</strong>
-                <small>{node.id}</small>
+              <Glyph kind={node.kind} />
+              <span className="node-copy">
+                <span className="node-title">
+                  <strong>{eventName(node.kind)}</strong>
+                  <small>{node.id.slice(0, 8)}</small>
+                </span>
+                <span className="node-description">{label(node)}</span>
               </span>
-              <span className="node-description">{node.name ?? node.label}</span>
-            </span>
+            </button>
+          </div>
+        ))}
+      </nav>
+      {rows.length > 100 && (
+        <div className="nav-pagination">
+          <button type="button" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 100))}>
+            Previous nodes
+          </button>
+          <span>
+            {offset + 1}–{Math.min(offset + 100, rows.length)}
+          </span>
+          <button type="button" disabled={offset + 100 >= rows.length} onClick={() => setOffset(offset + 100)}>
+            Next nodes
           </button>
         </div>
-      ))}
-    </nav>
+      )}
+    </>
   );
 }
 export function Sidebar({
   nodes,
+  matches,
   total,
   selected,
+  revealSelected,
   choose,
   filters,
   change,
 }: {
   nodes: EntrySummary[];
+  matches: Set<string>;
   total: number;
   selected: string;
+  revealSelected: boolean;
   choose(id: string): void;
   filters: Filters;
   change(filters: Filters): void;
@@ -152,76 +183,79 @@ export function Sidebar({
             ))}
           </div>
         </div>
-        <Tree nodes={nodes} selected={selected} choose={choose} />
+        <Tree nodes={nodes} matches={matches} selected={selected} revealSelected={revealSelected} choose={choose} />
         <div className="tree-count">
-          {nodes.length} shown / {total} total
+          {matches.size} matches / {total} entries
         </div>
       </section>
-      <section className="panel filter-panel">
-        <div className="panel-heading">
-          <Heading size="3">
+      <Collapsible.Root className="panel filter-panel" defaultOpen={false}>
+        <Collapsible.Trigger asChild>
+          <button className="filters-toggle" type="button">
             <MixerHorizontalIcon />
             Filters
-          </Heading>
-        </div>
-        <label className="filter-check" htmlFor="filter-errors">
-          <span>Errors only</span>
-          <Checkbox
-            id="filter-errors"
-            checked={filters.errorsOnly}
-            onCheckedChange={(checked) => change({ ...filters, errorsOnly: checked === true })}
-          />
-        </label>
-        <label className="filter-check" htmlFor="filter-slow">
-          <span>Slow tool calls (&gt; 10s)</span>
-          <Checkbox
-            id="filter-slow"
-            checked={filters.slowOnly}
-            onCheckedChange={(checked) => change({ ...filters, slowOnly: checked === true })}
-          />
-        </label>
-        {[
-          ["Tool", "Tool events"],
-          ["Model", "Model events"],
-          ["Custom", "Custom events"],
-        ].map(([group, label]) => (
-          <label className="filter-check" key={group} htmlFor={`filter-${group}`}>
-            <span>{label}</span>
+            <ChevronDownIcon />
+          </button>
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <label className="filter-check" htmlFor="filter-errors">
+            <span>Errors only</span>
             <Checkbox
-              id={`filter-${group}`}
-              checked={filters.groups.includes(group)}
-              onCheckedChange={() => toggleGroup(group)}
+              id="filter-errors"
+              checked={filters.errorsOnly}
+              onCheckedChange={(checked) => change({ ...filters, errorsOnly: checked === true })}
             />
           </label>
-        ))}
-        <Flex justify="between" align="center" gap="2">
-          <Text size="1" color="gray">
-            Entry type
-          </Text>
-          <Select.Root value={filters.kind} onValueChange={(kind) => change({ ...filters, kind })}>
-            <Select.Trigger aria-label="Filter entry type" variant="soft" />
-            <Select.Content>
-              {[
-                "all",
-                "user",
-                "assistant",
-                "toolResult",
-                "system",
-                "custom",
-                "compaction",
-                "branch_summary",
-                "model_change",
-                "thinking_level_change",
-                "context_edit",
-              ].map((kind) => (
-                <Select.Item key={kind} value={kind}>
-                  {kind}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-        </Flex>
-      </section>
+          <label className="filter-check" htmlFor="filter-slow">
+            <span>Slow tool calls (&gt; 10s)</span>
+            <Checkbox
+              id="filter-slow"
+              checked={filters.slowOnly}
+              onCheckedChange={(checked) => change({ ...filters, slowOnly: checked === true })}
+            />
+          </label>
+          {[
+            ["Tool", "Tool events"],
+            ["Model", "Model events"],
+            ["Custom", "Custom events"],
+          ].map(([group, label]) => (
+            <label className="filter-check" key={group} htmlFor={`filter-${group}`}>
+              <span>{label}</span>
+              <Checkbox
+                id={`filter-${group}`}
+                checked={filters.groups.includes(group)}
+                onCheckedChange={() => toggleGroup(group)}
+              />
+            </label>
+          ))}
+          <Flex justify="between" align="center" gap="2">
+            <Text size="1" color="gray">
+              Entry type
+            </Text>
+            <Select.Root value={filters.kind} onValueChange={(kind) => change({ ...filters, kind })}>
+              <Select.Trigger aria-label="Filter entry type" variant="soft" />
+              <Select.Content>
+                {[
+                  "all",
+                  "user",
+                  "assistant",
+                  "toolResult",
+                  "system",
+                  "custom",
+                  "compaction",
+                  "branch_summary",
+                  "model_change",
+                  "thinking_level_change",
+                  "context_edit",
+                ].map((kind) => (
+                  <Select.Item key={kind} value={kind}>
+                    {kind}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </Flex>
+        </Collapsible.Content>
+      </Collapsible.Root>
     </aside>
   );
 }
