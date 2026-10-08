@@ -18,8 +18,7 @@ test("workflows validate the pinned policy before every dependency install", () 
     }
     assert.ok(commands.includes("npm ci"));
   }
-  assert.match(read(".github/workflows/ci.yml"), /runs-on:\s*macos-latest/u);
-  assert.match(read(".github/workflows/ci.yml"), /vitest run test\/macos-install\.test\.ts/u);
+  assert.doesNotMatch(read(".github/workflows/ci.yml"), /^\s*macos-install:/mu);
   assert.match(read(".github/workflows/publish.yml"), /NPM_CONFIG_PROVENANCE:\s*"true"/u);
 });
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
 
-// This is a native platform smoke, not an os=darwin simulation. CI runs it
+// This is a native platform smoke, not an os=darwin simulation. Run it
 // after a clean macOS install with fsevents installation scripts denied.
 test.skipIf(process.platform !== "darwin")("denied fsevents scripts preserve native macOS file watching", async () => {
   const require = createRequire(import.meta.url);
