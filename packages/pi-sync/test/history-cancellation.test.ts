@@ -8,6 +8,7 @@ import { createMockContext } from "../../../test/support.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { history } from "../src/sync/sync-queries.js";
 import { runCancellableOperation } from "../src/ui/cancellable-operation.js";
+import { trackOperationDialogs } from "../src/ui/operation-dialogs.js";
 import { snapshot, v3S3Settings, withTempHome } from "./helpers.js";
 import { MemorySyncBackend } from "./memory-sync-backend.js";
 
@@ -88,9 +89,9 @@ for (const phase of ["before-confirm", "after-confirm"] as const) {
           ctx,
           "Loading history",
           "history",
-          async (_route, signal, onCommit) => {
+          async (_route, signal, onCommit, _target, onDialog) => {
             await history(
-              ctx,
+              trackOperationDialogs(ctx, onDialog),
               {
                 args: [],
                 yes: false,
