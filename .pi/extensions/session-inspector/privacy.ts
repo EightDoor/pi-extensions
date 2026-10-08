@@ -2,7 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { Capture, Json } from "./model.ts";
 
 const secretKey =
-  /^(authorization|proxy.authorization|cookie|set.cookie|password|passwd|secret|client[_-]?secret|secret[_-]?key|private[_-]?key|token|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|credentials|env|headers)$/i;
+  /^(authorization|proxy.authorization|cookie|set.cookie|password|passwd|secret|client[_-]?secret|secret[_-]?key|private[_-]?key|token|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|credentials|env|headers)$|(?:^|[_-])(?:api[_-]?key|(?:access|refresh|session)[_-]?token|token|client[_-]?secret|secret[_-]?key|private[_-]?key|password|passwd|secret)$/i;
 
 // Display-only: original session entries and event objects are never modified.
 export function displayText(text: string): string {
@@ -14,9 +14,20 @@ export function displayText(text: string): string {
   );
 }
 
-export function sessionName(raw: string): { name: string; nameTruncated?: true } {
-  const clean = displayText(raw);
+export function sessionName(raw: unknown): { name: string; nameTruncated?: true } {
+  const clean = typeof raw === "string" ? displayText(raw) : "[unavailable: non-string session name]";
   return { name: clean.slice(0, 512), nameTruncated: clean.length > 512 ? true : undefined };
+}
+
+export function readSessionName(manager: { getSessionName(): string | undefined }): {
+  name: string;
+  nameTruncated?: true;
+} {
+  try {
+    return sessionName(manager.getSessionName() ?? "Current session");
+  } catch {
+    return { name: "[unavailable: invalid stored session name]" };
+  }
 }
 
 // Bound traversal before serialization: huge strings, arrays, cycles and deep objects are safe.

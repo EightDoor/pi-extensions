@@ -13,6 +13,7 @@ import { Inspector } from "./inspector.tsx";
 import { LiveDrawer } from "./live-drawer.tsx";
 import { Overview } from "./overview.tsx";
 import { PaneDrawer, ResizeHandle, useNarrow } from "./panes.tsx";
+import { boundedSearch, searchNeedle } from "./search.ts";
 import { Trace } from "./trace.tsx";
 import { Sidebar } from "./tree.tsx";
 
@@ -38,7 +39,7 @@ function App() {
   });
   const [filterVersion, setFilterVersion] = useState(0);
   function changeFilters(value: Filters) {
-    setFilters(value);
+    setFilters({ ...value, query: boundedSearch(value.query) });
     setFilterVersion((previous) => previous + 1);
   }
   const [error, setError] = useState("");
@@ -53,7 +54,10 @@ function App() {
   const [inspectorDrawer, setInspectorDrawer] = useState(false);
   const [navWidth, setNavWidth] = useState(() => Math.max(200, Math.min(360, window.innerWidth * 0.185)));
   const [inspectorWidth, setInspectorWidth] = useState(() => Math.max(280, Math.min(520, window.innerWidth * 0.235)));
-  const narrow = useNarrow((navOpen ? navWidth : 0) + (inspectorOpen ? inspectorWidth : 0));
+  const narrow = useNarrow();
+  const sideBudget = Math.max(0, window.innerWidth - 600);
+  const navSize = navOpen ? Math.min(navWidth, inspectorOpen ? sideBudget * 0.4 : sideBudget) : 0;
+  const inspectorSize = inspectorOpen ? Math.min(inspectorWidth, navOpen ? sideBudget * 0.6 : sideBudget) : 0;
   const calls = snapshot?.calls ?? [];
   const entries = snapshot?.nodes ?? [];
   const selectedCall =
@@ -65,9 +69,10 @@ function App() {
     retry: retryDetails,
   } = useDetail(selection?.kind === "entry" ? entryId : undefined);
   const selectedNode = entries.find((node) => node.id === entryId);
+  const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
   const matching = useMemo(
-    () => new Set(entries.filter((node) => matches(node, filters, calls)).map((node) => node.id)),
-    [entries, calls, filters],
+    () => new Set(entries.filter((node) => matches(node, preparedFilters, calls)).map((node) => node.id)),
+    [entries, calls, preparedFilters],
   );
   function selectEntry(id: string) {
     setSurface("events");
@@ -331,7 +336,7 @@ function App() {
           narrow
             ? undefined
             : {
-                gridTemplateColumns: `${navOpen ? navWidth : 0}px ${navOpen ? 6 : 0}px minmax(0, 1fr) ${inspectorOpen ? 6 : 0}px ${inspectorOpen ? inspectorWidth : 0}px`,
+                gridTemplateColumns: `${navSize}px ${navOpen ? 6 : 0}px minmax(0, 1fr) ${inspectorOpen ? 6 : 0}px ${inspectorSize}px`,
               }
         }
       >
@@ -347,7 +352,7 @@ function App() {
         )}
         <div className="center-column">
           <div className="context-surface" hidden={surface !== "context"}>
-            <ContextComposition context={snapshot?.context} />
+            <ContextComposition context={snapshot?.context} payload={snapshot?.providerObservation} />
           </div>
           <div className="events-surface" hidden={surface !== "events"}>
             <Overview snapshot={snapshot} />

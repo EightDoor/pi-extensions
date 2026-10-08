@@ -5,6 +5,8 @@ export function useVirtualContext(ids: string[]) {
   const scroller = useRef<HTMLElement>(null);
   const elements = useRef(new Map<string, HTMLDivElement>());
   const anchor = useRef<{ id: string; offset: number } | undefined>(undefined);
+  const resetting = useRef(false);
+  const [resetPending, setResetPending] = useState(false);
   const pendingFocus = useRef<string | undefined>(undefined);
   const [heights, measure] = useState(new Map<string, number>());
   const [range, setRange] = useState({ start: 0, end: 20 });
@@ -38,7 +40,7 @@ export function useVirtualContext(ids: string[]) {
     };
     const index = at(node.scrollTop);
     const row = rows[index];
-    anchor.current = row ? { id: row.id, offset: node.scrollTop - row.top } : undefined;
+    if (!resetting.current) anchor.current = row ? { id: row.id, offset: node.scrollTop - row.top } : undefined;
     const visible = { start: index, end: Math.min(rows.length, at(node.scrollTop + node.clientHeight) + 1) };
     setViewport((old) => (old.start === visible.start && old.end === visible.end ? old : visible));
     const next = {
@@ -52,9 +54,14 @@ export function useVirtualContext(ids: string[]) {
     if (!node) return;
     const point = anchor.current;
     const row = point && positions.rows.find((item) => item.id === point.id);
-    if (row) node.scrollTop = row.top + point.offset;
+    if (resetPending) {
+      node.scrollTop = 0;
+      anchor.current = undefined;
+      resetting.current = false;
+      setResetPending(false);
+    } else if (row) node.scrollTop = row.top + point.offset;
     refresh();
-  }, [positions, refresh]);
+  }, [positions, refresh, resetPending]);
   useLayoutEffect(() => {
     const valid = new Set(ids);
     measure((old) => {
@@ -111,6 +118,8 @@ export function useVirtualContext(ids: string[]) {
     refresh();
   }
   const reset = useCallback(() => {
+    resetting.current = true;
+    setResetPending(true);
     if (scroller.current) scroller.current.scrollTop = 0;
     anchor.current = undefined;
     refresh();

@@ -10,9 +10,9 @@ export function correlatedCalls(rawIds: Set<string>, anchor: string | undefined,
           (rawIds.has(call.id) ||
             (call.parentId !== undefined &&
               rawIds.has(call.parentId) &&
-              !all.some((parent) => parent.id === call.parentId && parent.branchAnchor === anchor))) &&
+              (!call.parentOccurrenceId || !all.some((parent) => parent.occurrenceId === call.parentOccurrenceId)))) &&
           call.branchAnchor === anchor &&
-          !call.parentOccurrenceId &&
+          (!call.parentOccurrenceId || !all.some((parent) => parent.occurrenceId === call.parentOccurrenceId)) &&
           !call.correlationUnavailable,
       )
       .map((call) => call.occurrenceId),

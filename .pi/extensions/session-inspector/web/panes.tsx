@@ -2,14 +2,14 @@ import { Cross2Icon } from "@radix-ui/react-icons";
 import { Dialog, IconButton } from "@radix-ui/themes";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
 
-export function useNarrow(sideWidth: number): boolean {
+export function useNarrow(): boolean {
   const [width, setWidth] = useState(() => window.innerWidth);
   useEffect(() => {
     const changed = () => setWidth(window.innerWidth);
     window.addEventListener("resize", changed);
     return () => window.removeEventListener("resize", changed);
   }, []);
-  return width <= 1100 || width - sideWidth < 520;
+  return width <= 1100;
 }
 export function PaneDrawer({
   name,

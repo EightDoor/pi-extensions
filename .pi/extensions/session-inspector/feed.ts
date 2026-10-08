@@ -2,14 +2,15 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Collector } from "./collector.ts";
 import { captureContext } from "./context.ts";
 import { EntryIndex } from "./entry-index.ts";
-import { identityIssue, recordedLeaf } from "./identity.ts";
+import { recordedLeaf } from "./identity.ts";
 import type { ContextComposition, SkillView, Snapshot } from "./model.ts";
-import { capture, displayText, sessionName } from "./privacy.ts";
+import { capture, displayText, readSessionName } from "./privacy.ts";
 import { snapshot } from "./projection.ts";
 
 export class SessionFeed {
   private dirty = true;
   private observed?: ContextComposition;
+  private providerObservation?: Snapshot["providerObservation"];
   observeContext(messages: readonly unknown[]): void {
     if (this.closed || this.options.signal.aborted) return;
     this.observed = captureContext(
@@ -21,8 +22,9 @@ export class SessionFeed {
     this.changed(false);
   }
   observePayload(payload: unknown): void {
-    if (!this.observed || this.closed || this.options.signal.aborted) return;
-    this.observed = { ...this.observed, providerPayload: capture(payload, 65536) };
+    if (this.closed || this.options.signal.aborted) return;
+    // No public request identity associates this callback with a turn; warming/retries use it too.
+    this.providerObservation = { observedAt: Date.now(), data: capture(payload, 65536) };
     this.changed(false);
   }
   private indexed?: EntryIndex;
@@ -52,12 +54,13 @@ export class SessionFeed {
     const ctx = this.options.context();
     const manager = ctx.sessionManager;
     const tools = this.options.pi.getAllTools();
-    const entries = manager.getEntries(); // Public readonly API; shallow references only, no projection.
+    // Public SDK method, omitted from the current ReadonlySessionManager type; readonly adapters may lack it.
+    const counted = manager as typeof manager & { getEntryCount?: () => number };
+    const count = typeof counted.getEntryCount === "function" ? counted.getEntryCount() : manager.getEntries().length;
     return JSON.stringify({
-      count: entries.length,
-      last: identityIssue(entries.at(-1)) ? "[invalid identity]" : entries.at(-1)?.id,
+      count,
       leaf: recordedLeaf(manager),
-      name: sessionName(manager.getSessionName() ?? "Current session"),
+      name: readSessionName(manager),
       active: this.options.pi.getActiveTools(),
       toolCount: tools.length,
       tools: tools.slice(0, 256).map((tool) => ({
@@ -99,6 +102,7 @@ export class SessionFeed {
       }, 250);
   }
   snapshot(): Snapshot {
+    if (this.closed || this.options.signal.aborted) throw new Error("Inspector stopped");
     if (!this.cached || this.dirty) {
       const ctx = this.options.context();
       this.cached = snapshot(
@@ -120,6 +124,7 @@ export class SessionFeed {
       ...this.cached,
       revision: this.revision,
       context: this.observed ?? this.cached.context,
+      providerObservation: this.providerObservation,
       calls: this.options.collector.list(),
       droppedCalls: this.options.collector.dropped,
     };
@@ -134,5 +139,6 @@ export class SessionFeed {
     this.cached = undefined;
     this.indexed = undefined;
     this.observed = undefined;
+    this.providerObservation = undefined;
   };
 }

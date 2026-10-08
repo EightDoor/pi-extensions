@@ -47,7 +47,7 @@ export function matches(entry: EntrySummary, filters: Filters, calls: Call[]): b
     (!filters.groups.length || filters.groups.includes(group(entry.kind))) &&
     (!filters.errorsOnly || entry.status === "error" || call?.status === "error") &&
     (!filters.slowOnly || (call?.durationMs ?? 0) > 10000) &&
-    `${entry.kind} ${entry.name ?? ""} ${entry.label} ${entry.id}`.toLowerCase().includes(filters.query.toLowerCase())
+    `${entry.kind} ${entry.name ?? ""} ${entry.label} ${entry.id}`.toLowerCase().includes(filters.query)
   );
 }
 export function matchesCall(call: Call, filters: Filters): boolean {
@@ -55,7 +55,7 @@ export function matchesCall(call: Call, filters: Filters): boolean {
     (!filters.groups.length || filters.groups.includes("Tool")) &&
     (!filters.errorsOnly || call.status === "error") &&
     (!filters.slowOnly || (call.durationMs ?? 0) > 10000) &&
-    `${call.name} ${call.id}`.toLowerCase().includes(filters.query.toLowerCase()) &&
+    `${call.name} ${call.id}`.toLowerCase().includes(filters.query) &&
     (filters.kind === "all" || filters.kind === "toolResult")
   );
 }

@@ -9,7 +9,6 @@ import { capture, displayText } from "./privacy.ts";
 export class Collector {
   readonly startedAt = Date.now();
   private calls = new Map<string, Call>();
-  private current = new Map<string, string>();
   private partialAt = new Map<string, number>();
   private sequence = 0;
   dropped = 0;
@@ -19,11 +18,15 @@ export class Collector {
     args: unknown,
     anchor: string | null,
   ): Call {
-    const parent = event.parentToolCallId ? this.calls.get(this.current.get(event.parentToolCallId) ?? "") : undefined;
+    const parent = event.parentToolCallId ? this.active(event.parentToolCallId) : undefined;
+    const ambiguousParent =
+      event.parentToolCallId !== undefined &&
+      this.list().filter((item) => item.id === event.parentToolCallId && item.status === "running").length > 1;
     const call: Call = {
       id: event.toolCallId,
       occurrenceId: `call-${++this.sequence}`,
       parentId: event.parentToolCallId,
+      parentUnavailable: ambiguousParent ? "Overlapping running parent IDs; relationship unavailable" : undefined,
       parentOccurrenceId: parent?.status === "running" ? parent.occurrenceId : undefined,
       name: displayText(event.toolName),
       status: "running",
@@ -31,14 +34,11 @@ export class Collector {
       branchAnchor: parent?.status === "running" ? parent.branchAnchor : anchor,
     };
     this.calls.set(call.occurrenceId, call);
-    this.current.set(call.id, call.occurrenceId);
     while (this.calls.size > this.maxCalls) {
       const first = this.calls.keys().next().value;
       if (first === undefined) break;
-      const removed = this.calls.get(first);
       this.calls.delete(first);
       this.partialAt.delete(first);
-      if (removed && this.current.get(removed.id) === first) this.current.delete(removed.id);
       this.dropped++;
     }
     return call;
@@ -62,6 +62,7 @@ export class Collector {
         if (
           child.parentId === call.id &&
           !child.parentOccurrenceId &&
+          !child.parentUnavailable &&
           child.status === "running" &&
           child.branchAnchor === call.branchAnchor
         )
@@ -94,7 +95,6 @@ export class Collector {
   }
   settle(): void {
     for (const call of this.calls.values()) if (call.status === "running") call.status = "unfinished";
-    this.current.clear();
   }
   list(): Call[] {
     return [...this.calls.values()];

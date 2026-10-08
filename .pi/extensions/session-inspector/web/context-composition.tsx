@@ -1,9 +1,10 @@
 import { ChevronDownIcon, ChevronRightIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import { Heading, TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
-import type { ContextComposition as Composition, ContextSegment } from "../model.ts";
+import type { ContextComposition as Composition, ContextSegment, Snapshot } from "../model.ts";
 import { Data, Glyph, Metadata } from "./components.tsx";
 import { output, record, time } from "./format.ts";
+import { boundedSearch, searchNeedle } from "./search.ts";
 import { useVirtualContext } from "./virtual-context.ts";
 
 const categories = ["system", "user", "assistant", "toolCall", "toolResult", "other"] as const;
@@ -15,24 +16,34 @@ const names: Record<string, string> = {
   toolResult: "Tool result",
   other: "Other",
 };
-export function ContextComposition({ context }: { context?: Composition }) {
+export function ContextComposition({
+  context,
+  payload,
+}: {
+  context?: Composition;
+  payload?: Snapshot["providerObservation"];
+}) {
   const [query, search] = useState("");
   const [category, filter] = useState("all");
   const [expanded, expand] = useState(new Set<string>());
   const [selected, select] = useState("");
   const segments = context?.segments;
+  const needle = useMemo(() => searchNeedle(query), [query]);
+  const searchable = useMemo(
+    () => context?.messages.map((message) => output(message.value).toLowerCase()) ?? [],
+    [context?.messages],
+  );
   const rows = useMemo(
     () =>
       (segments ?? []).filter((segment) => {
-        const message = context?.messages[segment.messageIndex];
+        const message = searchable[segment.messageIndex] ?? "";
         return (
           (category === "all" || segment.category === category) &&
-          `${segment.role} ${segment.kind} ${segment.preview} ${message ? output(message.value) : ""}`
-            .toLowerCase()
-            .includes(query.toLowerCase())
+          (`${segment.role} ${segment.kind} ${segment.preview}`.toLowerCase().includes(needle) ||
+            message.includes(needle))
         );
       }),
-    [segments, category, query, context?.messages],
+    [segments, category, needle, searchable],
   );
   const ids = useMemo(() => rows.map((row) => row.id), [rows]);
   const virtual = useVirtualContext(ids);
@@ -90,7 +101,7 @@ export function ContextComposition({ context }: { context?: Composition }) {
           placeholder="Search captured context…"
           value={query}
           onChange={(event) => {
-            search(event.target.value);
+            search(boundedSearch(event.target.value));
             virtual.reset();
           }}
         >
@@ -224,12 +235,17 @@ export function ContextComposition({ context }: { context?: Composition }) {
           {Math.min(rows.length, virtual.range.start + 1)}–{Math.min(rows.length, virtual.range.end)} / {rows.length}
         </span>
       </div>
-      {context?.providerPayload && (
+      {payload && (
         <details className="provider-observation">
-          <summary>Advanced · observed provider payload (later handlers may differ)</summary>
+          <summary>
+            Advanced · independent provider observation (request association unavailable; may include warming/retries)
+          </summary>
+          <span>
+            Observed {new Date(payload.observedAt).toLocaleTimeString()} · not attributed to the context leaf/turn
+          </span>
           <Data
             label="Observed provider payload · redacted bounded copy"
-            data={context.providerPayload}
+            data={payload.data}
             scope="observed-provider-payload"
           />
         </details>

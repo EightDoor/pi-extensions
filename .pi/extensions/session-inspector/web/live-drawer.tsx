@@ -5,6 +5,7 @@ import type { Call, EntrySummary } from "../model.ts";
 import { CallView, Status } from "./components.tsx";
 import { duration, type Filters, matchesCall } from "./format.ts";
 import { flatten, hierarchy, reveal, withAncestors } from "./hierarchy.ts";
+import { searchNeedle } from "./search.ts";
 import { TimelineMark } from "./timeline.tsx";
 import { axis } from "./timing.ts";
 
@@ -29,6 +30,7 @@ export function LiveDrawer({
   dropped: number;
   filters: Filters;
 }) {
+  const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
   const tree = useMemo(
     () =>
       hierarchy(
@@ -43,8 +45,11 @@ export function LiveDrawer({
   );
   const keep = useMemo(
     () =>
-      withAncestors(tree, new Set(calls.filter((call) => matchesCall(call, filters)).map((call) => call.occurrenceId))),
-    [tree, calls, filters],
+      withAncestors(
+        tree,
+        new Set(calls.filter((call) => matchesCall(call, preparedFilters)).map((call) => call.occurrenceId)),
+      ),
+    [tree, calls, preparedFilters],
   );
   const [expanded, setExpanded] = useState(new Set<string>());
   const previous = useRef<string | undefined>(undefined);

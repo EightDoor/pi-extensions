@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 10 files, 76 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 35 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 11 files, 108 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 39 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -48,6 +48,14 @@ Fallback URLs use a 43-character Base64url encoding of the original 32 random to
 ## Primary /inspect command
 
 `/inspect` and `/inspect stop` are the primary routes and all usage/fallback prompts use them. `/session-inspector` retains the identical handler as a compatibility alias. Extension-conventions command MUST rules were audited for preserved established routes, argument completion/rejection, consent, non-TUI observability and shared lifecycle ownership; no settings or model-visible behavior changed. Local tests exercise primary mode guards and alias consent/start/stop reuse; the real Pi/browser lifecycle test and explicit/trusted-discovery/reload/replacement smoke now exercise `/inspect`. The other browser flows are unchanged and reuse the preceding full 30-test run.
+
+## Fifth-review remediation
+
+R23–R35 are independently confirmed in-scope defects, with evidence and dispositions in REVIEW.md. New local tests cover overlapping parent identities, retained descendants after eviction, malformed labels/session names/content/tool arguments/nested metadata, oversized IDs, late active-leaf reservation, prefixed credential redaction, bounded sanitized searches, zero idle getEntries calls on SDK managers with readonly-adapter fallback, and independent payload observations without false cache-warming turn attribution. Browser tests cover widened pane toggles, distant and case-only search/category resets plus preserved subsequent scroll, bounded paste ingestion, a leaf beyond 10,000 entries and independently labeled replay payloads. Existing native normalized-prefix, lifecycle/cancellation and R1–R22 regressions pass unchanged.
+
+Local build/types/Biome, 108 tests, 39 Chromium tests, explicit/discovery/reload/replacement Pi smoke and both root gates pass (7,461 root tests, one existing skip). The final virtual-reset-only adjustment is excluded from unchanged root test discovery; local/browser/Pi and root check are rerun. Semantic audit against AGENTS.md and docs/extension-conventions.md covers every touched source/identity/search/parent traversal, public SDK count method fallback, immutable bounded raw evidence, pane/scroll/focus ownership and independent observation disposal. No settings, dependency, package or release changes.
+
+GitHub run 37786510345 failed the unrelated release-workflow assertion: main commit 02f99c9a changes publish.yml to push while test/check-test-separation.test.ts still requires workflow_run. Neither file is changed by this PR. CI1 is deferred with a recommendation for a separate workflow/test alignment PR; no incident or scope-expansion justification exists. Paid-provider/physical desktop/OS paths remain unverified as before.
 
 ## Context Composition revision
 

@@ -20,6 +20,7 @@ export interface Call {
   id: string;
   occurrenceId: string;
   parentOccurrenceId?: string;
+  parentUnavailable?: string;
   correlationUnavailable?: boolean;
   parentId?: string;
   name: string;
@@ -65,7 +66,6 @@ export interface ContextComposition {
   segments: ContextSegment[];
   incomplete: boolean;
   unavailable?: string;
-  providerPayload?: Capture;
 }
 export interface Snapshot {
   protocol: 1;
@@ -81,6 +81,7 @@ export interface Snapshot {
   invalidEntryCount?: number;
   invalidEntries?: { index: number; reason: string; raw: Capture }[];
   context?: ContextComposition;
+  providerObservation?: { observedAt: number; data: Capture };
   currentPrompt: Capture;
   tools: ToolView[];
   skills: SkillView[];

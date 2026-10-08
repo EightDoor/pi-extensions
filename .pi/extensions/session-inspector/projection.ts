@@ -21,7 +21,7 @@ import { correlatedCalls } from "./correlation.ts";
 import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
-import { capture, displayText, sessionName } from "./privacy.ts";
+import { capture, displayText, readSessionName } from "./privacy.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   const issue = identityIssue(entry);
@@ -65,7 +65,9 @@ export function summarize(entry: SessionEntry, label?: string): EntrySummary {
             ? "cancelled"
             : undefined,
     toolCallId: message?.role === "toolResult" ? message.toolCallId : undefined,
-    label: displayText(label ?? (typeof preview === "string" ? preview : JSON.stringify(preview))).slice(0, 180),
+    label: displayText(
+      typeof label === "string" ? label : typeof preview === "string" ? preview : JSON.stringify(preview),
+    ).slice(0, 180),
   };
 }
 
@@ -86,7 +88,13 @@ export function snapshot(
   const invalidEntries: NonNullable<Snapshot["invalidEntries"]> = [];
   let invalidEntryCount = 0;
   const nodes: EntrySummary[] = [];
-  for (const [ordinal, entry] of entries.slice(0, 10000).entries()) {
+  const leafId = recordedLeaf(manager, index.duplicates);
+  const reserved = new Set(leafId ? ancestry(manager, leafId, index).path.map((entry) => entry.id) : []);
+  let remaining = 10000 - reserved.size;
+  const included = entries.flatMap((entry, ordinal) =>
+    reserved.has(entry.id) || remaining-- > 0 ? [{ entry, ordinal }] : [],
+  );
+  for (const { ordinal, entry } of included) {
     const reason = index.duplicates.has(entry.id) ? "duplicate entry id" : identityIssue(entry);
     if (reason) {
       invalidEntryCount++;
@@ -107,7 +115,17 @@ export function snapshot(
           ? owning.get(entry.parentId)
           : undefined;
     if (source) owning.set(entry.id, source);
-    const node = summarize(entry, manager.getLabel(entry.id));
+    const label = manager.getLabel(entry.id);
+    if (label !== undefined && typeof label !== "string") {
+      invalidEntryCount++;
+      if (invalidEntries.length < 20)
+        invalidEntries.push({
+          index: ordinal,
+          reason: "non-string resolved label",
+          raw: capture({ entry, label }, 2048),
+        });
+    }
+    const node = summarize(entry, label);
     if (node.toolCallId && source?.ids.has(node.toolCallId)) node.toolAnchor = source.id;
     nodes.push(node);
   }
@@ -116,8 +134,8 @@ export function snapshot(
     generation,
     revision,
     sessionId: manager.getSessionId(),
-    ...sessionName(manager.getSessionName() ?? "Current session"),
-    leafId: recordedLeaf(manager, index.duplicates),
+    ...readSessionName(manager),
+    leafId,
     totalEntries: entries.length,
     nodes,
     incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256 || invalidEntryCount > 0,
@@ -183,7 +201,7 @@ export function branch(
     const m = entry.message;
     if (m.role === "assistant")
       for (const block of Array.isArray(m.content) ? m.content : []) {
-        if (block.type === "toolCall" && block.name === "read" && typeof block.arguments.path === "string") {
+        if (block.type === "toolCall" && block.name === "read" && typeof block.arguments?.path === "string") {
           callPaths.set(block.id, block.arguments.path);
         }
       }
@@ -196,7 +214,8 @@ export function branch(
       const skill = skills.find((s) => s.path === path);
       if (skill) evidence.push({ name: skill.name, state: "successfully read", entryId: entry.id });
       // Public bounded nested metadata provides names/arguments/status, never child results.
-      for (const call of m.nestedCalls?.calls ?? []) {
+      for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
+        if (!call || typeof call !== "object") continue;
         const skill = skills.find((s) => s.path === call.arguments?.path);
         if (call.name === "read" && call.status === "ok" && skill) {
           evidence.push({ name: skill.name, state: "successfully read (nested metadata)", entryId: entry.id });
@@ -278,7 +297,9 @@ export function detail(
             (candidate) =>
               candidate.type === "message" &&
               candidate.message.role === "assistant" &&
-              candidate.message.content.some((block) => block.type === "toolCall" && ids.has(block.id)),
+              (Array.isArray(candidate.message.content) ? candidate.message.content : []).some(
+                (block) => block.type === "toolCall" && ids.has(block.id),
+              ),
           )?.id;
   return {
     toolAnchor,
