@@ -8,7 +8,7 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 9 files, 69 tests pass within the 5,000 ms test limit. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 9 files, 70 tests pass within the 5,000 ms test limit. |
 | Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 30 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
@@ -44,6 +44,10 @@ Local validation now passes 67 tests across nine files and 29 Chromium tests. Th
 ## Compact fallback URL
 
 Fallback URLs use a 43-character Base64url encoding of the original 32 random token bytes, retaining 256-bit entropy. The full URL is at most 68 characters and printed on its own notification line. Public generation metadata is encoded into the data-free HTML shell; all authenticated endpoints still enforce the generation and token. Tests verify URL bounds/entropy, absence of credentials in the shell, inert encoded generation text, standalone fallback notification, compact-link browser authentication/fragment removal/reload and legacy fragment compatibility. Lifecycle cleanup and model-visible prefix behavior remain unchanged; native terminal hyperlink detection is terminal-specific and not asserted by browser tests.
+
+## Primary /inspect command
+
+`/inspect` and `/inspect stop` are the primary routes and all usage/fallback prompts use them. `/session-inspector` retains the identical handler as a compatibility alias. Extension-conventions command MUST rules were audited for preserved established routes, argument completion/rejection, consent, non-TUI observability and shared lifecycle ownership; no settings or model-visible behavior changed. Local tests exercise primary mode guards and alias consent/start/stop reuse; the real Pi/browser lifecycle test and explicit/trusted-discovery/reload/replacement smoke now exercise `/inspect`. The other browser flows are unchanged and reuse the preceding full 30-test run.
 
 ## Progressive Explorer revision
 

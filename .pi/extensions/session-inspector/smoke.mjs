@@ -31,7 +31,7 @@ for (const mode of ["text", "json"]) {
         join(root, "test", "reload-helper.ts"),
         "-e",
         join(root, "index.ts"),
-        "/session-inspector",
+        "/inspect",
       ],
       { env: { ...process.env, PI_CODING_AGENT_DIR: temp }, stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -142,17 +142,18 @@ for (const mode of ["explicit", "discovery"]) {
     ready = true;
     const verifyCommands = async () => {
       const data = await send({ type: "get_commands" });
+      assert(data.commands.some((command) => command.name === "inspect"));
       assert(data.commands.some((command) => command.name === "session-inspector"));
     };
     await verifyCommands();
-    await send({ type: "prompt", message: "/session-inspector" });
+    await send({ type: "prompt", message: "/inspect" });
     assert(
       events.some(
         (event) =>
           event.type === "extension_ui_request" && event.method === "notify" && event.message.includes("requires TUI"),
       ),
     );
-    await send({ type: "prompt", message: "/session-inspector stop" });
+    await send({ type: "prompt", message: "/inspect stop" });
     await send({ type: "prompt", message: "/inspector-smoke-reload" });
     await verifyCommands();
     await send({ type: "new_session" });

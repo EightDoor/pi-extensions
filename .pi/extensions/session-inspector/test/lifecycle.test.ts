@@ -19,6 +19,7 @@ afterAll(async () => {
 function harness() {
   const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
   let command: Parameters<ExtensionAPI["registerCommand"]>[1] | undefined;
+  const commands = new Map<string, NonNullable<typeof command>>();
   const notifications: string[] = [];
   const confirm = vi.fn(async () => true);
   const sharedUI = { confirm, notify: (s: string) => notifications.push(s) };
@@ -27,8 +28,9 @@ function harness() {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
       return () => {};
     },
-    registerCommand: (_name: string, c: NonNullable<typeof command>) => {
-      command = c;
+    registerCommand: (name: string, c: NonNullable<typeof command>) => {
+      commands.set(name, c);
+      if (name === "inspect") command = c;
     },
     getAllTools: () => [],
     getActiveTools: () => [],
@@ -56,10 +58,24 @@ function harness() {
   const emit = async (type: string, ctx: ExtensionContext, event: unknown = {}) => {
     for (const handler of handlers.get(type) ?? []) await handler(event, ctx);
   };
-  const run = async (ctx: ExtensionCommandContext, args = "") => command?.handler(args, ctx);
+  const run = async (ctx: ExtensionCommandContext, args = "", name = "inspect") =>
+    commands.get(name)?.handler(args, ctx);
   return { start, launch, context, emit, run, confirm, notifications, command: () => command };
 }
 describe("owned lifecycle and mode contract", () => {
+  it("preserves the legacy alias with the same consent, owner and stop behavior", async () => {
+    const h = harness();
+    const ctx = h.context();
+    await h.run(ctx);
+    await h.run(ctx, "", "session-inspector");
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.confirm).toHaveBeenCalledTimes(1);
+    await h.run(ctx, "stop", "session-inspector");
+    const server = await h.start.mock.results[0]?.value;
+    expect(server?.close).toHaveBeenCalled();
+    await expect(h.run(h.context("json"), "", "session-inspector")).rejects.toThrow("TUI");
+    await expect(h.run(h.context("print"), "bad", "session-inspector")).rejects.toThrow("Usage: /inspect");
+  });
   it("does no factory work, cancels consent and retries startup failure", async () => {
     const h = harness();
     const ctx = h.context();
@@ -83,7 +99,7 @@ describe("owned lifecycle and mode contract", () => {
     expect(h.notifications[0]?.split("\n")).toEqual([
       "Browser unavailable; open privately:",
       server?.url,
-      "/session-inspector stop revokes this URL.",
+      "/inspect stop revokes this URL.",
     ]);
     await h.run(ctx, "stop");
   });

@@ -128,7 +128,7 @@ test("real Pi codemode, live browser, reload credential rotation and shutdown", 
   };
   try {
     await session.bindExtensions(bindings);
-    await session.prompt("/session-inspector");
+    await session.prompt("/inspect");
     await expect(page.getByText("Live", { exact: true })).toBeVisible();
     await session.prompt("run real codemode");
     await page.getByRole("button", { name: /^Live calls/ }).click();
@@ -160,12 +160,12 @@ test("real Pi codemode, live browser, reload credential rotation and shutdown", 
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
     if (old) await expect(fetch(old.origin)).rejects.toThrow();
     await session.bindExtensions(bindings);
-    await session.prompt("/session-inspector");
+    await session.prompt("/inspect");
     expect(servers[1]?.token).not.toBe(old?.token);
     await expect(page.getByText("Live", { exact: true })).toBeVisible();
-    await session.prompt("/session-inspector stop");
+    await session.prompt("/inspect stop");
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
-    await session.prompt("/session-inspector");
+    await session.prompt("/inspect");
     await expect(page.getByText("Live", { exact: true })).toBeVisible();
     await host.dispose();
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();

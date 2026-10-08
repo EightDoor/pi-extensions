@@ -187,7 +187,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
       }
       if (!alive(owner)) return;
       ctx.ui.notify(
-        `${launched ? "Session Inspector" : "Browser unavailable; open privately"}:\n${url}\n/session-inspector stop revokes this URL.`,
+        `${launched ? "Session Inspector" : "Browser unavailable; open privately"}:\n${url}\n/inspect stop revokes this URL.`,
         launched ? "info" : "warning",
       );
     } catch {
@@ -205,7 +205,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     }
   }
 
-  pi.registerCommand("session-inspector", {
+  const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Open a private, read-only live session web inspector",
     getArgumentCompletions: (prefix) =>
       ["stop"].filter((s) => s.startsWith(prefix)).map((value) => ({ value, label: value })),
@@ -213,10 +213,10 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
       const route = args.trim();
       if (route !== "" && route !== "stop") {
         if (ctx.hasUI) {
-          ctx.ui.notify("Usage: /session-inspector [stop]", "warning");
+          ctx.ui.notify("Usage: /inspect [stop]", "warning");
           return;
         }
-        throw new Error("Usage: /session-inspector [stop]");
+        throw new Error("Usage: /inspect [stop]");
       }
       if (route === "stop") {
         const epoch = epochFor(ctx);
@@ -241,5 +241,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
         owner.opening = undefined;
       }
     },
-  });
+  };
+  pi.registerCommand("inspect", command);
+  pi.registerCommand("session-inspector", command); // Compatibility route, same ownership and mode guards.
 }

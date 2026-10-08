@@ -13,19 +13,21 @@ npm install
 node .pi/extensions/session-inspector/build.mjs
 ```
 
-Pi discovers `.pi/extensions/session-inspector/index.ts` after project trust. In an existing trusted session, use `/reload`, then `/session-inspector`. Accept the sensitive-data warning to start serving and collecting live child results. The command opens your default browser; if opening fails, it shows a private URL instead.
+Pi discovers `.pi/extensions/session-inspector/index.ts` after project trust. In an existing trusted session, use `/reload`, then `/inspect`. Accept the sensitive-data warning to start serving and collecting live child results. The command opens your default browser; if opening fails, it shows a private URL instead.
 
 For explicit loading, use `pi --no-extensions -e ./.pi/extensions/session-inspector/index.ts`. Browser assets must be built first; factory loading does not start a server or require those assets.
 
-Use `/session-inspector stop` to stop recording, clear the owned collector, close connections, and revoke the URL. Reload, session replacement, and shutdown do the same. Closing the browser tab alone does not stop the server; collection continues until stopped, within its bounds. Revoking the URL cannot erase data already received by a browser; close the tab to release that view.
+Use `/inspect stop` to stop recording, clear the owned collector, close connections, and revoke the URL. Reload, session replacement, and shutdown do the same. Closing the browser tab alone does not stop the server; collection continues until stopped, within its bounds. Revoking the URL cannot erase data already received by a browser; close the tab to release that view.
 
 ## Commands and modes
 
 | Command | TUI | RPC | JSON / print |
 | --- | --- | --- | --- |
-| `/session-inspector` | Confirm, start, open/reopen viewer | Observable notification rejecting opening | Extension command error reported by Pi |
-| `/session-inspector stop` | Stop and notify | Stop and notify | Stop; no ad hoc protocol output |
+| `/inspect` | Confirm, start, open/reopen viewer | Observable notification rejecting opening | Extension command error reported by Pi |
+| `/inspect stop` | Stop and notify | Stop and notify | Stop; no ad hoc protocol output |
 | Unknown or trailing arguments | Usage warning | Usage warning | Extension command error reported by Pi |
+
+`/session-inspector` and `/session-inspector stop` remain compatibility aliases with identical consent, mode checks and lifecycle behavior.
 
 The default command is a frequent single action, not a manager menu. `stop` is the deterministic cleanup route; tab closure is intentionally not a server shutdown signal. There are no saved settings, extension environment variables, model tools, or browser-controlled agent actions.
 
