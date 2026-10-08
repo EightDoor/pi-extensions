@@ -1,5 +1,11 @@
 # @narumitw/pi-langfuse
 
+## 0.51.2
+
+### Patch Changes
+
+- 2246daa: Update runtime dependencies for D-Bus, peer networking, and tracing.
+
 ## 0.51.1
 
 ### Patch Changes
