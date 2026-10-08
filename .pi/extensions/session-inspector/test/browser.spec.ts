@@ -694,6 +694,68 @@ test("R17: filtered direct-child count is labeled visible rather than recorded t
   await expect(page.locator(`[data-trace-entry-id="${parent}"] .children-label`)).not.toContainText("recorded");
 });
 
+test("R18: a failed snapshot recovers while the SSE connection stays quiet", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/snapshot?**", async (route) => {
+    attempts++;
+    if (attempts === 1) await route.abort("connectionreset");
+    else await route.continue();
+  });
+  await page.goto(server.url);
+  await expect(page.getByText("Live", { exact: true })).toBeVisible();
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test("R18: terminal snapshot admission does not retry", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/snapshot?**", async (route) => {
+    attempts++;
+    await route.fulfill({ status: 409, body: "Changed" });
+  });
+  await page.goto(server.url);
+  await expect(page.getByText("Session expired; open a new viewer from Pi.", { exact: true })).toBeVisible();
+  await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1100)));
+  expect(attempts).toBe(1);
+});
+
+test("R18: terminal SSE shutdown cancels a pending snapshot retry", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/snapshot?**", async (route) => {
+    attempts++;
+    await route.fulfill({ status: 503, body: "Transient" });
+  });
+  await page.goto(server.url);
+  await expect(
+    page.getByText("Viewer unavailable; reconnecting requires a running Pi session.", { exact: true }),
+  ).toBeVisible();
+  await page.route("**/api/events?**", async (route) => route.fulfill({ status: 403, body: "Expired" }));
+  await server.close();
+  await expect(
+    page.getByText("Session expired or unauthorized; open the viewer again from Pi.", { exact: true }),
+  ).toBeVisible();
+  const stopped = attempts;
+  await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1100)));
+  expect(attempts).toBe(stopped);
+});
+
+test("R19/R20: malformed kind and duplicate records remain raw diagnostics, not React nodes", async ({ page }) => {
+  const malformed = data.manager.appendCustomEntry("bad-kind", {});
+  const entry = data.manager.getEntry(malformed);
+  if (!entry) throw new Error("No malformed");
+  (entry as unknown as Record<string, unknown>).type = { invalid: "kind" };
+  const other = data.manager.appendCustomEntry("duplicate", {});
+  const duplicate = data.manager.getEntry(other);
+  if (!duplicate) throw new Error("No duplicate");
+  duplicate.id = data.user;
+  await page.goto(server.url);
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await page.locator(".invalid-entries > summary").click();
+  await expect(page.locator(".invalid-entries")).toContainText("entry type");
+  await expect(page.locator(".invalid-entries")).toContainText("duplicate entry id");
+  await expect(nav(page, data.user)).toHaveCount(0);
+});
+
 test("large history pages visible rows lazily and preserves arbitrary absolute depth", async ({ page }) => {
   for (let i = 0; i < 1500; i++)
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });

@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
 import type { BranchView, Snapshot } from "../model.ts";
-import { generation, headers, request, useDetail } from "./api.ts";
+import { generation, headers, RequestFailure, request, useDetail } from "./api.ts";
 import { type Filters, matches } from "./format.ts";
 import { Inspector } from "./inspector.tsx";
 import { LiveDrawer } from "./live-drawer.tsx";
@@ -40,6 +40,7 @@ function App() {
   }
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
+  const lifecycle = useRef<{ terminal: boolean; stream?: AbortController }>({ terminal: false });
   const [tab, setTab] = useState("raw");
   const navTrigger = useRef<HTMLButtonElement>(null);
   const inspectorTrigger = useRef<HTMLButtonElement>(null);
@@ -82,7 +83,10 @@ function App() {
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
     let refresh: ReturnType<typeof setTimeout> | undefined;
+    lifecycle.current.stream = controller;
     const stop = (message: string) => {
+      lifecycle.current.terminal = true;
+      setRevision(-1);
       controller.abort();
       clearTimeout(refresh);
       setConnected(false);
@@ -152,24 +156,40 @@ function App() {
   useEffect(() => {
     if (revision < 0) return;
     const controller = new AbortController();
-    void request<Snapshot>("snapshot", controller.signal)
-      .then((value) => {
-        if (controller.signal.aborted) return;
-        setSnapshot(value);
-        setError("");
-        const id = value.leafId ?? value.nodes[0]?.id;
-        setSelection((old) => {
-          if (old?.kind === "call" && !value.calls.some((call) => call.occurrenceId === old.id)) {
-            const fallback = old.anchor ?? id;
-            return fallback ? { kind: "entry", id: fallback, serial: old.serial + 1 } : undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      if (lifecycle.current.terminal || controller.signal.aborted) return;
+      void request<Snapshot>("snapshot", controller.signal)
+        .then((value) => {
+          if (controller.signal.aborted || lifecycle.current.terminal) return;
+          setSnapshot(value);
+          setError("");
+          const id = value.leafId ?? value.nodes[0]?.id;
+          setSelection((old) => {
+            if (old?.kind === "call" && !value.calls.some((call) => call.occurrenceId === old.id)) {
+              const fallback = old.anchor ?? id;
+              return fallback ? { kind: "entry", id: fallback, serial: old.serial + 1 } : undefined;
+            }
+            return old ?? (id ? { kind: "entry", id, serial: 0 } : undefined);
+          });
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted && !lifecycle.current.terminal) {
+            setError(String(error.message));
+            if (error instanceof RequestFailure && error.terminal) {
+              lifecycle.current.terminal = true;
+              lifecycle.current.stream?.abort();
+              setConnected(false);
+              setRevision(-1);
+            } else retry = setTimeout(load, 1000);
           }
-          return old ?? (id ? { kind: "entry", id, serial: 0 } : undefined);
         });
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setError(String(error.message));
-      });
-    return () => controller.abort();
+    };
+    load();
+    return () => {
+      controller.abort();
+      clearTimeout(retry);
+    };
   }, [revision]);
   useEffect(() => {
     setBranchError("");

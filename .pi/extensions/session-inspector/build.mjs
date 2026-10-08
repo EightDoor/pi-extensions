@@ -16,7 +16,7 @@ try {
     target: "es2022",
     minify: true,
     define: { "process.env.NODE_ENV": '"production"' },
-    legalComments: "linked",
+    legalComments: "eof",
   });
   await writeFile(
     `${staging}/index.html`,

@@ -99,18 +99,21 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     changed(ctx);
   });
   function executionAnchor(ctx: ExtensionContext, rawId: string): string | null {
-    const leaf = recordedLeaf(ctx.sessionManager);
+    const index = owners.get(ctx.sessionManager)?.feed?.index();
+    const leaf = recordedLeaf(ctx.sessionManager, index?.duplicates);
     const entry = ctx.sessionManager.getLeafEntry();
     if (leaf && entry?.type === "message" && entry.message.role === "assistant") return leaf;
     return (
-      (leaf ? ancestry(ctx.sessionManager, leaf).path : [])
+      (leaf ? ancestry(ctx.sessionManager, leaf, index).path : [])
         .slice()
         .reverse()
         .find(
           (entry) =>
             entry.type === "message" &&
             entry.message.role === "assistant" &&
-            entry.message.content.some((block) => block.type === "toolCall" && block.id === rawId),
+            (Array.isArray(entry.message.content) ? entry.message.content : []).some(
+              (block) => block.type === "toolCall" && block.id === rawId,
+            ),
         )?.id ?? leaf
     );
   }
@@ -121,7 +124,8 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
   });
   pi.on("tool_execution_update", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
-    if (owner?.collector?.update(event, recordedLeaf(ctx.sessionManager))) changed(ctx, false);
+    if (owner?.collector?.update(event, recordedLeaf(ctx.sessionManager, owner?.feed?.index().duplicates)))
+      changed(ctx, false);
   });
   pi.on("tool_execution_end", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
@@ -162,8 +166,9 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
           generation: owner.generation,
           signal: owner.controller.signal,
           snapshot: () => owner.feed?.snapshot(),
-          branch: (id, offset) => branch(ctx.sessionManager, id, offset, owner.skills),
-          detail: (id, leaf) => detail(ctx.sessionManager, id, leaf, owner.collector ?? new Collector()),
+          branch: (id, offset) => branch(ctx.sessionManager, id, offset, owner.skills, owner.feed?.index()),
+          detail: (id, leaf) =>
+            detail(ctx.sessionManager, id, leaf, owner.collector ?? new Collector(), owner.feed?.index()),
         });
         if (!alive(owner)) {
           await server.close();

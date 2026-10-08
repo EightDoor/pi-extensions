@@ -45,10 +45,10 @@ export function Overview({ snapshot }: { snapshot?: Snapshot }) {
       {Boolean(snapshot?.invalidEntryCount) && (
         <details className="invalid-entries">
           <summary>
-            {snapshot?.invalidEntryCount} invalid entry identities omitted from navigation; bounded raw evidence
+            {snapshot?.invalidEntryCount} invalid or ambiguous entries omitted from navigation; bounded raw evidence
           </summary>
           <Data
-            label="Invalid entry identity evidence · up to 20 indexed records"
+            label="Invalid or ambiguous entry evidence · up to 20 indexed records"
             data={{
               value: (snapshot?.invalidEntries ?? []).map((item) => ({
                 index: item.index,

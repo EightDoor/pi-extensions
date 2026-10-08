@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Collector } from "./collector.ts";
+import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
@@ -7,6 +8,13 @@ import { snapshot } from "./projection.ts";
 
 export class SessionFeed {
   private dirty = true;
+  private indexed?: EntryIndex;
+  private closed = false;
+  index(): EntryIndex {
+    if (this.closed || this.options.signal.aborted) throw new Error("Inspector stopped");
+    if (!this.indexed) this.indexed = new EntryIndex(this.options.context().sessionManager.getEntries());
+    return this.indexed;
+  }
   private cached?: Snapshot;
   private revision = 0;
   private stamp = "";
@@ -63,7 +71,10 @@ export class SessionFeed {
   }
   changed(structural: boolean): void {
     if (this.options.signal.aborted) return;
-    if (structural) this.dirty = true;
+    if (structural) {
+      this.dirty = true;
+      this.indexed = undefined;
+    }
     if (!this.notification)
       this.notification = setTimeout(() => {
         this.notification = undefined;
@@ -82,6 +93,7 @@ export class SessionFeed {
         this.options.pi.getAllTools(),
         this.options.pi.getActiveTools(),
         this.options.skills,
+        this.index(),
       );
       this.cached.calls = []; // Do not retain evicted live results inside the static cache.
       this.dirty = false;
@@ -94,11 +106,13 @@ export class SessionFeed {
     };
   }
   close = (): void => {
+    this.closed = true;
     clearTimeout(this.notification);
     clearInterval(this.poll);
     this.notification = undefined;
     this.poll = undefined;
     this.options.signal.removeEventListener("abort", this.close);
     this.cached = undefined;
+    this.indexed = undefined;
   };
 }

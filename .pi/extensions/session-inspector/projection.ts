@@ -17,6 +17,7 @@ type ReadonlySessionManager = ExtensionContext["sessionManager"];
 import { ancestry } from "./ancestry.ts";
 import type { Collector } from "./collector.ts";
 import { correlatedCalls } from "./correlation.ts";
+import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
@@ -25,7 +26,7 @@ export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   const issue = identityIssue(entry);
   if (issue) throw new Error(issue);
   const message = entry.type === "message" ? entry.message : undefined;
-  const kind = message ? message.role : entry.type;
+  const kind = displayText(message ? message.role : entry.type).slice(0, 512);
   const value = message && "content" in message ? message.content : entry;
   const preview = capture(value, 180).value;
   const name =
@@ -76,24 +77,29 @@ export function snapshot(
   tools: ToolInfo[],
   active: string[],
   skills: SkillView[],
+  index = new EntryIndex(manager.getEntries()),
 ): Snapshot {
-  const entries = manager.getEntries();
+  const entries = index.entries;
   const owning = new Map<string, { id: string; ids: Set<string> }>();
   const invalidEntries: NonNullable<Snapshot["invalidEntries"]> = [];
   let invalidEntryCount = 0;
   const nodes: EntrySummary[] = [];
-  for (const [index, entry] of entries.slice(0, 10000).entries()) {
-    const reason = identityIssue(entry);
+  for (const [ordinal, entry] of entries.slice(0, 10000).entries()) {
+    const reason = index.duplicates.has(entry.id) ? "duplicate entry id" : identityIssue(entry);
     if (reason) {
       invalidEntryCount++;
-      if (invalidEntries.length < 20) invalidEntries.push({ index, reason, raw: capture(entry, 2048) });
+      if (invalidEntries.length < 20) invalidEntries.push({ index: ordinal, reason, raw: capture(entry, 2048) });
       continue;
     }
     const source =
       entry.type === "message" && entry.message.role === "assistant"
         ? {
             id: entry.id,
-            ids: new Set(entry.message.content.filter((block) => block.type === "toolCall").map((block) => block.id)),
+            ids: new Set(
+              (Array.isArray(entry.message.content) ? entry.message.content : [])
+                .filter((block) => block.type === "toolCall")
+                .map((block) => block.id),
+            ),
           }
         : entry.parentId
           ? owning.get(entry.parentId)
@@ -109,7 +115,7 @@ export function snapshot(
     revision,
     sessionId: manager.getSessionId(),
     ...sessionName(manager.getSessionName() ?? "Current session"),
-    leafId: recordedLeaf(manager),
+    leafId: recordedLeaf(manager, index.duplicates),
     totalEntries: entries.length,
     nodes,
     incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256 || invalidEntryCount > 0,
@@ -142,10 +148,10 @@ export function branch(
   leafId: string,
   offset: number,
   skills: SkillView[],
+  index = new EntryIndex(manager.getEntries()),
 ): BranchView {
-  if (!manager.getEntry(leafId)) throw new Error("Unknown entry");
-  const entries = manager.getEntries();
-  const { path, issue } = ancestry(manager, leafId);
+  if (!index.byId.has(leafId)) throw new Error("Unknown entry");
+  const { path, issue } = ancestry(manager, leafId, index);
   if (issue) {
     const unavailable = capture(`[unavailable: ${issue}]`);
     return {
@@ -163,17 +169,17 @@ export function branch(
       skillEvidence: unavailable,
     };
   }
-  const projection = buildSessionProjection(entries, leafId);
+  const projection = buildSessionProjection(path, leafId);
   const historicalSystem = getCurrentSystemMessage(projection.messages);
-  const target = manager.getEntry(leafId);
-  const previous = target?.parentId ? buildSessionProjection(entries, target.parentId).messages : [];
+  const target = index.get(leafId);
+  const previous = target?.parentId ? buildSessionProjection(path, target.parentId).messages : [];
   const evidence: { name: string; state: string; entryId: string }[] = [];
   const callPaths = new Map<string, string>();
   for (const entry of path) {
     if (entry.type !== "message") continue;
     const m = entry.message;
     if (m.role === "assistant")
-      for (const block of m.content) {
+      for (const block of Array.isArray(m.content) ? m.content : []) {
         if (block.type === "toolCall" && block.name === "read" && typeof block.arguments.path === "string") {
           callPaths.set(block.id, block.arguments.path);
         }
@@ -231,11 +237,18 @@ export function branch(
   };
 }
 
-export function detail(manager: ReadonlySessionManager, id: string, leafId: string, collector: Collector): DetailView {
-  const entry = manager.getEntry(id);
-  if (!entry || !manager.getEntry(leafId)) throw new Error("Unknown entry");
-  const selected = ancestry(manager, id);
-  const leaf = id === leafId ? selected : ancestry(manager, leafId);
+export function detail(
+  manager: ReadonlySessionManager,
+  id: string,
+  leafId: string,
+  collector: Collector,
+  index = new EntryIndex(manager.getEntries()),
+): DetailView {
+  if (index.duplicates.has(id) || index.duplicates.has(leafId)) throw new Error("Ambiguous duplicate entry id");
+  const entry = index.get(id);
+  if (!entry || !index.get(leafId)) throw new Error("Unknown entry");
+  const selected = ancestry(manager, id, index);
+  const leaf = id === leafId ? selected : ancestry(manager, leafId, index);
   const issue = selected.issue ?? leaf.issue;
   if (issue)
     return {
@@ -244,11 +257,12 @@ export function detail(manager: ReadonlySessionManager, id: string, leafId: stri
       projected: capture(`[unavailable: ${issue}]`),
       calls: [],
     };
-  const projected = buildSessionProjection(manager.getEntries(), leafId).entries.find((e) => e.sourceEntry.id === id);
+  const projected = buildSessionProjection(leaf.path, leafId).entries.find((e) => e.sourceEntry.id === id);
   const ids = new Set<string>();
   if (entry.type === "message") {
     const m = entry.message;
-    if (m.role === "assistant") for (const b of m.content) if (b.type === "toolCall") ids.add(b.id);
+    if (m.role === "assistant")
+      for (const b of Array.isArray(m.content) ? m.content : []) if (b.type === "toolCall") ids.add(b.id);
     if (m.role === "toolResult") ids.add(m.toolCallId);
   }
   const toolAnchor =

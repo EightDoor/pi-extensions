@@ -10,16 +10,25 @@ history.replaceState(null, "", location.pathname);
 export function headers(): HeadersInit {
   return { "X-Inspector-Token": token };
 }
+export class RequestFailure extends Error {
+  constructor(
+    message: string,
+    readonly terminal: boolean,
+  ) {
+    super(message);
+  }
+}
 export async function request<T>(route: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(
     `/api/${route}${route.includes("?") ? "&" : "?"}generation=${encodeURIComponent(generation)}`,
     { headers: headers(), signal, cache: "no-store" },
   );
   if (!response.ok)
-    throw new Error(
-      response.status === 409 || response.status === 401
+    throw new RequestFailure(
+      [401, 403, 409, 410].includes(response.status)
         ? "Session expired; open a new viewer from Pi."
         : "Viewer unavailable; reconnecting requires a running Pi session.",
+      [401, 403, 409, 410].includes(response.status),
     );
   return response.json() as Promise<T>;
 }
