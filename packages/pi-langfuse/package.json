@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
     }
   },
   "private": false,
@@ -24,6 +28,7 @@
   "files": [
     "src",
     "dist",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -40,10 +45,25 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-durable": "1.0.4",
+    "@earendil-works/chord": "^1.0.4"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-durable": {
+      "optional": true
+    },
+    "@earendil-works/chord": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-durable": "1.0.4",
+    "@earendil-works/chord": "1.1.0",
     "@types/node": "26.6.4",
     "typescript": "7.0.2",
     "esbuild": "0.28.2"
