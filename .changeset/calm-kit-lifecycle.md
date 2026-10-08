@@ -2,4 +2,4 @@
 "@narumitw/pi-tui-kit": patch
 ---
 
-Drain asynchronous custom-component creation after early host completion, dispose late components exactly once, and abort interaction work immediately on accepted completion. Suppress delayed fallback error notifications after interaction or task ownership ends, and keep review rendering within zero-width and non-finite display bounds.
+Drain asynchronous custom-component creation after early host completion, dispose late components exactly once, and abort interaction work immediately on accepted completion without turning completion-triggered factory cancellation into an error. Suppress delayed fallback error notifications after interaction or task ownership ends, and keep review rendering within zero-width and non-finite display bounds.

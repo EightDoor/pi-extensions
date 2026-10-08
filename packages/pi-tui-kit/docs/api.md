@@ -518,6 +518,7 @@ For a specialized custom component that does not belong in the declarative scree
 It supplies an interaction-owned signal and classifies owner replacement or external component disposal as stale.
 It retains asynchronous creation even when Pi closes the dialog before the factory returns, disposes the returned component exactly once, and drains optional `waitForPending()` work before returning.
 Accepted completion aborts the interaction signal immediately, including when `complete()` is called inside the factory.
+A factory rejection matching that signal's reason, directly or through an `AbortError` cause, preserves the accepted result after creation drains; unrelated initialization and cleanup errors remain reportable.
 The consumer still owns the component, its Back/Close value, and every domain side effect.
 Async factories and pending work must honor the supplied signal; the helper drains them but does not hide uncooperative work behind a timeout.
 

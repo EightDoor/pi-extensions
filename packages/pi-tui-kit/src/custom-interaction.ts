@@ -133,7 +133,15 @@ export async function runCustomInteraction<Value, Context extends MenuContext = 
   try {
     if (creation) component = await creation;
   } catch (error) {
-    uiError ??= error;
+    // Completion cancels factory-owned work. Only suppress a rejection tied to
+    // that signal's reason, not unrelated initialization or cleanup failures.
+    const completionAbort =
+      customResult?.kind === "completed" &&
+      completionRequested &&
+      signal.aborted &&
+      (error === signal.reason ||
+        (error instanceof Error && error.name === "AbortError" && error.cause === signal.reason));
+    if (!completionAbort) uiError ??= error;
   }
   try {
     wrappedComponent?.dispose?.();

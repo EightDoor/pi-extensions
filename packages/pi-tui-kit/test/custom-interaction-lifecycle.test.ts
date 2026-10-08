@@ -104,6 +104,90 @@ test("completion during creation disposes the component returned after done", as
   assert.equal(disposed, 1);
 });
 
+for (const rejection of ["signal reason", "abort-aware promise", "unrelated abort", "unrelated error"] as const) {
+  test(`completion during creation preserves only its own cancellation: ${rejection}`, async () => {
+    const gate = deferred<void>();
+    const completed = deferred<void>();
+    const failure =
+      rejection === "unrelated abort" ? new DOMException("other abort", "AbortError") : new Error("failure");
+    const reports: unknown[] = [];
+    const harness = createTuiHarness();
+    const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+    const running = runCustomInteraction(context.ctx, {
+      create: async ({ complete, signal }) => {
+        complete("accepted");
+        completed.resolve();
+        await gate.promise;
+        if (rejection === "signal reason") signal.throwIfAborted();
+        if (rejection === "abort-aware promise") await nextInputCycle(undefined, { signal });
+        throw failure;
+      },
+      onError: (_ctx, error) => {
+        reports.push(error);
+      },
+    });
+    let settled = false;
+    void running.then(() => {
+      settled = true;
+    });
+    await completed.promise;
+    await nextInputCycle();
+    const settledBeforeCreation = settled;
+    gate.resolve();
+    const result = await running;
+    assert.equal(settledBeforeCreation, false, "completion still drains the factory");
+    const expectedAbort = rejection === "signal reason" || rejection === "abort-aware promise";
+    assert.deepEqual(
+      result,
+      expectedAbort ? { kind: "completed", value: "accepted" } : { kind: "error", error: failure },
+    );
+    assert.deepEqual(reports, expectedAbort ? [] : [failure]);
+    assert.deepEqual(context.notifications, []);
+  });
+}
+
+test("synchronous creation can complete before throwing its cancellation reason", async () => {
+  const harness = createTuiHarness();
+  const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+  const result = await runCustomInteraction(context.ctx, {
+    create: ({ complete, signal }) => {
+      complete("accepted");
+      signal.throwIfAborted();
+      throw new Error("unreachable");
+    },
+  });
+  assert.deepEqual(result, { kind: "completed", value: "accepted" });
+  assert.deepEqual(context.notifications, []);
+});
+
+for (const transition of ["owner abort", "owner replaced"] as const) {
+  test(`completion-triggered factory cancellation remains stale after ${transition}`, async () => {
+    const owner = new AbortController();
+    const gate = deferred<void>();
+    const completed = deferred<void>();
+    let current = true;
+    const harness = createTuiHarness();
+    const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+    const running = runCustomInteraction(context.ctx, {
+      signal: owner.signal,
+      isCurrent: () => current,
+      create: async ({ complete, signal }) => {
+        complete("accepted");
+        completed.resolve();
+        await gate.promise;
+        signal.throwIfAborted();
+        throw new Error("unreachable");
+      },
+    });
+    await completed.promise;
+    if (transition === "owner abort") owner.abort();
+    else current = false;
+    gate.resolve();
+    assert.deepEqual(await running, { kind: "stale" });
+    assert.deepEqual(context.notifications, []);
+  });
+}
+
 test("late factory rejection after cancellation is stale and never reported", async () => {
   const owner = new AbortController();
   const gate = deferred<void>();
