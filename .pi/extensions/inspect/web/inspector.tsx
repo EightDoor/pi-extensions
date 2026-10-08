@@ -84,6 +84,11 @@ export function Inspector({
         {activeRaw && <Copy key={selected} value={output(activeRaw.value)} />}
       </div>
       <div className="inspector-identity">
+        {call?.branchAnchor && !snapshot?.nodes.some((entry) => entry.id === call.branchAnchor) && (
+          <Text size="1" color="gray">
+            Recorded anchor omitted from this bounded inventory; navigator target unavailable.
+          </Text>
+        )}
         <Heading size="4">
           {call ? "Captured execution" : node ? eventName(node.kind) : "Entry"} · {selected || "no selection"}
         </Heading>

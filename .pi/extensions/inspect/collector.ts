@@ -94,6 +94,14 @@ export class Collector {
         )
           child.parentOccurrenceId = call.occurrenceId;
     }
+    const occurrences = this.list().filter((item) => item.id === call.id && item.branchAnchor === call.branchAnchor);
+    if (occurrences.length > 1) {
+      for (const occurrence of occurrences) occurrence.correlationUnavailable = true;
+      for (let i = 0; i < this.calls.size; i++)
+        for (const child of this.calls.values())
+          if (child.parentOccurrenceId && this.calls.get(child.parentOccurrenceId)?.correlationUnavailable)
+            child.correlationUnavailable = true;
+    }
     this.active(event.toolCallId); // Explicitly mark overlapping reused IDs as ambiguous, never misroute their results.
   }
   update(event: ToolExecutionUpdateEvent, anchor: string | null): boolean {

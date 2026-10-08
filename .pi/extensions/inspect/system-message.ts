@@ -75,6 +75,7 @@ export function systemMessageIssue(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "malformed system-message envelope";
   const m = value as Record<string, unknown>;
   if (m.role !== "system") return "malformed system-message role";
+  if (Array.isArray(m.content) && m.content.length > 2048) return "system content exceeds 2,048-block budget";
   if (
     typeof m.content !== "string" &&
     (!Array.isArray(m.content) ||

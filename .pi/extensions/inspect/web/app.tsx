@@ -63,7 +63,10 @@ function App() {
   const entries = snapshot?.nodes ?? [];
   const selectedCall =
     selection?.kind === "call" ? calls.find((call) => call.occurrenceId === selection.id) : undefined;
-  const entryId = selection?.kind === "entry" ? selection.id : (selectedCall?.branchAnchor ?? "");
+  const represented = useMemo(() => new Set(entries.map((entry) => entry.id)), [entries]);
+  const callAnchorAvailable = Boolean(selectedCall?.branchAnchor && represented.has(selectedCall.branchAnchor));
+  const entryId =
+    selection?.kind === "entry" ? selection.id : callAnchorAvailable ? (selectedCall?.branchAnchor ?? "") : "";
   const {
     detail,
     error: detailError,

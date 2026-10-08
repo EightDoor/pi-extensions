@@ -40,6 +40,7 @@ export function LiveDrawer({
           ...call,
           id: call.occurrenceId,
           rawId: call.id,
+          rawParentId: call.parentId,
           parentId: call.parentOccurrenceId ?? null,
         })),
       ),
@@ -136,8 +137,9 @@ export function LiveDrawer({
                       ...call,
                       id: call.rawId,
                       parentId: call.parentOccurrenceId
-                        ? calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id
-                        : undefined,
+                        ? (calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id ??
+                          call.rawParentId)
+                        : call.rawParentId,
                     }}
                   />
                 )}
@@ -148,8 +150,9 @@ export function LiveDrawer({
                     ...call,
                     id: call.rawId,
                     parentId: call.parentOccurrenceId
-                      ? calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id
-                      : undefined,
+                      ? (calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id ??
+                        call.rawParentId)
+                      : call.rawParentId,
                   }}
                   all={calls}
                 />

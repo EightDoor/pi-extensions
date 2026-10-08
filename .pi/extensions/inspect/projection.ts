@@ -21,6 +21,7 @@ import { correlatedCalls } from "./correlation.ts";
 import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
+import { nativeProjection } from "./native-projection.ts";
 import { capture, displayText, readSessionName } from "./privacy.ts";
 import { systemReplayIssue } from "./system-message.ts";
 
@@ -178,14 +179,18 @@ export function branch(
   const { path } = walked;
   const projection = walked.issue ? undefined : buildSessionProjection(path, leafId);
   const target = index.get(leafId);
-  const previous = !walked.issue && target?.parentId ? buildSessionProjection(path, target.parentId).messages : [];
+  const previousView = !walked.issue && target?.parentId ? nativeProjection(path, target.parentId) : undefined;
+  const previous = previousView?.projection?.messages ?? [];
   const issue = walked.issue ?? (projection && systemReplayIssue(projection.messages)) ?? systemReplayIssue(previous);
   if (issue || !projection) {
     const unavailable = capture(`[unavailable: ${issue}]`);
     return {
       leafId,
       ancestryIssue: issue,
-      entries: path.slice(offset, offset + 50).map((entry) => summarize(entry, manager.getLabel(entry.id))),
+      entries: path
+        .slice(offset, offset + 50)
+        .filter((entry) => !identityIssue(entry))
+        .map((entry) => summarize(entry, manager.getLabel(entry.id))),
       total: path.length,
       offset,
       prompt: unavailable,
@@ -200,36 +205,73 @@ export function branch(
   const historicalSystem = getCurrentSystemMessage(projection.messages);
   const evidence: { name: string; state: string; entryId: string }[] = [];
   const callPaths = new Map<string, string>();
-  for (const entry of path) {
+  const byPath = new Map(skills.map((skill) => [skill.path, skill]));
+  let scanned = 0;
+  let evidenceIncomplete = false;
+  function spend(): boolean {
+    if (++scanned <= 2048 && evidence.length < 256) return true;
+    evidenceIncomplete = true;
+    return false;
+  }
+  evidenceLoop: for (const entry of path) {
+    if (identityIssue(entry)) continue;
     if (entry.type !== "message") continue;
     const m = entry.message;
-    if (m.role === "assistant")
+    if (m.role === "assistant") {
+      callPaths.clear();
+      const duplicateIds = new Set<string>();
+      const encountered = new Set<string>();
       for (const block of Array.isArray(m.content) ? m.content : []) {
-        if (block.type === "toolCall" && block.name === "read" && typeof block.arguments?.path === "string") {
+        if (!spend()) break evidenceLoop;
+        if (block.type === "toolCall") {
+          if (encountered.has(block.id)) duplicateIds.add(block.id);
+          encountered.add(block.id);
+        }
+        if (
+          block.type === "toolCall" &&
+          block.name === "read" &&
+          typeof block.arguments?.path === "string" &&
+          block.arguments.path.length <= 8192
+        ) {
           callPaths.set(block.id, block.arguments.path);
         }
       }
+      for (const id of duplicateIds) callPaths.delete(id);
+    }
     if (m.role === "user" && typeof m.content === "string") {
+      if (!spend()) break;
+      if (m.content.length > 8192) {
+        evidenceIncomplete = true;
+        continue;
+      }
       const invoked = parseSkillBlock(m.content);
       if (invoked) evidence.push({ name: invoked.name, state: "explicitly invoked", entryId: entry.id });
     }
-    if (m.role === "toolResult" && !m.isError) {
+    if (m.role === "toolResult" && m.isError === false) {
+      if (!spend()) break;
       const path = callPaths.get(m.toolCallId);
-      const skill = skills.find((s) => s.path === path);
+      const skill = path ? byPath.get(path) : undefined;
       if (skill) evidence.push({ name: skill.name, state: "successfully read", entryId: entry.id });
       // Public bounded nested metadata provides names/arguments/status, never child results.
       for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
-        if (!call || typeof call !== "object") continue;
-        const skill = skills.find((s) => s.path === call.arguments?.path);
-        if (call.name === "read" && call.status === "ok" && skill) {
+        if (!spend()) break evidenceLoop;
+        if (!call || typeof call !== "object" || call.name !== "read" || call.status !== "ok") continue;
+        const nestedPath = call.arguments?.path;
+        const skill = typeof nestedPath === "string" && nestedPath.length <= 8192 ? byPath.get(nestedPath) : undefined;
+        if (skill) {
           evidence.push({ name: skill.name, state: "successfully read (nested metadata)", entryId: entry.id });
         }
       }
     }
   }
+  const capturedEvidence = capture(evidence);
+  capturedEvidence.truncated ||= evidenceIncomplete;
   return {
     leafId,
-    entries: path.slice(offset, offset + 50).map((e) => summarize(e, manager.getLabel(e.id))),
+    entries: path
+      .slice(offset, offset + 50)
+      .filter((entry) => !identityIssue(entry))
+      .map((e) => summarize(e, manager.getLabel(e.id))),
     total: path.length,
     offset,
     prompt: capture(
@@ -237,7 +279,11 @@ export function branch(
       65536,
     ),
     previousPrompt: capture(
-      getCurrentSystemMessage(previous) ? getCurrentSystemPrompt(previous) : "[unavailable: no stored system prompt]",
+      previousView?.issue
+        ? `[unavailable: ${previousView.issue}]`
+        : getCurrentSystemMessage(previous)
+          ? getCurrentSystemPrompt(previous)
+          : "[unavailable: no stored system prompt]",
       65536,
     ),
     sections: capture(historicalSystem?.sections),
@@ -259,7 +305,7 @@ export function branch(
       projection.entries.map((e) => ({ id: e.sourceEntry.id, messages: e.messages })),
       65536,
     ),
-    skillEvidence: capture(evidence),
+    skillEvidence: capturedEvidence,
   };
 }
 
@@ -287,7 +333,7 @@ export function detail(
   const ids = new Set<string>();
   if (entry.type === "message") {
     const m = entry.message;
-    if (m.role === "assistant")
+    if (m.role === "assistant" && !identityIssue(entry))
       for (const b of Array.isArray(m.content) ? m.content : []) if (b.type === "toolCall") ids.add(b.id);
     if (m.role === "toolResult") ids.add(m.toolCallId);
   }
@@ -300,6 +346,7 @@ export function detail(
           .find(
             (candidate) =>
               candidate.type === "message" &&
+              !identityIssue(candidate) &&
               candidate.message.role === "assistant" &&
               (Array.isArray(candidate.message.content) ? candidate.message.content : []).some(
                 (block) => block.type === "toolCall" && ids.has(block.id),

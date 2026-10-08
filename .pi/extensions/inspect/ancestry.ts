@@ -1,7 +1,8 @@
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import { EntryIndex } from "./entry-index.ts";
-import { identityIssue } from "./identity.ts";
+import { structuralIssue } from "./identity.ts";
+import { nativeProjection } from "./native-projection.ts";
 
 // Pi's native projection walks parent links without cycle detection; validate before invoking it.
 export function ancestry(
@@ -14,7 +15,7 @@ export function ancestry(
   if (index.duplicates.has(id)) return { path: [], issue: "duplicate entry id" };
   let current = index.get(id);
   while (current) {
-    const issue = identityIssue(current);
+    const issue = structuralIssue(current);
     if (issue) return { path: path.reverse(), issue };
     if (seen.has(current.id)) return { path: path.reverse(), issue: "recorded parent cycle" };
     if (path.length >= 10000)
@@ -26,5 +27,6 @@ export function ancestry(
     current = parent ? index.get(parent) : undefined;
     if (parent && !current) return { path: path.reverse(), issue: "missing recorded parent" };
   }
-  return { path: path.reverse() };
+  path.reverse();
+  return { path, issue: nativeProjection(path, id).issue };
 }

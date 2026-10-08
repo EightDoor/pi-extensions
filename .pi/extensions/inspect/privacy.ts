@@ -107,15 +107,16 @@ export function capture(input: unknown, maxChars = 32768): Capture {
         continue;
       }
       const classifiedKey = cleanKey.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2");
-      result[name] = secretKey.test(classifiedKey)
-        ? "[redacted]"
-        : key === "data" && type === "image"
-          ? raster
-            ? text(data as string)
-            : "[opaque or oversized data omitted]"
-          : /^(thinkingSignature|thoughtSignature|textSignature)$/.test(key)
-            ? "[opaque data omitted]"
-            : visit(descriptor?.value, depth + 1);
+      result[name] =
+        secretKey.test(classifiedKey) || /(?:^|[_-])secret[_-]?access[_-]?key$/i.test(classifiedKey)
+          ? "[redacted]"
+          : key === "data" && type === "image"
+            ? raster
+              ? text(data as string)
+              : "[opaque or oversized data omitted]"
+            : /^(thinkingSignature|thoughtSignature|textSignature)$/.test(key)
+              ? "[opaque data omitted]"
+              : visit(descriptor?.value, depth + 1);
     }
     seen.delete(value);
     return result;

@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 15 files, 283 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 44 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 16 files, 298 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 46 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 555 files pass and one platform-only file is skipped; 7,676 tests pass and two platform-only/existing tests are skipped (pinned merged-base toolchain). |
@@ -60,6 +60,16 @@ Semantic audit against AGENTS.md and docs/extension-conventions.md covered every
 ## Final-refresh system-envelope fix
 
 R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
+
+## Final-refresh R49–R56 fixes
+
+Native ancestry always validates structural IDs/parents/roles/cycles/budgets, while selected context edits and native projected message envelopes are validated after compaction/edits. Only the newest checkpoint contributes messages; obsolete malformed checkpoints/content no longer suppress valid descendants. Previous malformed context is explicitly unavailable without disabling valid current context. Structural corruption remains fenced.
+
+Same-ID/same-anchor occurrence multiplicity fences transcript association, including descendants; different completed anchors remain independent. Live hierarchy retains raw parent IDs after parent eviction, and still-captured calls with anchors omitted from the bounded node inventory retain captured details with an explicit unavailable navigator target. No fake fallback source or Pi leaf mutation is introduced.
+
+Privacy tests cover exact AWS secret-access-key forms and preserve public accessKeyId/metric fields. Raw message/system/edit content arrays are bounded before scans. Skill evidence uses indexed paths, explicit recorded success, per-assistant unambiguous read IDs, at most 2,048 scanned evidence items/256 results and bounded user text. Incomplete traversal is flagged rather than claiming completeness; unknown outcomes are not successes.
+
+Native compaction/edit/cycle/array boundaries, same/different-anchor/descendant correlation, credential/outcome tables and evidence caps pass; browser tests cover evicted raw parent display and >10,000-node anchor omission. Guides: AGENTS.md / docs/extension-conventions.md. Audit includes all semantic/structural selection branches, raw/preview separation, prefix stability, cache/scroll ownership and lifecycle cleanup. Existing release-gate integration/paid-provider/final-transport/desktop limitations remain unverified; no dispatch or new settings/packages.
 
 ## Concurrent push-trigger CI repair
 

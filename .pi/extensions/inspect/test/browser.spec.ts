@@ -966,3 +966,45 @@ test("R48: rejected live IDs are omitted with an explicit unavailable correlatio
   expect(value.invalidCallEvents).toBe(1);
   expect(value.calls).toEqual([]);
 });
+
+test("R51: evicted parent remains explicitly recorded in live child details", async ({ page }) => {
+  collector = new Collector(2);
+  collector.start({ type: "tool_execution_start", toolCallId: "parent", toolName: "parent", args: {} }, data.assistant);
+  collector.start(
+    { type: "tool_execution_start", toolCallId: "child", parentToolCallId: "parent", toolName: "child", args: {} },
+    data.assistant,
+  );
+  collector.end(
+    { type: "tool_execution_end", toolCallId: "other", toolName: "other", isError: false, result: "done" },
+    data.leaf,
+  );
+  await explore(page);
+  await openLive(page);
+  await page.getByRole("button", { name: "Expand call call-2", exact: true }).click();
+  await expect(page.getByText("Parent parent (not captured)", { exact: true })).toBeVisible();
+});
+
+test("R52: a retained call's omitted bounded anchor is explicitly unavailable, not a phantom navigation target", async ({
+  page,
+}) => {
+  for (let i = 0; i < 10001; i++) {
+    data.manager.branch(data.user);
+    data.manager.appendCustomEntry("off", {});
+  }
+  data.manager.branch(data.user);
+  const anchor = data.manager.appendMessage(fauxAssistantMessage([]));
+  collector.start({ type: "tool_execution_start", toolCallId: "kept", toolName: "kept-call", args: {} }, anchor);
+  await explore(page);
+  await openLive(page);
+  await page.getByRole("button", { name: "kept-call · running", exact: true }).click();
+  data.manager.branch(data.alternate);
+  server.invalidate(++revision);
+  await expect(
+    page.getByText("Recorded anchor omitted from this bounded inventory; navigator target unavailable.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.locator('.node[aria-current="true"]')).toHaveCount(0);
+  await expect(page.locator(".inspector-identity")).toContainText("Captured execution");
+  expect(data.manager.getLeafId()).toBe(data.alternate);
+});

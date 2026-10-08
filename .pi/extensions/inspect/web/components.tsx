@@ -250,7 +250,10 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
           ["Call ID", call.id],
           ["Occurrence", call.occurrenceId],
           ["Parent relationship", call.parentUnavailable],
-          ["Correlation", call.correlationUnavailable ? "Overlapping raw IDs; association unavailable" : undefined],
+          [
+            "Correlation",
+            call.correlationUnavailable ? "Reused or overlapping raw IDs; association unavailable" : undefined,
+          ],
           ["Source", "Observed tool execution"],
           [
             "Start observed",
