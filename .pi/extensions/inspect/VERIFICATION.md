@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 16 files, 298 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 46 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 16 files, 306 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 47 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 555 files pass and one platform-only file is skipped; 7,676 tests pass and two platform-only/existing tests are skipped (pinned merged-base toolchain). |
@@ -60,6 +60,14 @@ Semantic audit against AGENTS.md and docs/extension-conventions.md covered every
 ## Final-refresh system-envelope fix
 
 R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
+
+## R57–R59 follow-up
+
+Session IDs are display-only sanitized copies of accepted non-empty strings at most 512 characters; malformed/over-budget getter values publish explicit unavailable markers without echoing, hashing or changing manager identity. Snapshot/API/browser full-title fields now receive only that bounded value; quiet stamp never used session ID. Tables verify exact boundaries, control removal and original-value preservation. Persisted tool-call ID/name bounds from 6610f66c are reverified at exact/empty/over-limit boundaries (R58 already addressed).
+
+Live selected reveal identity includes the bounded actual occurrence ancestor chain, not only its selected ID. Late parent adoption reopens the required ancestors once; manual collapse remains closed on passive snapshots. The visited-set guard avoids cyclic traversal. Late-parent/disclosure browser and all prior eviction/navigation tests pass.
+
+Final local/build/types/Biome/browser/Pi smoke/root check were rerun. Root-test inputs remain unchanged since the passing 7,676-test full gate and that evidence is reused. Guides/audits: AGENTS.md / docs/extension-conventions.md, complete display-ID/classification and live ancestry ownership. Existing release integration/provider/desktop/transport limits remain unverified.
 
 ## Final-refresh R49–R56 fixes
 

@@ -1008,3 +1008,37 @@ test("R52: a retained call's omitted bounded anchor is explicitly unavailable, n
   await expect(page.locator(".inspector-identity")).toContainText("Captured execution");
   expect(data.manager.getLeafId()).toBe(data.alternate);
 });
+
+test("R59: selected child stays revealable after late parent adoption, without reopening manual disclosure on passive refresh", async ({
+  page,
+}) => {
+  collector.start(
+    {
+      type: "tool_execution_start",
+      toolCallId: "child",
+      parentToolCallId: "late-parent",
+      toolName: "child-selected",
+      args: {},
+    },
+    data.assistant,
+  );
+  await explore(page);
+  await openLive(page);
+  await page.getByRole("button", { name: "child-selected · running", exact: true }).click();
+  collector.start(
+    { type: "tool_execution_start", toolCallId: "late-parent", toolName: "parent", args: {} },
+    data.assistant,
+  );
+  server.invalidate(++revision);
+  await expect(page.getByRole("button", { name: "child-selected · running", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Expand call call-2", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  await page.getByRole("button", { name: "Expand call call-2", exact: true }).click();
+  server.invalidate(++revision);
+  await expect(page.getByRole("button", { name: "Expand call call-2", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+});

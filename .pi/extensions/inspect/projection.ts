@@ -22,7 +22,7 @@ import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { nativeProjection } from "./native-projection.ts";
-import { capture, displayText, readSessionName } from "./privacy.ts";
+import { capture, displayText, readSessionId, readSessionName } from "./privacy.ts";
 import { systemReplayIssue } from "./system-message.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
@@ -135,7 +135,7 @@ export function snapshot(
     protocol: 1,
     generation,
     revision,
-    sessionId: manager.getSessionId(),
+    sessionId: readSessionId(manager),
     ...readSessionName(manager),
     leafId,
     totalEntries: entries.length,

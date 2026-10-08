@@ -30,6 +30,17 @@ export function readSessionName(manager: { getSessionName(): string | undefined 
   }
 }
 
+export function readSessionId(manager: { getSessionId(): string }): string {
+  try {
+    const id = manager.getSessionId();
+    if (typeof id !== "string" || !id.length || id.length > 512)
+      return "[unavailable: invalid or over-budget session ID]";
+    return displayText(id) || "[unavailable: blank session ID]";
+  } catch {
+    return "[unavailable: invalid session ID]";
+  }
+}
+
 // Bound traversal before serialization: huge strings, arrays, cycles and deep objects are safe.
 export function capture(input: unknown, maxChars = 32768): Capture {
   let budget = maxChars;

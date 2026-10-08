@@ -57,8 +57,17 @@ export function LiveDrawer({
   const [expanded, setExpanded] = useState(new Set<string>());
   const previous = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (selected && selected !== previous.current && tree.nodes.has(selected)) {
-      previous.current = selected;
+    const chain: string[] = [];
+    let current = selected;
+    const visited = new Set<string>();
+    while (current && tree.nodes.has(current) && !visited.has(current)) {
+      visited.add(current);
+      chain.push(current);
+      current = tree.nodes.get(current)?.parentId ?? undefined;
+    }
+    const identity = chain.join("/");
+    if (selected && identity !== previous.current && tree.nodes.has(selected)) {
+      previous.current = identity;
       setExpanded((old) => reveal(tree, old, selected));
     }
   }, [selected, tree]);

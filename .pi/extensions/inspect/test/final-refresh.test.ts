@@ -4,10 +4,34 @@ import { describe, expect, it } from "vitest";
 import { Collector } from "../collector.ts";
 import { correlatedCalls } from "../correlation.ts";
 import { identityIssue } from "../identity.ts";
-import { capture } from "../privacy.ts";
+import { capture, readSessionId } from "../privacy.ts";
 import { branch, detail } from "../projection.ts";
 import { fixture, skills } from "./fixtures.ts";
 
+describe("R57/R58 session display and persisted identities", () => {
+  it.each(["x".repeat(513), "", undefined, null, {}])("omits invalid display ID %j without echoing", (id) => {
+    expect(readSessionId({ getSessionId: () => id as string })).toContain("unavailable");
+  });
+  it("preserves exact session ID input and sanitizes only its display copy", () => {
+    const id = "\x1b[31mvalid\x1b[0m";
+    expect(readSessionId({ getSessionId: () => id })).toBe("valid");
+    expect(readSessionId({ getSessionId: () => "x".repeat(512) })).toHaveLength(512);
+    expect(id).toContain("\x1b");
+  });
+  it.each(["id", "name"])("rejects empty/over-budget persisted %s and keeps exact boundary", (field) => {
+    const f = fixture();
+    const e = f.manager.getEntry(f.assistant);
+    if (e?.type !== "message" || e.message.role !== "assistant") throw Error("Missing");
+    const block = e.message.content[0];
+    if (block.type !== "toolCall") throw Error("Missing");
+    Object.assign(block, { [field]: "x".repeat(512) });
+    expect(identityIssue(e)).toBeUndefined();
+    for (const value of ["", "x".repeat(513)]) {
+      Object.assign(block, { [field]: value });
+      expect(identityIssue(e)).toContain("tool-call");
+    }
+  });
+});
 describe("R49/R54 native selected envelope and structural safety", () => {
   it("skips an older malformed checkpoint while retaining its real parent and native valid newest context", () => {
     const f = fixture();
