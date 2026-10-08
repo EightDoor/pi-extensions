@@ -18,12 +18,14 @@ function Tree({
   nodes,
   matches,
   selected,
+  serial,
   revealSelected,
   choose,
 }: {
   nodes: EntrySummary[];
   matches: Set<string>;
   selected: string;
+  serial: number;
   revealSelected: boolean;
   choose(id: string): void;
 }) {
@@ -34,17 +36,22 @@ function Tree({
   );
   const [expanded, setExpanded] = useState(new Set<string>());
   const [offset, setOffset] = useState(0);
-  const previous = useRef("");
+  const previous = useRef<{ selected: string; serial: number; revealSelected: boolean } | undefined>(undefined);
   const nav = useRef<HTMLElement>(null);
   const rows = flatten(tree, expanded, keep);
   useEffect(() => {
-    if (!tree.nodes.has(selected) || previous.current === selected) return;
-    previous.current = selected;
+    const old = previous.current;
+    if (
+      !tree.nodes.has(selected) ||
+      (old?.selected === selected && old.serial === serial && old.revealSelected === revealSelected)
+    )
+      return;
+    previous.current = { selected, serial, revealSelected };
     const next = reveal(tree, expanded, selected);
     setExpanded(next);
     const index = flatten(tree, next, keep).findIndex((row) => row.node.id === selected);
     if (index >= 0) setOffset(Math.floor(index / 100) * 100);
-  }, [selected, tree, expanded, keep]);
+  }, [selected, serial, revealSelected, tree, expanded, keep]);
   const selectedVisible = rows.slice(offset, offset + 100).some((row) => row.node.id === selected);
   const lastScroll = useRef<{ selected: string; offset: number; element: HTMLElement } | undefined>(undefined);
   useEffect(() => {
@@ -128,6 +135,7 @@ export function Sidebar({
   matches,
   total,
   selected,
+  serial,
   revealSelected,
   choose,
   filters,
@@ -137,6 +145,7 @@ export function Sidebar({
   matches: Set<string>;
   total: number;
   selected: string;
+  serial: number;
   revealSelected: boolean;
   choose(id: string): void;
   filters: Filters;
@@ -187,7 +196,14 @@ export function Sidebar({
             ))}
           </div>
         </div>
-        <Tree nodes={nodes} matches={matches} selected={selected} revealSelected={revealSelected} choose={choose} />
+        <Tree
+          nodes={nodes}
+          matches={matches}
+          selected={selected}
+          serial={serial}
+          revealSelected={revealSelected}
+          choose={choose}
+        />
         <div className="tree-count">
           {matches.size} matches / {total} entries
         </div>

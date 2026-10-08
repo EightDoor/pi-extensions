@@ -1,3 +1,4 @@
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { expect, type Page, test } from "@playwright/test";
 import { Collector } from "../collector.ts";
 import { branch, detail, snapshot } from "../projection.ts";
@@ -901,4 +902,52 @@ test("R43: an empty represented inventory clears prior selection and cached deta
   await expect(page.locator(".inspector-identity")).toContainText("no selection");
   await expect(page.locator(".inspector-identity")).not.toContainText(data.assistant);
   await expect(page.locator('.node[aria-current="true"]')).toHaveCount(0);
+});
+
+test("R45: same anchor regains reveal ownership beyond 100 navigator rows after call eviction", async ({ page }) => {
+  for (let i = 0; i < 300; i++) {
+    data.manager.branch(data.user);
+    data.manager.appendCustomEntry(i < 150 ? "retained" : "other", {});
+  }
+  data.manager.branch(data.user);
+  const anchor = data.manager.appendMessage(fauxAssistantMessage([]));
+  collector.start(
+    { type: "tool_execution_start", toolCallId: "chosen", toolName: "retained-selected-call", args: {} },
+    anchor,
+  );
+  collector.end(
+    {
+      type: "tool_execution_end",
+      toolCallId: "chosen",
+      toolName: "retained-selected-call",
+      isError: false,
+      result: "chosen",
+    },
+    anchor,
+  );
+  await explore(page);
+  await expect(nav(page, anchor)).toBeVisible();
+  await openLive(page);
+  await page.getByRole("button", { name: "retained-selected-call · ok", exact: true }).click();
+  const search = page.getByRole("textbox", { name: "Search session" });
+  await search.fill("retained");
+  await expect(nav(page, anchor)).toHaveCount(0);
+  for (let i = 0; i < 128; i++)
+    collector.end(
+      { type: "tool_execution_end", toolCallId: `new-${i}`, toolName: "test", isError: false, result: i },
+      data.leaf,
+    );
+  server.invalidate(++revision);
+  await expect(nav(page, anchor)).toHaveAttribute("aria-current", "true");
+  await expect(nav(page, anchor)).toBeVisible();
+  await expect(row(page, anchor)).toBeVisible();
+  await expect(page.locator(".inspector-identity")).toContainText(anchor);
+  await expect(search).toHaveValue("retained");
+  await page.getByRole("button", { name: "Previous nodes", exact: true }).click();
+  await expect(nav(page, anchor)).toHaveCount(0);
+  const received = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
+  server.invalidate(++revision);
+  await received;
+  await expect(nav(page, anchor)).toHaveCount(0);
+  expect(data.manager.getLeafId()).toBe(anchor);
 });

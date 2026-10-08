@@ -236,6 +236,7 @@ function App() {
       matches={matching}
       total={snapshot?.totalEntries ?? 0}
       selected={entryId}
+      serial={selection?.serial ?? 0}
       filters={filters}
       change={changeFilters}
       revealSelected={selection?.filterVersion === filterVersion}

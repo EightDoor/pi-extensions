@@ -8,11 +8,11 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 13 files, 216 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 42 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 14 files, 230 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 43 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
-| Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
+| Root tests | `npm test`: 555 files pass and one platform-only file is skipped; 7,674 tests pass and two platform-only/existing tests are skipped (pinned merged-base toolchain). |
 | Dependency installation | Root `npm install` completed; comparison with the base lockfile found no changed version at any existing package path. New dependencies support local frontend building and browser verification only. |
 
 The current 1,500-entry browser fixture verifies at most 50 trace rows and 100 navigator rows in the DOM, an actual hierarchy level beyond 1,500, and only one initial selected-entry detail request. A separate deterministic chain test covers 1,600 levels without recursive traversal or a UI depth cap. The older pre-redesign sample (182,216 snapshot characters in 2.2 ms) was observational evidence, not an SLA; it is not claimed as a benchmark of the current layout. The deterministic 10,000-entry inventory cap test remains.
@@ -60,6 +60,16 @@ Semantic audit against AGENTS.md and docs/extension-conventions.md covered every
 ## Final-refresh system-envelope fix
 
 R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
+
+## Eighth-review merged-base CI and replay/reveal budgets
+
+Integrated accepted main a5f24bd6 without changing its package implementations. Preserved .node-version, npm ci and installation-policy checks; restored publish's workflow_run trigger to align with its success/push condition, exact-tested-revision checkout and existing policy test. No release dispatch/publication. Use the pinned Node toolchain and bundled npm via fnm exec; preflight/install and Kit resolution verified without bypassing policy. Merged-base root gates, including release/install policy tests, are required rather than relying on the prior old-base local pass.
+
+R45 reveal identity includes selected ID, serial and reveal ownership. A >300-row browser fixture excludes the late call's anchor, evicts the call, re-pages the same anchor into view under retained filters, and preserves manual pagination on a passive snapshot. Trace already keys explicit selection by serial; Live drawer has no reveal-ownership override or pagination, so unchanged ID-only expansion does not share this failure.
+
+R46 preflights current and previous native projected messages before every inspector system-message/prompt join. Ordinary and checkpoint system content, text-block counts/fragments, section names/values and overwritten/deleted input contribute to the cumulative 1,048,576-character input budget; no source is truncated or changed. Over-budget previews report unavailable; authenticated branch diagnostics/detail Raw remain bounded. Tests assert no native concatenating helper is invoked on budget failure, exact boundaries, valid preview truncation, previous-only overflow and discarded-history/native equality. All other-role content is excluded from system replay budgeting. Raw preview capture remains separately bounded.
+
+AGENTS.md and unchanged docs/extension-conventions.md audits cover complete native system replay sources, current/previous ownership, original-prefix equality, asynchronous lifecycle/cancellation and standalone Jiti loading. Existing paid-provider/final-transport/physical-desktop limits remain; no extension settings/package promotion. Commands/totals above apply to final merged-base validation.
 
 ## Seventh-review checkpoint and selection fixes
 

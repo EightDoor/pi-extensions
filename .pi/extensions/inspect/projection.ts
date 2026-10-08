@@ -22,6 +22,7 @@ import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, readSessionName } from "./privacy.ts";
+import { systemReplayIssue } from "./system-message.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   const issue = identityIssue(entry);
@@ -172,8 +173,13 @@ export function branch(
   index = new EntryIndex(manager.getEntries()),
 ): BranchView {
   if (!index.byId.has(leafId)) throw new Error("Unknown entry");
-  const { path, issue } = ancestry(manager, leafId, index);
-  if (issue) {
+  const walked = ancestry(manager, leafId, index);
+  const { path } = walked;
+  const projection = walked.issue ? undefined : buildSessionProjection(path, leafId);
+  const target = index.get(leafId);
+  const previous = !walked.issue && target?.parentId ? buildSessionProjection(path, target.parentId).messages : [];
+  const issue = walked.issue ?? (projection && systemReplayIssue(projection.messages)) ?? systemReplayIssue(previous);
+  if (issue || !projection) {
     const unavailable = capture(`[unavailable: ${issue}]`);
     return {
       leafId,
@@ -190,10 +196,7 @@ export function branch(
       skillEvidence: unavailable,
     };
   }
-  const projection = buildSessionProjection(path, leafId);
   const historicalSystem = getCurrentSystemMessage(projection.messages);
-  const target = index.get(leafId);
-  const previous = target?.parentId ? buildSessionProjection(path, target.parentId).messages : [];
   const evidence: { name: string; state: string; entryId: string }[] = [];
   const callPaths = new Map<string, string>();
   for (const entry of path) {
