@@ -16,6 +16,7 @@ export type RunRoute = (
   signal?: AbortSignal,
   onCommit?: () => void,
   target?: string,
+  onDialog?: (active: boolean) => void,
 ) => Promise<RunRouteResult | undefined>;
 
 export type CancellableOperationResult = RunRouteResult | { kind: "closed" } | { kind: "cancelled" };
@@ -67,10 +68,16 @@ export async function runCancellableOperation(
         } else complete({ cancelled: true });
         return true;
       };
-      // Pi dialogs replace this loader's editor-slot focus and restore the normal
-      // editor afterward. History must retain cancellation across those handoffs.
+      // Pi dialogs replace this loader and restore the normal editor. Defer
+      // ordinary keys while they are open; retain raw cancellation afterward.
+      // Ctrl+C remains the root flow's hard-cancel path regardless of focus.
+      let activeDialogs = 0;
       const unsubscribe = cancelAcrossDialogs
-        ? ctx.ui.onTerminalInput((data) => (cancel(data) ? { consume: true } : undefined))
+        ? ctx.ui.onTerminalInput((data) => {
+            if (isKeyRelease(data)) return;
+            if (activeDialogs > 0 && !matchesKey(data, Key.ctrl("c"))) return;
+            return cancel(data) ? { consume: true } : undefined;
+          })
         : undefined;
       let pendingRoute: ReturnType<RunRoute>;
       try {
@@ -79,6 +86,11 @@ export async function runCancellableOperation(
           interactionSignal,
           commitAware ? () => (commitStarted = true) : undefined,
           target,
+          cancelAcrossDialogs
+            ? (active) => {
+                activeDialogs += active ? 1 : -1;
+              }
+            : undefined,
         );
       } catch (error) {
         unsubscribe?.();
