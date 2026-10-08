@@ -259,6 +259,130 @@ for (const mode of ["rpc", "print", "json"] as const) {
   });
 }
 
+for (const phase of ["mounted pending", "late disposal"] as const) {
+  for (const rejection of ["signal reason", "abort-aware promise", "unrelated abort", "unrelated error"] as const) {
+    test(`${phase} preserves only completion-owned cancellation: ${rejection}`, async () => {
+      const gate = deferred<void>();
+      const pendingStarted = deferred<void>();
+      const failure =
+        rejection === "unrelated abort" ? new DOMException("other abort", "AbortError") : new Error("cleanup failed");
+      const reports: unknown[] = [];
+      let disposed = 0;
+      let pendingDrained = false;
+      const harness = createTuiHarness();
+      const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+      const running = runCustomInteraction(context.ctx, {
+        create: async ({ complete, signal }) => {
+          if (phase === "late disposal") complete("accepted");
+          const reject = () => {
+            if (rejection === "signal reason") signal.throwIfAborted();
+            if (rejection === "abort-aware promise") {
+              const abort = new Error("cancelled", { cause: signal.reason });
+              abort.name = "AbortError";
+              throw abort;
+            }
+            throw failure;
+          };
+          return {
+            render: () => ["open"],
+            invalidate() {},
+            handleInput: () => complete("accepted"),
+            dispose() {
+              disposed++;
+              if (phase === "late disposal") reject();
+            },
+            async waitForPending() {
+              pendingStarted.resolve();
+              await gate.promise;
+              pendingDrained = true;
+              if (phase === "mounted pending") {
+                if (rejection === "abort-aware promise") await nextInputCycle(undefined, { signal });
+                reject();
+              }
+            },
+          };
+        },
+        onError: (_ctx, error) => {
+          reports.push(error);
+        },
+      });
+      if (phase === "mounted pending") {
+        await harness.waitForOpen();
+        harness.press("tui.select.confirm");
+      }
+      await pendingStarted.promise;
+      gate.resolve();
+      const expectedAbort = rejection === "signal reason" || rejection === "abort-aware promise";
+      assert.deepEqual(
+        await running,
+        expectedAbort ? { kind: "completed", value: "accepted" } : { kind: "error", error: failure },
+      );
+      assert.equal(disposed, 1);
+      assert.equal(pendingDrained, true);
+      assert.deepEqual(reports, expectedAbort ? [] : [failure]);
+      assert.deepEqual(context.notifications, []);
+    });
+  }
+}
+
+test("completion-owned pending cancellation cannot hide an unrelated disposal failure", async () => {
+  const failure = new Error("disposal failed");
+  const reports: unknown[] = [];
+  const harness = createTuiHarness();
+  const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+  const result = await runCustomInteraction(context.ctx, {
+    create: async ({ complete, signal }) => {
+      complete("accepted");
+      return {
+        render: () => [],
+        invalidate() {},
+        dispose() {
+          throw failure;
+        },
+        waitForPending: () => nextInputCycle(undefined, { signal }),
+      };
+    },
+    onError: (_ctx, error) => {
+      reports.push(error);
+    },
+  });
+  assert.deepEqual(result, { kind: "error", error: failure });
+  assert.deepEqual(reports, [failure]);
+});
+
+for (const transition of ["owner abort", "owner replaced"] as const) {
+  test(`completion-owned pending cancellation is stale after ${transition}`, async () => {
+    const owner = new AbortController();
+    const gate = deferred<void>();
+    const pendingStarted = deferred<void>();
+    let current = true;
+    const harness = createTuiHarness();
+    const context = createMockContext({ mode: "tui", hasUI: true, custom: harness.custom });
+    const running = runCustomInteraction(context.ctx, {
+      signal: owner.signal,
+      isCurrent: () => current,
+      create: ({ complete, signal }) => ({
+        render: () => ["open"],
+        invalidate() {},
+        handleInput: () => complete("accepted"),
+        async waitForPending() {
+          pendingStarted.resolve();
+          await gate.promise;
+          signal.throwIfAborted();
+        },
+      }),
+    });
+    await harness.waitForOpen();
+    harness.press("tui.select.confirm");
+    await pendingStarted.promise;
+    if (transition === "owner abort") owner.abort();
+    else current = false;
+    gate.resolve();
+    assert.deepEqual(await running, { kind: "stale" });
+    assert.deepEqual(context.notifications, []);
+  });
+}
+
 for (const current of [true, false]) {
   test(`pending cleanup failure is ${current ? "reported" : "suppressed after replacement"}`, async () => {
     let ownerCurrent = true;

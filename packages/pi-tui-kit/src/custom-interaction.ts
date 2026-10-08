@@ -127,31 +127,31 @@ export async function runCustomInteraction<Value, Context extends MenuContext = 
     externallyDisposed = true;
     controller.abort(new DOMException("Custom interaction closed", "AbortError"));
   }
+  // Completion cancels all interaction-owned work. Match its exact reason so
+  // unrelated initialization, disposal, and pending-work failures still report.
+  const isCompletionAbort = (error: unknown) =>
+    customResult?.kind === "completed" &&
+    completionRequested &&
+    signal.aborted &&
+    (error === signal.reason ||
+      (error instanceof Error && error.name === "AbortError" && error.cause === signal.reason));
   // Pi can resolve done() before the async factory returns, then discard its
   // late component. Retain ownership until creation settles so cleanup cannot
   // miss that component or its pending work.
   try {
     if (creation) component = await creation;
   } catch (error) {
-    // Completion cancels factory-owned work. Only suppress a rejection tied to
-    // that signal's reason, not unrelated initialization or cleanup failures.
-    const completionAbort =
-      customResult?.kind === "completed" &&
-      completionRequested &&
-      signal.aborted &&
-      (error === signal.reason ||
-        (error instanceof Error && error.name === "AbortError" && error.cause === signal.reason));
-    if (!completionAbort) uiError ??= error;
+    if (!isCompletionAbort(error)) uiError ??= error;
   }
   try {
     wrappedComponent?.dispose?.();
   } catch (error) {
-    cleanupError ??= error;
+    if (!isCompletionAbort(error)) cleanupError ??= error;
   }
   try {
     await component?.waitForPending?.();
   } catch (error) {
-    cleanupError ??= error;
+    if (!isCompletionAbort(error)) cleanupError ??= error;
   }
   controller.abort(new DOMException("Custom interaction settled", "AbortError"));
 
