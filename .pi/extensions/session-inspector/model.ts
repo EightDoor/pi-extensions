@@ -51,6 +51,7 @@ export interface Snapshot {
   revision: number;
   sessionId: string;
   name: string;
+  nameTruncated?: boolean;
   leafId: string | null;
   totalEntries: number;
   nodes: EntrySummary[];
@@ -63,6 +64,7 @@ export interface Snapshot {
   captureStartedAt: number;
 }
 export interface BranchView {
+  ancestryIssue?: string;
   leafId: string;
   entries: EntrySummary[];
   total: number;
@@ -76,6 +78,7 @@ export interface BranchView {
   skillEvidence: Capture;
 }
 export interface DetailView {
+  ancestryIssue?: string;
   toolAnchor?: string;
   raw: Capture;
   projected: Capture;

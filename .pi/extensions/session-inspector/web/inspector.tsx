@@ -95,6 +95,11 @@ export function Inspector({
           </Button>
         </div>
       )}
+      {detail?.ancestryIssue && (
+        <Text role="status" size="1" color="amber">
+          Projection unavailable: {detail.ancestryIssue}. Raw entry retained.
+        </Text>
+      )}
       <Tabs.Root value={tab} onValueChange={changeTab} className="inspector-tabs">
         <Tabs.List wrap="nowrap" aria-label="Event detail views">
           {["raw", "prompt", "tools", "context", "skills", "codemode"].map((tab) => (

@@ -51,6 +51,7 @@ export function Trace({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const rows = useMemo(() => flatten(tree, expanded, keep), [tree, expanded, keep]);
   const pageRows = rows.slice(offset, offset + 50);
+  const visibleFocused = pageRows.some((row) => row.node.id === focused) ? focused : (pageRows[0]?.node.id ?? "");
   const baseDepth = pageRows.length ? Math.min(...pageRows.map((row) => row.depth)) : 0;
   const relativeDepth = Math.max(1, ...pageRows.map((row) => row.depth - baseDepth));
   const indent = Math.min(14, 140 / relativeDepth); // Scale the visual rail, never cap hierarchy depth.
@@ -67,14 +68,14 @@ export function Trace({
     }
   }, [tree, selected, serial, expanded, keep]);
   useEffect(() => {
-    const element = rowRefs.current.get(focused);
+    const element = rowRefs.current.get(visibleFocused);
     if (!element || !scroller.current) return;
     if (focusRequest.current) {
       element.focus({ preventScroll: true });
       focusRequest.current = false;
     }
     scrollWithin(scroller.current, element);
-  }, [focused]);
+  }, [visibleFocused]);
   useEffect(() => {
     if (offset >= rows.length && offset) setOffset(Math.max(0, Math.floor((rows.length - 1) / 50) * 50));
   }, [offset, rows.length]);
@@ -158,7 +159,7 @@ export function Trace({
                   aria-level={depth + 1}
                   aria-expanded={open}
                   aria-selected={selectedRow}
-                  tabIndex={focused === entry.id || (!focused && pageRows[0]?.node.id === entry.id) ? 0 : -1}
+                  tabIndex={visibleFocused === entry.id ? 0 : -1}
                   ref={(element) => {
                     if (element) rowRefs.current.set(entry.id, element);
                     else rowRefs.current.delete(entry.id);

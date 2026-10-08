@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Collector } from "./collector.ts";
 import type { SkillView, Snapshot } from "./model.ts";
-import { capture, displayText } from "./privacy.ts";
+import { capture, displayText, sessionName } from "./privacy.ts";
 import { snapshot } from "./projection.ts";
 
 export class SessionFeed {
@@ -31,7 +31,7 @@ export class SessionFeed {
       count: entries.length,
       last: entries.at(-1)?.id,
       leaf: manager.getLeafId(),
-      name: manager.getSessionName(),
+      name: sessionName(manager.getSessionName() ?? "Current session"),
       active: this.options.pi.getActiveTools(),
       toolCount: tools.length,
       tools: tools.slice(0, 256).map((tool) => ({

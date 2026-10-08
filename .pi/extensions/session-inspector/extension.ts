@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ancestry } from "./ancestry.ts";
 import { Collector } from "./collector.ts";
 import { SessionFeed } from "./feed.ts";
 import type { SkillView } from "./model.ts";
@@ -101,8 +102,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     const entry = ctx.sessionManager.getLeafEntry();
     if (entry?.type === "message" && entry.message.role === "assistant") return entry.id;
     return (
-      ctx.sessionManager
-        .getBranch(leaf ?? undefined)
+      (leaf ? ancestry(ctx.sessionManager, leaf).path : [])
         .slice()
         .reverse()
         .find(

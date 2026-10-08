@@ -523,6 +523,104 @@ test("R9: selected detail errors are explicit and retry recovers without changin
   await expect(page.locator(".inspector-identity")).toContainText(selected ?? "");
 });
 
+test("R10: pagination, collapse and filters retain a visible roving trace target", async ({ page }) => {
+  for (let i = 0; i < 100; i++) data.manager.appendCustomEntry(`page-${i}`, {});
+  await page.goto(server.url);
+  await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
+  const trace = page.locator(".trace-panel");
+  const targets = trace.locator('[role="treeitem"][tabindex="0"]');
+  await expect(targets).toHaveCount(1);
+  await trace.getByRole("button", { name: "Previous", exact: true }).click();
+  await expect(targets).toHaveCount(1);
+  await targets.focus();
+  const before = await targets.getAttribute("data-trace-id");
+  await page.keyboard.press("ArrowDown");
+  await expect(targets).toHaveCount(1);
+  await expect(targets).not.toHaveAttribute("data-trace-id", before ?? "");
+  await expect(targets).toBeFocused();
+  await trace.locator('[role="treeitem"]').last().focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(targets).toHaveCount(1);
+  await expect(targets).toBeFocused();
+  await trace.getByRole("button", { name: "Collapse all", exact: true }).click();
+  await expect(targets).toHaveCount(1);
+  await page.getByRole("textbox", { name: "Search session" }).fill("page-60");
+  await expect(targets).toHaveCount(1);
+});
+
+test("R11: transient SSE refusals retry, while authentication and generation failures are terminal", async ({
+  page,
+}) => {
+  let attempts = 0;
+  await page.route("**/api/events?**", async (route) => {
+    attempts++;
+    if (attempts === 1) await route.fulfill({ status: 429, body: "Too many viewers" });
+    else if (attempts === 2) await route.fulfill({ status: 503, body: "Unavailable" });
+    else await route.continue();
+  });
+  await page.goto(server.url);
+  await expect(page.getByText("Live", { exact: true })).toBeVisible();
+  expect(attempts).toBe(3);
+  expect(await page.locator(".trace-panel [role=treeitem]").count()).toBeGreaterThan(0);
+});
+
+test("R11: expired SSE credentials do not schedule another request", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/events?**", async (route) => {
+    attempts++;
+    await route.fulfill({ status: 409, body: "Changed" });
+  });
+  await page.goto(server.url);
+  await expect(
+    page.getByText("Session expired or unauthorized; open the viewer again from Pi.", { exact: true }),
+  ).toBeVisible();
+  const timers = await page.evaluate(() => {
+    let retry = false;
+    const original = window.setTimeout;
+    window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 1000) retry = true;
+      return original(handler, delay, ...args);
+    }) as typeof window.setTimeout;
+    return new Promise<boolean>((resolve) => original(() => resolve(retry), 1100));
+  });
+  expect(timers).toBe(false);
+  expect(attempts).toBe(1);
+});
+
+test("R11: incompatible stream generations stop without a reconnect", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/events?**", async (route) => {
+    attempts++;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: 'data: {"protocol":1,"generation":"other","revision":0}\n\n',
+    });
+  });
+  await page.goto(server.url);
+  await expect(page.getByText("Session changed; open the viewer again from Pi.", { exact: true })).toBeVisible();
+  // The scheduling window is the observable behavior; use the page's timer rather than a shell sleep.
+  await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1100)));
+  expect(attempts).toBe(1);
+});
+
+test("R12/R13: cyclic selection preserves raw evidence, and long session names expose truncation", async ({ page }) => {
+  const a = data.manager.appendCustomEntry("cycle-a", {});
+  const b = data.manager.appendCustomEntry("cycle-b", {});
+  const entry = data.manager.getEntry(a);
+  if (!entry) throw new Error("Missing cycle");
+  entry.parentId = b;
+  data.manager.branch(data.leaf);
+  data.manager.appendSessionInfo("visible".repeat(1000));
+  await page.goto(server.url);
+  await expect(page.locator(".header-context")).toContainText("truncated");
+  await page.getByRole("textbox", { name: "Search session" }).fill("cycle-a");
+  await row(page, a).click();
+  await expect(page.locator(".inspector-panel").getByRole("status")).toContainText("recorded parent cycle");
+  await expect(page.locator(".inspector-identity")).toContainText(a);
+  await expect(page.getByText("Live", { exact: true })).toBeVisible();
+});
+
 test("large history pages visible rows lazily and preserves arbitrary absolute depth", async ({ page }) => {
   for (let i = 0; i < 1500; i++)
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });

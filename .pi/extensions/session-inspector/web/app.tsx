@@ -79,6 +79,12 @@ function App() {
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
     let refresh: ReturnType<typeof setTimeout> | undefined;
+    const stop = (message: string) => {
+      controller.abort();
+      clearTimeout(refresh);
+      setConnected(false);
+      setError(message);
+    };
     const connect = async () => {
       try {
         const response = await fetch(`/api/events?generation=${encodeURIComponent(generation)}`, {
@@ -86,11 +92,11 @@ function App() {
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
-        if (!response.ok || !response.body) {
-          setConnected(false);
-          setError("Session expired or unavailable; open the viewer again from Pi.");
+        if ([401, 403, 409, 410].includes(response.status)) {
+          stop("Session expired or unauthorized; open the viewer again from Pi.");
           return;
         }
+        if (!response.ok || !response.body) throw new Error("Transient viewer refusal");
         setConnected(true);
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -107,7 +113,10 @@ function App() {
               const line = frame.split("\n").find((s) => s.startsWith("data: "));
               if (line) {
                 const data = JSON.parse(line.slice(6)) as { protocol: number; generation: string; revision: number };
-                if (data.protocol !== 1 || data.generation !== generation) throw new Error("Session changed");
+                if (data.protocol !== 1 || data.generation !== generation) {
+                  stop("Session changed; open the viewer again from Pi.");
+                  return;
+                }
                 if (!refresh)
                   refresh = setTimeout(() => {
                     refresh = undefined;
@@ -221,7 +230,10 @@ function App() {
           <Heading size="4">Pi Session Inspector</Heading>
         </div>
         <div className="header-context">
-          <span>{snapshot?.name ?? "Connecting"}</span>
+          <span title={snapshot?.nameTruncated ? "Session name truncated to 512 characters" : undefined}>
+            {snapshot?.name ?? "Connecting"}
+            {snapshot?.nameTruncated && " · truncated"}
+          </span>
           <span>
             Pi leaf: <strong>{snapshot?.leafId ?? "none"}</strong>
           </span>

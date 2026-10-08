@@ -14,10 +14,11 @@ import {
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
+import { ancestry } from "./ancestry.ts";
 import type { Collector } from "./collector.ts";
 import { correlatedCalls } from "./correlation.ts";
 import type { BranchView, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
-import { capture, displayText } from "./privacy.ts";
+import { capture, displayText, sessionName } from "./privacy.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   const message = entry.type === "message" ? entry.message : undefined;
@@ -95,7 +96,7 @@ export function snapshot(
     generation,
     revision,
     sessionId: manager.getSessionId(),
-    name: displayText(manager.getSessionName() ?? "Current session"),
+    ...sessionName(manager.getSessionName() ?? "Current session"),
     leafId: manager.getLeafId(),
     totalEntries: entries.length,
     nodes,
@@ -130,8 +131,25 @@ export function branch(
 ): BranchView {
   if (!manager.getEntry(leafId)) throw new Error("Unknown entry");
   const entries = manager.getEntries();
+  const { path, issue } = ancestry(manager, leafId);
+  if (issue) {
+    const unavailable = capture(`[unavailable: ${issue}]`);
+    return {
+      leafId,
+      ancestryIssue: issue,
+      entries: path.slice(offset, offset + 50).map((entry) => summarize(entry, manager.getLabel(entry.id))),
+      total: path.length,
+      offset,
+      prompt: unavailable,
+      previousPrompt: unavailable,
+      sections: unavailable,
+      declaredTools: unavailable,
+      promptUpdates: unavailable,
+      projection: unavailable,
+      skillEvidence: unavailable,
+    };
+  }
   const projection = buildSessionProjection(entries, leafId);
-  const path = manager.getBranch(leafId);
   const historicalSystem = getCurrentSystemMessage(projection.messages);
   const target = manager.getEntry(leafId);
   const previous = target?.parentId ? buildSessionProjection(entries, target.parentId).messages : [];
@@ -202,6 +220,16 @@ export function branch(
 export function detail(manager: ReadonlySessionManager, id: string, leafId: string, collector: Collector): DetailView {
   const entry = manager.getEntry(id);
   if (!entry || !manager.getEntry(leafId)) throw new Error("Unknown entry");
+  const selected = ancestry(manager, id);
+  const leaf = id === leafId ? selected : ancestry(manager, leafId);
+  const issue = selected.issue ?? leaf.issue;
+  if (issue)
+    return {
+      ancestryIssue: issue,
+      raw: capture(entry, 65536),
+      projected: capture(`[unavailable: ${issue}]`),
+      calls: [],
+    };
   const projected = buildSessionProjection(manager.getEntries(), leafId).entries.find((e) => e.sourceEntry.id === id);
   const ids = new Set<string>();
   if (entry.type === "message") {
@@ -212,8 +240,7 @@ export function detail(manager: ReadonlySessionManager, id: string, leafId: stri
   const toolAnchor =
     entry.type === "message" && entry.message.role === "assistant"
       ? entry.id
-      : manager
-          .getBranch(id)
+      : selected.path
           .slice()
           .reverse()
           .find(

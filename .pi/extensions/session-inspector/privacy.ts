@@ -14,6 +14,11 @@ export function displayText(text: string): string {
   );
 }
 
+export function sessionName(raw: string): { name: string; nameTruncated?: true } {
+  const clean = displayText(raw);
+  return { name: clean.slice(0, 512), nameTruncated: clean.length > 512 ? true : undefined };
+}
+
 // Bound traversal before serialization: huge strings, arrays, cycles and deep objects are safe.
 export function capture(input: unknown, maxChars = 32768): Capture {
   let budget = maxChars;
