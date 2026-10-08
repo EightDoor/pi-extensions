@@ -464,7 +464,8 @@ function createSettingsComponent<ScreenId extends string, ActionId extends strin
     item,
     label: safeMenuText(item.label),
   }));
-  let filteredItems = searchableItems;
+  if (options.searchQuery) handleSearchInput(searchInput, options.searchQuery);
+  let filteredItems = fuzzyFilter(searchableItems, searchInput.getValue(), (candidate) => candidate.label);
   const committed = new Map(options.screen.items.map((item) => [item.id, item.currentValue]));
   const displayed = new Map(committed);
   const revisions = new Map<string, number>();
@@ -494,6 +495,7 @@ function createSettingsComponent<ScreenId extends string, ActionId extends strin
   const applyFilter = () => {
     mousePressedIndex = undefined;
     filteredItems = fuzzyFilter(searchableItems, searchInput.getValue(), (candidate) => candidate.label);
+    options.onSearchQueryChange?.(searchInput.getValue());
     selectedIndex = 0;
     const item = selectedItem();
     if (item) options.onSelectionChange?.(item.id);
