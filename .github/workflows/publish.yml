@@ -35,12 +35,15 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 26
+          node-version-file: .node-version
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
+      - name: Validate installation policy
+        run: node scripts/check-install-policy.mjs
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Create version pull request or publish to npm
         id: changesets
