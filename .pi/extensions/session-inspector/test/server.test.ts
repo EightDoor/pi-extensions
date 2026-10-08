@@ -11,7 +11,7 @@ async function setup() {
   const server = await startServer({
     signal: controller.signal,
     generation: "g",
-    assets: new Map([["/", { type: "text/html", body: "shell" }]]),
+    assets: new Map([["/", { type: "text/html", body: "<html><head></head><body>shell</body></html>" }]]),
     snapshot: () => ({ revision: 7 }),
     branch: (id, offset) => ({ id, offset }),
     detail: (id) => ({ id }),
@@ -23,6 +23,13 @@ describe("authenticated loopback server", () => {
   it("serves a data-free shell, authenticates every data route and rejects unsafe requests", async () => {
     const { server, headers } = await setup();
     expect((await fetch(server.origin)).status).toBe(200);
+    expect(server.url.length).toBeLessThanOrEqual(68);
+    expect(new URL(server.url).hash).toBe(`#${server.token}`);
+    expect(server.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(Buffer.from(server.token, "base64url")).toHaveLength(32);
+    const shell = await (await fetch(server.origin)).text();
+    expect(shell).toContain('name="inspector-generation" content="g"');
+    expect(shell).not.toContain(server.token);
     for (const route of ["snapshot", "branch", "detail", "events"]) {
       expect((await fetch(`${server.origin}/api/${route}?generation=g`)).status).toBe(401);
       expect(
@@ -75,6 +82,22 @@ describe("authenticated loopback server", () => {
     const response = await fetch(server.origin);
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+  it("encodes public generation metadata without injecting HTML or credentials", async () => {
+    const generation = 'epoch"><script>alert(1)</script>&漢字';
+    const server = await startServer({
+      generation,
+      signal: new AbortController().signal,
+      assets: new Map([["/", { type: "text/html", body: "<html><head></head><body></body></html>" }]]),
+      snapshot: () => ({}),
+      branch: () => ({}),
+      detail: () => ({}),
+    });
+    servers.push(server);
+    const html = await (await fetch(server.origin)).text();
+    expect(html).toContain(`content="${encodeURIComponent(generation)}"`);
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain(server.token);
   });
   it("sends revision handshakes, reconnects from a fresh snapshot and bounds slow clients", async () => {
     const { server, headers } = await setup();

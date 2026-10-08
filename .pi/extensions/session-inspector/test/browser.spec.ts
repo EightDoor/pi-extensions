@@ -38,6 +38,21 @@ async function openObjects(page: Page, section: string) {
   });
 }
 
+test("compact links authenticate, clear fragments and survive reload; legacy links remain supported", async ({
+  page,
+}) => {
+  expect(server.url.length).toBeLessThanOrEqual(68);
+  await page.goto(server.url);
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  expect(new URL(page.url()).hash).toBe("");
+  await page.reload();
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await page.evaluate(() => sessionStorage.clear());
+  await page.goto("about:blank");
+  await page.goto(`${server.origin}/#token=${server.token}&generation=browser-fixture`);
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+});
+
 test("existing prompt/tools/skills/context/codemode, filtering, read-only selection and narrow layout", async ({
   page,
 }) => {

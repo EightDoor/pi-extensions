@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 9 files, 67 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 29 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 9 files, 69 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 30 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -40,6 +40,10 @@ The full local suite now contains 56 tests and 25 Chromium tests. Identity valid
 Five new comments at `a5b741aa` were independently confirmed: quiet snapshot failures need their own retry; semantic kind fields can be React-invalid; duplicate IDs have conflicting map/raw evidence; inline fan-out projects full off-branch history; and linked legal files are not served. Regressions cover transient snapshot recovery with unchanged SSE, terminal snapshot refusal, terminal SSE cancellation of pending snapshot retries, type/role equivalence classes, duplicate collisions inside/outside the navigation budget and duplicate ancestors, 50 inline details against 100,000 off-branch entries with zero full-history reads after one owned index build, structural invalidation/disposal, canonical projection equality at every valid fixture leaf, and actual inline license text in generated app.js.
 
 Local validation now passes 67 tests across nine files and 29 Chromium tests. The structural index is owned by SessionFeed, invalidated on structural change and inaccessible after close. Native projection receives only validated ancestry; no provider/private extension behavior is recreated. Generated third-party legal notices remain inside the served JS rather than linking unserved assets.
+
+## Compact fallback URL
+
+Fallback URLs use a 43-character Base64url encoding of the original 32 random token bytes, retaining 256-bit entropy. The full URL is at most 68 characters and printed on its own notification line. Public generation metadata is encoded into the data-free HTML shell; all authenticated endpoints still enforce the generation and token. Tests verify URL bounds/entropy, absence of credentials in the shell, inert encoded generation text, standalone fallback notification, compact-link browser authentication/fragment removal/reload and legacy fragment compatibility. Lifecycle cleanup and model-visible prefix behavior remain unchanged; native terminal hyperlink detection is terminal-specific and not asserted by browser tests.
 
 ## Progressive Explorer revision
 

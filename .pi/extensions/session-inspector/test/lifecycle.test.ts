@@ -74,6 +74,19 @@ describe("owned lifecycle and mode contract", () => {
     expect(h.start).toHaveBeenCalledTimes(2);
     await h.run(ctx, "stop");
   });
+  it("prints the private fallback URL on a separate line without overwriting the editor", async () => {
+    const h = harness();
+    const ctx = h.context();
+    h.launch.mockResolvedValueOnce(false);
+    await h.run(ctx);
+    const server = await h.start.mock.results[0]?.value;
+    expect(h.notifications[0]?.split("\n")).toEqual([
+      "Browser unavailable; open privately:",
+      server?.url,
+      "/session-inspector stop revokes this URL.",
+    ]);
+    await h.run(ctx, "stop");
+  });
   it("revokes opening consent on shutdown and never launches a replaced context", async () => {
     const h = harness();
     const ctx = h.context();

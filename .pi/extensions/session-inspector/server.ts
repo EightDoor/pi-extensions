@@ -49,7 +49,7 @@ export async function startServer(options: ServerOptions): Promise<ViewerServer>
       ],
     ]);
   options.signal.throwIfAborted();
-  const token = randomBytes(32).toString("hex");
+  const token = randomBytes(32).toString("base64url");
   const clients = new Set<ServerResponse>();
   const sockets = new Set<Socket>();
   let closed = false;
@@ -89,7 +89,17 @@ export async function startServer(options: ServerOptions): Promise<ViewerServer>
     const asset = assets.get(url.pathname);
     if (asset && !url.search) {
       res.writeHead(200, { "Content-Type": asset.type });
-      res.end(asset.body);
+      // Generation is a public epoch identifier, not a credential. Encoding keeps the HTML boundary inert.
+      const body =
+        url.pathname === "/"
+          ? asset.body
+              .toString()
+              .replace(
+                "<head>",
+                `<head><meta name="inspector-generation" content="${encodeURIComponent(options.generation)}">`,
+              )
+          : asset.body;
+      res.end(body);
       return;
     }
     if (!url.pathname.startsWith("/api/")) return fail(404, "Not found");
@@ -180,7 +190,7 @@ export async function startServer(options: ServerOptions): Promise<ViewerServer>
   return {
     token,
     origin,
-    url: `${origin}/#token=${token}&generation=${options.generation}`,
+    url: `${origin}/#${token}`,
     invalidate(next) {
       if (!closed) {
         revision = next;

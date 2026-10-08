@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { DetailView } from "../model.ts";
 
-const params = new URLSearchParams(location.hash.slice(1));
-const token = params.get("token") ?? sessionStorage.getItem("inspector-token") ?? "";
-export const generation = params.get("generation") ?? sessionStorage.getItem("inspector-generation") ?? "";
+const fragment = location.hash.slice(1);
+const params = new URLSearchParams(fragment);
+// Continue accepting legacy #token=...&generation=... URLs and fragment-free browser reloads.
+const token = /^[\w-]{43}$/.test(fragment)
+  ? fragment
+  : (params.get("token") ?? sessionStorage.getItem("inspector-token") ?? "");
+const shellGeneration = document.querySelector<HTMLMetaElement>('meta[name="inspector-generation"]')?.content;
+export const generation =
+  params.get("generation") ??
+  (shellGeneration ? decodeURIComponent(shellGeneration) : (sessionStorage.getItem("inspector-generation") ?? ""));
 if (token) sessionStorage.setItem("inspector-token", token);
 if (generation) sessionStorage.setItem("inspector-generation", generation);
 history.replaceState(null, "", location.pathname);

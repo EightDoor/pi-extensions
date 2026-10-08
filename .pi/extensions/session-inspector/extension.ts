@@ -187,7 +187,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
       }
       if (!alive(owner)) return;
       ctx.ui.notify(
-        `${launched ? "Session Inspector" : "Browser unavailable; open privately"}: ${url}\n/session-inspector stop revokes this URL.`,
+        `${launched ? "Session Inspector" : "Browser unavailable; open privately"}:\n${url}\n/session-inspector stop revokes this URL.`,
         launched ? "info" : "warning",
       );
     } catch {
