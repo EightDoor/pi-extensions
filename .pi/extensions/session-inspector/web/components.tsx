@@ -8,6 +8,8 @@ import {
   FileTextIcon,
   GearIcon,
   LightningBoltIcon,
+  PersonIcon,
+  StackIcon,
 } from "@radix-ui/react-icons";
 import { Badge, Button, Flex, Text } from "@radix-ui/themes";
 import { useEffect, useRef, useState } from "react";
@@ -17,17 +19,23 @@ import { JsonTree } from "./json-tree.tsx";
 
 export function Glyph({ kind }: { kind: string }) {
   const Icon =
-    kind === "thinking_level_change"
-      ? GearIcon
-      : group(kind) === "Model"
-        ? CubeIcon
-        : group(kind) === "Tool"
-          ? LightningBoltIcon
+    kind === "toolResult"
+      ? StackIcon
+      : kind === "toolCall"
+        ? GearIcon
+        : kind === "assistant"
+          ? ChatBubbleIcon
           : kind === "user"
-            ? ChatBubbleIcon
-            : kind === "system"
-              ? FileTextIcon
-              : CubeIcon;
+            ? PersonIcon
+            : kind === "thinking_level_change"
+              ? GearIcon
+              : group(kind) === "Model"
+                ? CubeIcon
+                : group(kind) === "Tool"
+                  ? LightningBoltIcon
+                  : kind === "system"
+                    ? FileTextIcon
+                    : CubeIcon;
   return (
     <span
       className={`event-glyph glyph-${group(kind).toLowerCase()} ${kind === "thinking_level_change" ? "glyph-thinking" : ""}`}

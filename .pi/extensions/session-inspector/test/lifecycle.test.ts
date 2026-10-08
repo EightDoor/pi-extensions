@@ -76,6 +76,30 @@ describe("owned lifecycle and mode contract", () => {
     await expect(h.run(h.context("json"), "", "session-inspector")).rejects.toThrow("TUI");
     await expect(h.run(h.context("print"), "bad", "session-inspector")).rejects.toThrow("Usage: /inspect");
   });
+  it("captures context only after consent, returns no transformations, and releases it on replacement", async () => {
+    const h = harness();
+    const ctx = h.context();
+    const event = { messages: [{ role: "user", content: "observed" }] };
+    await h.emit("context_with_system", ctx, event);
+    expect(h.start).not.toHaveBeenCalled();
+    await h.run(ctx);
+    await h.emit("context_with_system", ctx, event);
+    const options = h.start.mock.calls[0]?.[0];
+    expect(options?.snapshot()).toMatchObject({ context: { source: "observed-pi-context" } });
+    const message = event.messages[0];
+    if (!message) throw new Error("Missing fixture message");
+    message.content = "mutated later";
+    expect(JSON.stringify(options?.snapshot())).not.toContain("mutated later");
+    await h.emit("before_provider_request", ctx, {
+      payload: { headers: { authorization: "private" }, messages: ["provider stage"] },
+    });
+    expect(JSON.stringify(options?.snapshot())).toContain("provider stage");
+    expect(JSON.stringify(options?.snapshot())).not.toContain("private");
+    await h.emit("session_start", ctx);
+    await h.run(ctx);
+    expect(h.start.mock.calls[1]?.[0].snapshot()).toMatchObject({ context: { source: "session-derived" } });
+    await h.run(ctx, "stop");
+  });
   it("does no factory work, cancels consent and retries startup failure", async () => {
     const h = harness();
     const ctx = h.context();

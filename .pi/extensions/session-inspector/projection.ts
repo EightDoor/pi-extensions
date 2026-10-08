@@ -16,10 +16,11 @@ type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
 import { ancestry } from "./ancestry.ts";
 import type { Collector } from "./collector.ts";
+import { sessionContext } from "./context.ts";
 import { correlatedCalls } from "./correlation.ts";
 import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
-import type { BranchView, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
+import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
@@ -78,6 +79,7 @@ export function snapshot(
   active: string[],
   skills: SkillView[],
   index = new EntryIndex(manager.getEntries()),
+  observedContext?: ContextComposition,
 ): Snapshot {
   const entries = index.entries;
   const owning = new Map<string, { id: string; ids: Set<string> }>();
@@ -121,6 +123,7 @@ export function snapshot(
     incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256 || invalidEntryCount > 0,
     invalidEntryCount,
     invalidEntries,
+    context: observedContext ?? sessionContext(manager, index),
     currentPrompt: capture(prompt, 65536),
     tools: tools.slice(0, 256).map((t) => ({
       name: displayText(t.name),

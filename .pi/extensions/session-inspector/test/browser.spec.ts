@@ -24,6 +24,14 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await server.close();
 });
+async function explore(page: Page): Promise<void> {
+  await page.goto(server.url);
+  await page.getByRole("button", { name: "Session events", exact: true }).click();
+  if ((page.viewportSize()?.width ?? 0) >= 1200) {
+    await page.getByRole("button", { name: "Toggle navigator", exact: true }).click();
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  }
+}
 const nav = (page: Page, id: string) => page.locator(`.node[data-entry-id="${id}"]`);
 const row = (page: Page, id: string) => page.locator(`[data-trace-id="${id}"]`);
 async function openLive(page: Page) {
@@ -42,15 +50,15 @@ test("compact links authenticate, clear fragments and survive reload; legacy lin
   page,
 }) => {
   expect(server.url.length).toBeLessThanOrEqual(68);
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   await page.reload();
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".segment-row").first()).toBeVisible();
   await page.evaluate(() => sessionStorage.clear());
   await page.goto("about:blank");
   await page.goto(`${server.origin}/#token=${server.token}&generation=browser-fixture`);
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".segment-row").first()).toBeVisible();
 });
 
 test("existing prompt/tools/skills/context/codemode, filtering, read-only selection and narrow layout", async ({
@@ -59,11 +67,11 @@ test("existing prompt/tools/skills/context/codemode, filtering, read-only select
   const initialLeaf = data.manager.getLeafId();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(page.url()).not.toContain("token");
   await nav(page, data.alternate).click();
-  await expect(page.getByText(`Browser selection: ${data.alternate}`, { exact: false })).toBeVisible();
+  await expect(page.locator(".inspector-identity")).toContainText(data.alternate);
   expect(data.manager.getLeafId()).toBe(initialLeaf);
   await page.getByRole("tab", { name: "prompt", exact: true }).click();
   await expect(
@@ -93,7 +101,7 @@ test("existing prompt/tools/skills/context/codemode, filtering, read-only select
     page.getByText('await tools.read({path:"/skills/example/SKILL.md"}); text("done")', { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Toggle appearance" }).click();
-  await expect(page.locator(".inspector-app")).toHaveClass(/light/);
+  await expect(page.locator(".inspector-app")).toHaveClass(/dark/);
   await page.setViewportSize({ width: 375, height: 812 });
   await expect(page.locator(".app-grid")).toHaveClass(/narrow-layout/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -114,13 +122,13 @@ test("true hierarchy, independent selection/disclosure, retained descendants, ke
   const sibling = data.manager.appendCustomEntry("Sibling", { marker: true });
   data.manager.branch(c);
   const initial = data.manager.getLeafId();
-  await page.goto(server.url);
+  await explore(page);
   await expect(row(page, c)).toBeVisible();
   await expect(page.locator(`[data-trace-entry-id="${c}"]`)).toHaveAttribute("data-parent-id", b);
   await expect(row(page, c)).toHaveAttribute("aria-level", "6");
   await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
   await expect(row(page, a)).toHaveCount(0);
-  await expect(page.getByText(`Browser selection: ${c}`, { exact: false })).toBeVisible();
+  await expect(page.locator(".inspector-identity")).toContainText(c);
   await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
   await expect(row(page, c)).toBeVisible();
   await expect(row(page, a)).toHaveAttribute("aria-expanded", "true");
@@ -153,7 +161,7 @@ test("true hierarchy, independent selection/disclosure, retained descendants, ke
 });
 
 test("related navigation reveals a filtered-out child without clearing filters or expansion", async ({ page }) => {
-  await page.goto(server.url);
+  await explore(page);
   await page.getByRole("button", { name: "Model", exact: true }).click();
   await nav(page, data.assistant).click();
   await page.locator(".inspector-panel").getByRole("button", { name: "Related entries", exact: true }).click();
@@ -173,7 +181,7 @@ test("live drawer stays compact and closed during updates; hostile text/raster r
   page.on("request", (request) => {
     if (!request.url().startsWith(server.origin)) external.push(request.url());
   });
-  await page.goto(server.url);
+  await explore(page);
   const drawer = page.getByRole("button", { name: /^Live calls/ });
   await expect(drawer).toHaveAttribute("aria-expanded", "false");
   expect((await page.locator(".live-drawer").boundingBox())?.height).toBeLessThan(50);
@@ -241,7 +249,7 @@ test("list is default; timeline uses a shared axis and log points, never duratio
     },
     data.assistant,
   );
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".trace-list")).toBeVisible();
   await expect(page.locator(".timeline-span")).toHaveCount(0);
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
@@ -264,7 +272,7 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
       },
     }),
   );
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByRole("region", { name: "Session overview" })).toBeVisible();
   const positions = await page.locator(".sidebar, .center-column, .inspector-panel").evaluateAll((elements) =>
     elements.map((element) => ({
@@ -311,7 +319,7 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
 
 test("medium/narrow and effective 150% viewport use accessible drawers without page scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 1115, height: 627 });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByRole("heading", { name: "Trace explorer" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.setViewportSize({ width: 900, height: 700 });
@@ -347,7 +355,7 @@ test("clipboard failure and long plain previews retain bounded literal rendering
     content: Array.from({ length: 1200 }, (_, i) => `prompt line ${i}`).join("\n"),
     timestamp: 10,
   });
-  await page.goto(server.url);
+  await explore(page);
   await page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first().click();
   await expect(page.getByText("Copy failed", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "prompt", exact: true }).click();
@@ -391,7 +399,7 @@ test("inline detail requests are bounded and cancelled when rows collapse", asyn
     active--;
   });
   try {
-    await page.goto(server.url);
+    await explore(page);
     await expect(
       page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first(),
     ).toBeVisible();
@@ -417,7 +425,7 @@ test("inline detail requests are bounded and cancelled when rows collapse", asyn
 test("long labels/tab overflow and resize cancellation preserve readable panes", async ({ page }) => {
   await page.setViewportSize({ width: 1672, height: 941 });
   const long = data.manager.appendCustomEntry(`thinking_level_change_${"long-name-".repeat(30)}`, { value: "test" });
-  await page.goto(server.url);
+  await explore(page);
   await expect(nav(page, long)).toBeVisible();
   const title = nav(page, long).locator(".node-title strong");
   expect(await title.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("nowrap");
@@ -453,7 +461,7 @@ test("R7: eviction reconciles a captured selection to its remembered transcript 
     { type: "tool_execution_end", toolCallId: "chosen", toolName: "read", isError: false, result: "chosen" },
     data.assistant,
   );
-  await page.goto(server.url);
+  await explore(page);
   await openLive(page);
   await page.getByRole("button", { name: "read · ok", exact: true }).click();
   await expect(page.locator(".inspector-identity")).toContainText("Captured execution");
@@ -477,7 +485,7 @@ test("R6: repeated raw IDs remain independently selectable across live updates",
     );
   }
   const records = collector.list();
-  await page.goto(server.url);
+  await explore(page);
   await openLive(page);
   await expect(page.getByRole("button", { name: "read · ok", exact: true })).toHaveCount(2);
   await page.locator(`[id="live-call-${records[0]?.occurrenceId}"] .call-trigger`).click();
@@ -494,7 +502,7 @@ test("R8: navigator reveals a new selection on the same page without resetting s
   for (let i = 0; i < 80; i++) ids.push(data.manager.appendCustomEntry(`step-${i}`, {}));
   const target = ids[25];
   if (!target) throw new Error("No target");
-  await page.goto(server.url);
+  await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
   await page.locator(".trace-panel").getByRole("button", { name: "Previous", exact: true }).click();
   await row(page, target).click();
@@ -526,7 +534,7 @@ test("R9: selected detail errors are explicit and retry recovers without changin
     if (failed) await route.fulfill({ status: 400, contentType: "text/plain", body: "Unavailable session data" });
     else await route.continue();
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".inspector-panel").getByRole("alert")).toContainText("Could not load entry details");
   const selected = data.manager.getLeafId();
   failed = false;
@@ -540,7 +548,7 @@ test("R9: selected detail errors are explicit and retry recovers without changin
 
 test("R10: pagination, collapse and filters retain a visible roving trace target", async ({ page }) => {
   for (let i = 0; i < 100; i++) data.manager.appendCustomEntry(`page-${i}`, {});
-  await page.goto(server.url);
+  await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
   const trace = page.locator(".trace-panel");
   const targets = trace.locator('[role="treeitem"][tabindex="0"]');
@@ -573,7 +581,7 @@ test("R11: transient SSE refusals retry, while authentication and generation fai
     else if (attempts === 2) await route.fulfill({ status: 503, body: "Unavailable" });
     else await route.continue();
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
   expect(attempts).toBe(3);
   expect(await page.locator(".trace-panel [role=treeitem]").count()).toBeGreaterThan(0);
@@ -585,7 +593,7 @@ test("R11: expired SSE credentials do not schedule another request", async ({ pa
     attempts++;
     await route.fulfill({ status: 409, body: "Changed" });
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(
     page.getByText("Session expired or unauthorized; open the viewer again from Pi.", { exact: true }),
   ).toBeVisible();
@@ -612,7 +620,7 @@ test("R11: incompatible stream generations stop without a reconnect", async ({ p
       body: 'data: {"protocol":1,"generation":"other","revision":0}\n\n',
     });
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByText("Session changed; open the viewer again from Pi.", { exact: true })).toBeVisible();
   // The scheduling window is the observable behavior; use the page's timer rather than a shell sleep.
   await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1100)));
@@ -627,7 +635,7 @@ test("R12/R13: cyclic selection preserves raw evidence, and long session names e
   entry.parentId = b;
   data.manager.branch(data.leaf);
   data.manager.appendSessionInfo("visible".repeat(1000));
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".header-context")).toContainText("truncated");
   await page.getByRole("textbox", { name: "Search session" }).fill("cycle-a");
   await row(page, a).click();
@@ -641,7 +649,7 @@ test("R14: malformed runtime identity remains bounded raw evidence without a ren
   const entry = data.manager.getEntry(id);
   if (!entry) throw new Error("Missing malformed fixture");
   (entry as unknown as Record<string, unknown>).id = 42;
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
   await page.locator(".invalid-entries > summary").click();
   await expect(page.locator(".invalid-entries")).toContainText("non-string entry id");
@@ -654,7 +662,7 @@ test("R15: selected branch failure survives live snapshots and retries without m
     if (failed) await route.fulfill({ status: 503, body: "Temporary failure" });
     else await route.continue();
   });
-  await page.goto(server.url);
+  await explore(page);
   const alert = page.locator(".branch-failure");
   await expect(alert).toContainText("Could not load selected branch context.");
   const next = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
@@ -672,7 +680,7 @@ test("R15: selected branch failure survives live snapshots and retries without m
 test("R16: JSON object disclosure is independent and retained for each selected-entry scope", async ({ page }) => {
   const a = data.manager.appendCustomEntry("json-a", { shared: { nested: { a: 1 } } });
   const b = data.manager.appendCustomEntry("json-b", { shared: { nested: { b: 2 } } });
-  await page.goto(server.url);
+  await explore(page);
   await nav(page, a).click();
   const shared = page.locator(".inspector-panel").getByText("shared", { exact: true }).locator("..").locator("..");
   await expect(shared).not.toHaveAttribute("open", "");
@@ -698,7 +706,7 @@ test("R17: filtered direct-child count is labeled visible rather than recorded t
   data.manager.appendCustomEntry("hidden-child-one", {});
   data.manager.branch(parent);
   data.manager.appendCustomEntry("hidden-child-two", {});
-  await page.goto(server.url);
+  await explore(page);
   await page.getByRole("textbox", { name: "Search session" }).fill("match-child");
   const disclosure = page.locator(`[data-trace-entry-id="${parent}"] .expand-button`);
   if ((await disclosure.getAttribute("aria-expanded")) === "true") await disclosure.click();
@@ -716,7 +724,7 @@ test("R18: a failed snapshot recovers while the SSE connection stays quiet", asy
     if (attempts === 1) await route.abort("connectionreset");
     else await route.continue();
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
   await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
   expect(attempts).toBe(2);
@@ -728,7 +736,7 @@ test("R18: terminal snapshot admission does not retry", async ({ page }) => {
     attempts++;
     await route.fulfill({ status: 409, body: "Changed" });
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.getByText("Session expired; open a new viewer from Pi.", { exact: true })).toBeVisible();
   await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1100)));
   expect(attempts).toBe(1);
@@ -740,7 +748,7 @@ test("R18: terminal SSE shutdown cancels a pending snapshot retry", async ({ pag
     attempts++;
     await route.fulfill({ status: 503, body: "Transient" });
   });
-  await page.goto(server.url);
+  await explore(page);
   await expect(
     page.getByText("Viewer unavailable; reconnecting requires a running Pi session.", { exact: true }),
   ).toBeVisible();
@@ -763,7 +771,7 @@ test("R19/R20: malformed kind and duplicate records remain raw diagnostics, not 
   const duplicate = data.manager.getEntry(other);
   if (!duplicate) throw new Error("No duplicate");
   duplicate.id = data.user;
-  await page.goto(server.url);
+  await explore(page);
   await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
   await page.locator(".invalid-entries > summary").click();
   await expect(page.locator(".invalid-entries")).toContainText("entry type");
@@ -776,7 +784,7 @@ test("large history pages visible rows lazily and preserves arbitrary absolute d
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
-  await page.goto(server.url);
+  await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
   expect(await page.locator(".node").count()).toBeLessThanOrEqual(100);
   expect(await page.locator(".trace-item").count()).toBeLessThanOrEqual(50);

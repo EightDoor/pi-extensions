@@ -129,6 +129,17 @@ UI hierarchy has no nesting-depth cap; existing bounded capture and 10,000-entry
 
 Verification: local Validator/Test, Chromium interaction/visual Test, real Pi Smoke and semantic Review against root AGENTS.md and docs/extension-conventions.md; settings/publishing changes remain inapplicable. User acceptance of the original first version remains open.
 
+## Context Composition revision
+
+The current user request replaces the primary debugging dashboard with the supplied off-white vertical composition reference. Consent-gated public context_with_system observation supplies actual ordered Pi-stage messages; later hooks/provider serialization are explicitly not claimed as final. Before observation, native active-leaf projection is labeled session-derived. Log hierarchy and execution/debugging views remain secondary.
+
+- [x] Capture bounded, immutable ordered context messages/blocks with explicit source, missing-token and truncation semantics; verify native projection, observer ordering, prefix equality, privacy and lifecycle disposal.
+- [x] Implement a single-column, pastel composition list with inline details, category/search controls, bounded variable-height rendering and keyboard/jumpable minimap; verify independent disclosure, stable live/older scroll, mobile, light/dark and structured/raw data.
+- [x] Preserve secondary session events, Navigator, Inspector, historical prompt/tools/skills/codemode and execution views; verify their existing regressions without forcing them onto the primary screen.
+- [ ] Inspect screenshot evidence against the reference, run local/root gates and Pi smoke, publish signed changes and report capture-stage/terminal/provider limitations; retain this plan until explicit user acceptance.
+
+Applicable MUST rules: public APIs and stage equivalence (Review + native/observer tests), unchanged normalized prefixes (runtime Test), bounded sanitized raw copies (privacy Test), owned cancellation/disposal (lifecycle/browser Test), accurate source/token labels (semantic Review), keyboard/focus/read-only previews (browser Test), local boundaries and both verification gates (Validator/Test/Smoke).
+
 ## Execution evidence
 
 Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/session-inspector/VERIFICATION.md): 22 local tests, six Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.

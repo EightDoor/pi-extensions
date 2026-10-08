@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
+import "./composition.css";
 import type { BranchView, Snapshot } from "../model.ts";
 import { generation, headers, RequestFailure, request, useDetail } from "./api.ts";
+import { ContextComposition } from "./context-composition.tsx";
 import { type Filters, matches } from "./format.ts";
 import { Inspector } from "./inspector.tsx";
 import { LiveDrawer } from "./live-drawer.tsx";
@@ -16,7 +18,7 @@ import { Sidebar } from "./tree.tsx";
 
 type Selection = { kind: "entry" | "call"; id: string; serial: number; filterVersion?: number; anchor?: string | null };
 function App() {
-  const [appearance, setAppearance] = useState<"dark" | "light">("dark");
+  const [appearance, setAppearance] = useState<"dark" | "light">("light");
   const [revision, setRevision] = useState(-1);
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [branch, setBranch] = useState<BranchView>();
@@ -25,6 +27,7 @@ function App() {
   const branchOwner = useRef<{ entryId: string; attempt: number } | undefined>(undefined);
   const [selection, setSelection] = useState<Selection>();
   const [view, setView] = useState("list");
+  const [surface, setSurface] = useState("context");
   const [liveOpen, setLiveOpen] = useState(false);
   const [filters, setFilters] = useState<Filters>({
     query: "",
@@ -44,8 +47,8 @@ function App() {
   const [tab, setTab] = useState("raw");
   const navTrigger = useRef<HTMLButtonElement>(null);
   const inspectorTrigger = useRef<HTMLButtonElement>(null);
-  const [navOpen, setNavOpen] = useState(true);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [navOpen, setNavOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [navDrawer, setNavDrawer] = useState(false);
   const [inspectorDrawer, setInspectorDrawer] = useState(false);
   const [navWidth, setNavWidth] = useState(() => Math.max(200, Math.min(360, window.innerWidth * 0.185)));
@@ -67,9 +70,12 @@ function App() {
     [entries, calls, filters],
   );
   function selectEntry(id: string) {
+    setSurface("events");
     setSelection((old) => ({ kind: "entry", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
   }
   function selectCall(id: string) {
+    if (narrow) setInspectorDrawer(true);
+    else setInspectorOpen(true);
     setSelection((old) => ({
       kind: "call",
       id,
@@ -263,14 +269,19 @@ function App() {
             {snapshot?.name ?? "Connecting"}
             {snapshot?.nameTruncated && " · truncated"}
           </span>
-          <span>
-            Pi leaf: <strong>{snapshot?.leafId ?? "none"}</strong>
-          </span>
-          <span>
-            Browser selection: <strong>{selection?.id ?? "none"}</strong>
+          <span title={snapshot?.sessionId}>
+            Session: <strong>{typeof snapshot?.sessionId === "string" ? snapshot.sessionId.slice(0, 8) : "—"}</strong>
           </span>
         </div>
         <div className="header-actions">
+          <fieldset className="surface-switch" aria-label="Inspection source">
+            <button type="button" aria-pressed={surface === "context"} onClick={() => setSurface("context")}>
+              Context
+            </button>
+            <button type="button" aria-pressed={surface === "events"} onClick={() => setSurface("events")}>
+              Session events
+            </button>
+          </fieldset>
           <IconButton
             ref={navTrigger}
             aria-label="Toggle navigator"
@@ -335,29 +346,36 @@ function App() {
           </>
         )}
         <div className="center-column">
-          <Overview snapshot={snapshot} />
-          <Trace
-            entries={entries}
-            matches={matching}
-            selected={entryId}
-            serial={selection?.serial ?? 0}
-            revealSelected={selection?.filterVersion === filterVersion}
-            select={selectEntry}
-            view={view}
-            changeView={setView}
-            calls={calls}
-          />
-          <LiveDrawer
-            entries={entries}
-            calls={calls}
-            selected={selectedCall?.occurrenceId}
-            select={selectCall}
-            open={liveOpen}
-            changeOpen={setLiveOpen}
-            view={view}
-            dropped={snapshot?.droppedCalls ?? 0}
-            filters={filters}
-          />
+          <div className="context-surface" hidden={surface !== "context"}>
+            <ContextComposition context={snapshot?.context} />
+          </div>
+          <div className="events-surface" hidden={surface !== "events"}>
+            <Overview snapshot={snapshot} />
+            <Trace
+              entries={entries}
+              matches={matching}
+              selected={entryId}
+              serial={selection?.serial ?? 0}
+              revealSelected={selection?.filterVersion === filterVersion}
+              select={selectEntry}
+              view={view}
+              changeView={setView}
+              calls={calls}
+            />
+          </div>
+          {(calls.length > 0 || surface === "events") && (
+            <LiveDrawer
+              entries={entries}
+              calls={calls}
+              selected={selectedCall?.occurrenceId}
+              select={selectCall}
+              open={liveOpen}
+              changeOpen={setLiveOpen}
+              view={view}
+              dropped={snapshot?.droppedCalls ?? 0}
+              filters={filters}
+            />
+          )}
         </div>
         {!narrow && (
           <>

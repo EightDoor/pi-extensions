@@ -1,13 +1,30 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Collector } from "./collector.ts";
+import { captureContext } from "./context.ts";
 import { EntryIndex } from "./entry-index.ts";
 import { identityIssue, recordedLeaf } from "./identity.ts";
-import type { SkillView, Snapshot } from "./model.ts";
+import type { ContextComposition, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
 import { snapshot } from "./projection.ts";
 
 export class SessionFeed {
   private dirty = true;
+  private observed?: ContextComposition;
+  observeContext(messages: readonly unknown[]): void {
+    if (this.closed || this.options.signal.aborted) return;
+    this.observed = captureContext(
+      messages,
+      "observed-pi-context",
+      recordedLeaf(this.options.context().sessionManager, this.index().duplicates),
+    );
+    this.observed.observedAt = Date.now();
+    this.changed(false);
+  }
+  observePayload(payload: unknown): void {
+    if (!this.observed || this.closed || this.options.signal.aborted) return;
+    this.observed = { ...this.observed, providerPayload: capture(payload, 65536) };
+    this.changed(false);
+  }
   private indexed?: EntryIndex;
   private closed = false;
   index(): EntryIndex {
@@ -94,6 +111,7 @@ export class SessionFeed {
         this.options.pi.getActiveTools(),
         this.options.skills,
         this.index(),
+        this.observed,
       );
       this.cached.calls = []; // Do not retain evicted live results inside the static cache.
       this.dirty = false;
@@ -101,6 +119,7 @@ export class SessionFeed {
     return {
       ...this.cached,
       revision: this.revision,
+      context: this.observed ?? this.cached.context,
       calls: this.options.collector.list(),
       droppedCalls: this.options.collector.dropped,
     };
@@ -114,5 +133,6 @@ export class SessionFeed {
     this.options.signal.removeEventListener("abort", this.close);
     this.cached = undefined;
     this.indexed = undefined;
+    this.observed = undefined;
   };
 }

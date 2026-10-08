@@ -80,6 +80,18 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     epochs.delete(ctx.sessionManager);
     await stop(ctx);
   });
+  // Observation only: never return or mutate messages/payload; later hooks may still transform them.
+  pi.on("context_with_system", (event, ctx) => {
+    const owner = owners.get(ctx.sessionManager);
+    if (owner?.collector && alive(owner)) {
+      owner.ctx = ctx;
+      owner.feed?.observeContext(event.messages);
+    }
+  });
+  pi.on("before_provider_request", (event, ctx) => {
+    const owner = owners.get(ctx.sessionManager);
+    if (owner?.collector && alive(owner)) owner.feed?.observePayload(event.payload);
+  });
   pi.on("message_end", (_event, ctx) => {
     changed(ctx);
   });
@@ -142,7 +154,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
       if (!owner.server) {
         const accepted = await ctx.ui.confirm(
           "Open Session Inspector?",
-          "Serve this session's prompts, code and tool outputs to a local browser and record bounded child results in memory? Redaction is incomplete. Nothing is uploaded or saved.",
+          "Serve this session's prompts, code and tool outputs to a local browser and record bounded context, provider payload and child results in memory? Redaction is incomplete. Nothing is uploaded or saved.",
           { signal: owner.controller.signal },
         );
         if (!alive(owner) || !accepted) return;

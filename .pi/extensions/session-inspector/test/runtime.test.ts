@@ -171,6 +171,12 @@ it("observes real nested pipelines and preserves the normalized model prefix", a
     const view = serving?.snapshot() as {
       calls: { id: string; parentId?: string; status: string; result?: unknown }[];
     };
+    expect(serving?.snapshot()).toMatchObject({
+      context: {
+        source: "observed-pi-context",
+        segments: expect.arrayContaining([expect.objectContaining({ role: "system" })]),
+      },
+    });
     expect(view.calls.filter((c) => c.parentId === "outer")).toHaveLength(4);
     expect(view.calls.find((c) => c.id === "outer/1")?.result).toMatchObject({
       value: { content: [{ type: "text", text: "transformed result" }] },

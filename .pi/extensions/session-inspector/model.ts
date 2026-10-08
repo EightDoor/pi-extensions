@@ -45,6 +45,28 @@ export interface SkillView {
   path: string;
   description: string;
 }
+export interface ContextSegment {
+  id: string;
+  position: number;
+  messageIndex: number;
+  blockIndex?: number;
+  role: string;
+  kind: string;
+  category: "system" | "user" | "assistant" | "toolCall" | "toolResult" | "other";
+  preview: string;
+  timestamp?: string;
+}
+export interface ContextComposition {
+  source: "observed-pi-context" | "session-derived";
+  leafId: string | null;
+  observedAt?: number;
+  totalMessages: number;
+  messages: Capture[];
+  segments: ContextSegment[];
+  incomplete: boolean;
+  unavailable?: string;
+  providerPayload?: Capture;
+}
 export interface Snapshot {
   protocol: 1;
   generation: string;
@@ -58,6 +80,7 @@ export interface Snapshot {
   incomplete: boolean;
   invalidEntryCount?: number;
   invalidEntries?: { index: number; reason: string; raw: Capture }[];
+  context?: ContextComposition;
   currentPrompt: Capture;
   tools: ToolView[];
   skills: SkillView[];

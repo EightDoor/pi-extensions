@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 9 files, 70 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 30 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 10 files, 76 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 35 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -48,6 +48,14 @@ Fallback URLs use a 43-character Base64url encoding of the original 32 random to
 ## Primary /inspect command
 
 `/inspect` and `/inspect stop` are the primary routes and all usage/fallback prompts use them. `/session-inspector` retains the identical handler as a compatibility alias. Extension-conventions command MUST rules were audited for preserved established routes, argument completion/rejection, consent, non-TUI observability and shared lifecycle ownership; no settings or model-visible behavior changed. Local tests exercise primary mode guards and alias consent/start/stop reuse; the real Pi/browser lifecycle test and explicit/trusted-discovery/reload/replacement smoke now exercise `/inspect`. The other browser flows are unchanged and reuse the preceding full 30-test run.
+
+## Context Composition revision
+
+The reference at https://sharex.narumi.dev/2026/10/08/rbVPWFceZphkJIJo.png defines the new primary off-white single-column composition. Screenshot evidence: `test-results/composition-reference-comp-2b550-content-and-explicit-source/context-composition-reference.png` and the adjacent mobile-dark screenshot, both ignored generated artifacts. The reference and rendered desktop/mobile images were inspected: role-colored rows, inline two-column metadata/content, collapsed advanced disclosures, muted fonts/surfaces and a narrow colored minimap replace persistent dashboard panes.
+
+Public Pi runtime inspection verifies context_with_system runs after context handlers and Pi state restoration but before possible later handlers/provider conversion. Consent-gated handlers only copy bounded data and return undefined; real Pi normalized enabled/disabled request prefixes still match. The fallback is native active-leaf projection, explicitly session-derived. Assistant thinking/text/toolCall blocks stay in source order, repeated contents have independent stable identities, signatures/secrets are sanitized before summaries, and no usage count is relabeled as segment tokens. Lifecycle tests verify pre-consent silence, immutable copies, replacement disposal and raw provider-payload redaction.
+
+Browser regressions verify secondary legacy functionality, source labels, independent disclosure/filter/navigation, nested JSON, dark/mobile overflow, minimap navigation, keyboard traversal across virtual windows, 2,000-message variable-height rendering with fewer than 50 mounted rows, and an older scroll anchor surviving tail append. Every ResizeObserver is disposed and cached measurements are pruned when source IDs disappear. Root/local checks and Pi smoke are recorded in the handoff. No paid-provider smoke was run; later hook stages/final transport payload, uncaptured content and segment token sizes remain unavailable rather than guessed.
 
 ## Progressive Explorer revision
 
