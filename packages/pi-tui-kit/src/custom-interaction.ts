@@ -59,6 +59,7 @@ export async function runCustomInteraction<Value, Context extends MenuContext = 
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
   let component: CustomInteractionComponent | undefined;
+  let creation: Promise<CustomInteractionComponent> | undefined;
   let wrappedComponent: CustomInteractionComponent | undefined;
   let removeAbortListener = () => {};
   let externallyDisposed = false;
@@ -87,21 +88,25 @@ export async function runCustomInteraction<Value, Context extends MenuContext = 
           return { render: () => [], invalidate() {} };
         }
 
-        component = await options.create({
-          ctx,
-          tui,
-          theme,
-          keybindings,
-          signal,
-          complete: (value) => {
-            if (externallyDisposed || signal.aborted || !isCurrent(options)) {
-              finishStale();
-              return;
-            }
-            completionRequested = true;
-            finish({ kind: "completed", value });
-          },
-        });
+        creation = Promise.resolve(
+          options.create({
+            ctx,
+            tui,
+            theme,
+            keybindings,
+            signal,
+            complete: (value) => {
+              if (externallyDisposed || signal.aborted || !isCurrent(options)) {
+                finishStale();
+                return;
+              }
+              completionRequested = true;
+              finish({ kind: "completed", value });
+              controller.abort(new DOMException("Custom interaction completed", "AbortError"));
+            },
+          }),
+        );
+        component = await creation;
         if (signal.aborted || !isCurrent(options)) finishStale();
         wrappedComponent = wrapComponent(component, () => {
           if (!completionRequested && !options.signal?.aborted) externallyDisposed = true;
@@ -121,6 +126,14 @@ export async function runCustomInteraction<Value, Context extends MenuContext = 
   if (customResult === undefined && uiError === undefined) {
     externallyDisposed = true;
     controller.abort(new DOMException("Custom interaction closed", "AbortError"));
+  }
+  // Pi can resolve done() before the async factory returns, then discard its
+  // late component. Retain ownership until creation settles so cleanup cannot
+  // miss that component or its pending work.
+  try {
+    if (creation) component = await creation;
+  } catch (error) {
+    uiError ??= error;
   }
   try {
     wrappedComponent?.dispose?.();
@@ -193,6 +206,7 @@ async function reportInteractionError<Value, Context extends MenuContext>(
       // Fall through to Pi's notifier when the custom reporter rejects.
     }
   }
+  if (!isCurrent(options) || options.signal?.aborted) return { kind: "stale" };
   if (!reported && ctx.hasUI) {
     notifyInteractionError(ctx, error, "Custom interaction failed: ", safeMenuText);
   }
