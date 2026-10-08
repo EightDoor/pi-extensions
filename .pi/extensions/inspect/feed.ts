@@ -127,6 +127,7 @@ export class SessionFeed {
       providerObservation: this.providerObservation,
       calls: this.options.collector.list(),
       droppedCalls: this.options.collector.dropped,
+      invalidCallEvents: this.options.collector.invalidEvents,
     };
   }
   close = (): void => {

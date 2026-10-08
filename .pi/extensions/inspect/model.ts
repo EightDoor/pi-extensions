@@ -87,6 +87,7 @@ export interface Snapshot {
   skills: SkillView[];
   calls: Call[];
   droppedCalls: number;
+  invalidCallEvents?: number;
   captureStartedAt: number;
 }
 export interface BranchView {

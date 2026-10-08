@@ -951,3 +951,18 @@ test("R45: same anchor regains reveal ownership beyond 100 navigator rows after 
   await expect(nav(page, anchor)).toHaveCount(0);
   expect(data.manager.getLeafId()).toBe(anchor);
 });
+
+test("R48: rejected live IDs are omitted with an explicit unavailable correlation summary", async ({ page }) => {
+  const id = "oversized-".repeat(10000);
+  collector.start({ type: "tool_execution_start", toolCallId: id, toolName: "read", args: {} }, data.assistant);
+  await explore(page);
+  await openLive(page);
+  await expect(page.getByText("1 invalid live events omitted; correlation unavailable", { exact: true })).toBeVisible();
+  expect(await page.locator("body").textContent()).not.toContain(id);
+  const response = await page.request.get(`${server.origin}/api/snapshot?generation=browser-fixture`, {
+    headers: { "X-Inspector-Token": server.token },
+  });
+  const value = await response.json();
+  expect(value.invalidCallEvents).toBe(1);
+  expect(value.calls).toEqual([]);
+});

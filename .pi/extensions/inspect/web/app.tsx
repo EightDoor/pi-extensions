@@ -386,6 +386,7 @@ function App() {
               changeOpen={setLiveOpen}
               view={view}
               dropped={snapshot?.droppedCalls ?? 0}
+              invalidEvents={snapshot?.invalidCallEvents ?? 0}
               filters={filters}
             />
           )}

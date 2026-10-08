@@ -18,6 +18,7 @@ export function LiveDrawer({
   changeOpen,
   view,
   dropped,
+  invalidEvents,
   filters,
 }: {
   calls: Call[];
@@ -28,6 +29,7 @@ export function LiveDrawer({
   changeOpen(open: boolean): void;
   view: string;
   dropped: number;
+  invalidEvents: number;
   filters: Filters;
 }) {
   const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
@@ -73,6 +75,11 @@ export function LiveDrawer({
       </button>
       {open && (
         <div className="live-drawer-body">
+          {invalidEvents > 0 && (
+            <Text size="1" color="gray">
+              {invalidEvents} invalid live events omitted; correlation unavailable
+            </Text>
+          )}
           <div className="live-controls">
             <Text size="1" color="gray">
               Reported durations are monotonic execute() timings; bars are observed callback intervals.

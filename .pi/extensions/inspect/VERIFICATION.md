@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 14 files, 230 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 43 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 15 files, 283 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 44 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 555 files pass and one platform-only file is skipped; 7,674 tests pass and two platform-only/existing tests are skipped (pinned merged-base toolchain). |
@@ -60,6 +60,18 @@ Semantic audit against AGENTS.md and docs/extension-conventions.md covered every
 ## Final-refresh system-envelope fix
 
 R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
+
+## Concurrent push-trigger CI repair
+
+User commit 4068d169 arrived during root validation, replacing the previously repaired trigger. The failed root policy assertion is independently reproduced. Its push trigger is preserved; the release job uses push/manual identities and checks out github.sha. Before dependency scripts/publication, a readonly GitHub API gate waits for the newest exact-SHA main push CI run to succeed; absence/pending waits, terminal failure/unknown response/HTTP error/timeout refuses publication. Polling and request/step deadlines are bounded; tokens are never logged. Manual dispatch remains the explicit bypass, as before. Deterministic gate-state and workflow-order tests cover the classes without dispatching/publishing.
+
+## Ninth-review historical tool and live identity budgets
+
+R47 adds a 2,048 cumulative addition/removal budget across each current/previous projection, with per-array size rejection before shape scanning. Added name/description/parameter metadata and removed names share the 1 MiB input-character budget; declaration traversal stops at 16,384 nodes/depth 32, without serialization or terminal sanitation of oversized inputs. Ordinary/checkpoint, repeated/removed names, cumulative/previous-only, metadata/array bounds and accepted native ordering are tested; mocked native helpers must remain untouched on failure. Bounded Raw diagnostics remain available.
+
+R48 validates all start/update/end admissions before lookups or argument/result capture. Invalid own IDs or tool names are rejected, never truncated/replaced, and an additive invalidCallEvents count publishes unavailable correlation in the live drawer. Invalid parent IDs are omitted and fenced against later adoption, including active records and throttled updates; invalid anchors become null with unavailable correlation. Only finite non-negative native durations are published. Exact 512-character boundaries, malformed classes, immutable inputs, all snapshot/feed cache paths and browser/HTTP rejection summaries are tested. Prefix, async session ownership and lifecycle cleanup are unchanged.
+
+Applicable guides: AGENTS.md and docs/extension-conventions.md; audit covers every native tool replay call, current/previous/compaction projections, all published live string/numeric fields, cache/SSE notification and parent correlation fences. No settings/dependencies/package/release changes; existing paid-provider/desktop/final-transport limits remain. Final command totals above apply.
 
 ## Eighth-review merged-base CI and replay/reveal budgets
 

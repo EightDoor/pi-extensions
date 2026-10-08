@@ -161,6 +161,7 @@ export function snapshot(
     })),
     calls: collector.list(),
     droppedCalls: collector.dropped,
+    invalidCallEvents: collector.invalidEvents,
     captureStartedAt: collector.startedAt,
   };
 }
