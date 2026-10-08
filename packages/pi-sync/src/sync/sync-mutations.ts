@@ -579,6 +579,7 @@ export async function rollback(
     !(await ctx.ui.confirm(
       snapshotIncludesSessions(remote) ? "Rollback pi settings and sessions?" : "Rollback pi settings?",
       formatRollbackSummary(config, backend.destination, local, physical, target, protectedSessionPaths(ctx).size),
+      { signal: options.signal },
     ))
   ) {
     ctx.ui.notify("Rollback cancelled.", "info");

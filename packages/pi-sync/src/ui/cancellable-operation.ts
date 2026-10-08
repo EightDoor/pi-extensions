@@ -22,6 +22,7 @@ export type CancellableOperationResult = RunRouteResult | { kind: "closed" } | {
 
 interface CancellableOperationOptions {
   commitAware?: boolean;
+  cancelAcrossDialogs?: boolean;
   cancelledMessage?: string | null;
   target?: string;
   signal?: AbortSignal;
@@ -36,6 +37,7 @@ export async function runCancellableOperation(
 ): Promise<CancellableOperationResult> {
   const {
     commitAware = false,
+    cancelAcrossDialogs = false,
     cancelledMessage = "Check cancelled; no settings or files were changed.",
     target,
     signal,
@@ -56,12 +58,32 @@ export async function runCancellableOperation(
           label: "cancel",
         },
       ]);
-      const operation = runRoute(
-        route,
-        interactionSignal,
-        commitAware ? () => (commitStarted = true) : undefined,
-        target,
-      ).then(
+      const cancel = (data: string) => {
+        if (!matchesKey(data, Key.ctrl("c")) && !keybindings.matches(data, "tui.select.cancel")) return false;
+        if (commitStarted) {
+          ctx.ui.notify("Applying or publishing has started and cannot be cancelled safely.", "warning");
+        } else complete({ cancelled: true });
+        return true;
+      };
+      // Pi dialogs replace this loader's editor-slot focus and restore the normal
+      // editor afterward. History must retain cancellation across those handoffs.
+      const unsubscribe = cancelAcrossDialogs
+        ? ctx.ui.onTerminalInput((data) => (cancel(data) ? { consume: true } : undefined))
+        : undefined;
+      let pendingRoute: ReturnType<RunRoute>;
+      try {
+        pendingRoute = runRoute(
+          route,
+          interactionSignal,
+          commitAware ? () => (commitStarted = true) : undefined,
+          target,
+        );
+      } catch (error) {
+        unsubscribe?.();
+        loader.dispose();
+        throw error;
+      }
+      const operation = pendingRoute.then(
         (result) => {
           routeResult = result;
           complete({});
@@ -80,17 +102,11 @@ export async function runCancellableOperation(
           ];
         },
         invalidate: () => loader.invalidate(),
-        handleInput(data: string) {
-          if (!matchesKey(data, Key.ctrl("c")) && !keybindings.matches(data, "tui.select.cancel")) {
-            return;
-          }
-          if (commitStarted) {
-            ctx.ui.notify("Applying or publishing has started and cannot be cancelled safely.", "warning");
-            return;
-          }
-          complete({ cancelled: true });
+        handleInput: cancel,
+        dispose() {
+          unsubscribe?.();
+          loader.dispose();
         },
-        dispose: () => loader.dispose(),
         waitForPending: () => operation,
       };
     },
