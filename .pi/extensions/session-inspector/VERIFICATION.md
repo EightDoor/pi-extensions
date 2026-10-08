@@ -8,14 +8,22 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 4 files, 21 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 4 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 4 files, 22 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 6 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
 | Dependency installation | Root `npm install` completed; comparison with the base lockfile found no changed version at any existing package path. New dependencies support local frontend building and browser verification only. |
 
-The finite 1,500-entry browser fixture produced a 182,108-character snapshot in 2.1 ms on this host; its transcript loaded 50 entries and only one selected-entry detail request. This is observational evidence, not an SLA or a timing assertion. A separate deterministic test verifies the 10,000-entry inventory cap and visible overflow marker.
+The finite 1,500-entry browser fixture produced a 182,216-character snapshot in 2.2 ms on this host; its transcript loaded 50 entries and only one selected-entry detail request. This is observational evidence, not an SLA or a timing assertion. A separate deterministic test verifies the 10,000-entry inventory cap and visible overflow marker.
+
+## Screenshot-form revision
+
+The UI was changed to the supplied screenshot\'s structure rather than merely recolored: top session bar, left tree/filter cards, wide center overview and expandable trace table, right event inspector with Formatted/JSON, and bottom connection bar. A rendered 1672×941 Chromium screenshot was inspected against the reference; the generated artifact is `test-results/browser-screenshot-form-la-98bd7-ON-filters-and-bounded-copy/session-inspector-desktop.png` under the local extension (ignored).
+
+New browser coverage verifies column proportions, overview/trace/inspector regions, Expand all/Collapse all, Timeline/List, Formatted/JSON, copy success/denial, category/error/slow filters and the 1,000-line preview cap. Existing coverage still verifies search/keyboard, light/narrow layouts, malicious payloads, real native codemode/cancellation/reload/shutdown and lazy details. New deterministic metadata coverage verifies recorded usage, absent legacy usage/model fields, tool-result provenance and raw-history preservation.
+
+Metrics intentionally differ from the mockup where data is unavailable: recorded timestamp span is not execution time; assistant-message count is not provider request count; tokens include only persisted assistant usage; errors count the bounded live collector; unavailable model durations/latency remain `—`. File-parent branch order and live execution-parent relationships are not merged into a fictitious execution graph. Clipboard output is a bounded redacted display copy, and feedback is guarded after component disposal. No new Pi hooks, settings, dependencies or model-visible prefix transitions were introduced.
 
 ## Semantic audit
 

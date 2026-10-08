@@ -1,0 +1,295 @@
+.tree-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+}
+
+.tree-controls {
+  padding: 0 12px 10px;
+}
+
+.tree-controls .rt-TextFieldRoot {
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  box-shadow: none;
+  font-size: 11px;
+}
+
+.tree-controls .rt-TextFieldSlot {
+  color: var(--secondary);
+}
+
+.filter-pills {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.filter-pills button {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: var(--panel-bg);
+  color: var(--secondary);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.filter-pills button[aria-pressed="true"] {
+  color: var(--gray-12);
+  border-color: var(--blue-9);
+  background: var(--selected-bg);
+  box-shadow: inset 0 0 8px #2379ef33;
+}
+
+.tree-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 10px 12px;
+  min-height: 0;
+}
+
+.tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin: 4px 0;
+}
+
+.tree-row .rt-IconButton {
+  color: var(--secondary);
+  width: 22px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.tree-connector {
+  position: absolute;
+  top: -15px;
+  bottom: 50%;
+  width: 12px;
+  border-left: 1px solid var(--panel-border);
+  border-bottom: 1px solid var(--panel-border);
+  border-radius: 0 0 0 5px;
+  pointer-events: none;
+}
+
+.tree-spacer {
+  width: 22px;
+  flex-shrink: 0;
+}
+
+.node {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--gray-12);
+  background: transparent;
+  padding: 8px 5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+
+.node:hover {
+  background: var(--panel-raised);
+}
+
+.node[aria-current="true"] {
+  background: var(--selected-bg);
+  border-color: var(--blue-7);
+}
+
+.node-copy {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.node-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.node-title strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-title small {
+  color: var(--secondary);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.node-description {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--secondary);
+  font-size: 11px;
+  padding-top: 4px;
+}
+
+.tree-count {
+  border-top: 1px solid var(--panel-border);
+  padding: 9px;
+  text-align: center;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.filter-panel {
+  flex-shrink: 0;
+  padding: 0 14px 14px;
+}
+
+.filter-panel .panel-heading {
+  padding: 12px 0;
+}
+
+.filter-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 13px;
+  font-size: 12px;
+  color: var(--secondary);
+  cursor: pointer;
+}
+
+.filter-panel .rt-SelectTrigger {
+  font-size: 11px;
+  max-width: 125px;
+}
+
+.inspector-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-identity {
+  padding: 8px 14px 12px;
+}
+
+.inspector-identity .rt-Heading {
+  font-size: 16px;
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
+.inspector-tabs {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+
+.inspector-tabs > .rt-TabsList {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  margin-bottom: 12px;
+}
+
+.inspector-tabs > .rt-TabsList .rt-TabsTrigger {
+  flex: 1;
+  padding: 0 9px;
+  font-size: 11px;
+  height: 34px;
+  text-transform: capitalize;
+}
+
+.inspector-tabs .rt-TabsTriggerInner,
+.inspector-tabs .rt-TabsTriggerInnerHidden {
+  padding: 0;
+}
+
+.inspector-tabs > .rt-TabsContent {
+  padding-top: 0;
+}
+
+.format-toolbar {
+  display: flex;
+  justify-content: end;
+  padding: 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+  margin-bottom: 8px;
+}
+
+.inspector-metadata {
+  padding: 6px 10px;
+}
+
+.inspector-metadata .metadata > div {
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.inspector-metadata .metadata > div:last-child {
+  border: 0;
+}
+
+.inspector-metadata .metadata {
+  font-size: 12px;
+}
+
+.related {
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+  padding: 5px 10px;
+}
+
+.related > .rt-Button {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.related button:not(.rt-Button) {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--panel-border);
+  padding: 10px 0;
+  color: var(--secondary);
+  background: none;
+  text-align: left;
+}
+
+.inventory-card {
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  margin: 10px 0;
+}
+
+.inventory-card .rt-Flex {
+  margin-top: 6px;
+}
+
+.inventory-card .rt-Text {
+  overflow-wrap: anywhere;
+}
+
+.tree-scroll,
+.trace-scroll,
+.inspector-tabs,
+.code-preview {
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-border) transparent;
+}

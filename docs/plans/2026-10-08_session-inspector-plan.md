@@ -105,9 +105,19 @@ Guides: `docs/extension-conventions.md`, `docs/extension-settings.md`, and root 
 - [x] Smoke explicit loading with `pi --no-extensions -e ./.pi/extensions/session-inspector/index.ts`, then verify trusted-project auto-discovery, `/reload`, live nested calls, branch preview, and shutdown in a real browser; record outcomes or specific unavailable paths rather than claiming untested compatibility.
 - [x] Audit the complete diff against touched-area MUST rules, privacy boundaries, async ownership, and non-mutating request behavior; acceptance is a handoff naming guides, semantic audits, checks, smokes, deviations, and any unresolved evidence.
 
+## Screenshot-directed interface revision
+
+The user requests the supplied screenshot's interface form, not a color-only refresh: top identity/session bar, left tree and filter cards, center overview and expandable trace table, right formatted/JSON event inspector, and bottom connection bar. Metrics must use available public data; absent model durations and transport latency remain unavailable rather than fabricated.
+
+- [x] Implement the screenshot's layout, hierarchy, styling and functional trace/filter/detail controls while preserving the local boundary and read-only data contract; acceptance is Chromium interaction tests and rendered screenshot inspection.
+- [x] Verify bounded formatted/JSON previews, explicit copy failure reporting, lazy details, missing metrics, live updates and narrow/light layouts; acceptance is local types/tests and browser tests.
+- [ ] Update documentation/evidence, run both root gates and Pi smoke, audit the intended diff, and push the signed UI revision to PR #1510; leave user acceptance pending.
+
+Applicable MUSTs: project-local boundaries, no model-visible mutations, safe display copies, async ownership/cancellation, deterministic tests and both repository gates. Verification methods: Review, local Validator/Test, Chromium visual/interaction Test and Pi Smoke.
+
 ## Execution evidence
 
-Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/session-inspector/VERIFICATION.md): 21 local tests, four Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.
+Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/session-inspector/VERIFICATION.md): 22 local tests, six Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.
 
 A physical terminal/default desktop opener and macOS/Windows opener behavior were not automated; the report records the deterministic substitutes and exact unverified paths. User acceptance remains pending, so this plan is retained and must not be reported as fully completed or deleted yet.
 

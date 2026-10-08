@@ -9,6 +9,10 @@ export interface EntrySummary {
   kind: string;
   label: string;
   timestamp: string;
+  name?: string;
+  tokens?: number;
+  status?: "success" | "error" | "cancelled";
+  toolCallId?: string;
 }
 export interface Call {
   id: string;

@@ -18,11 +18,39 @@ export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   const kind = message ? message.role : entry.type;
   const value = message && "content" in message ? message.content : entry;
   const preview = capture(value, 180).value;
+  const name =
+    entry.type === "custom" || entry.type === "custom_message"
+      ? entry.customType
+      : entry.type === "model_change"
+        ? entry.modelId
+        : entry.type === "thinking_level_change"
+          ? entry.thinkingLevel
+          : message?.role === "assistant"
+            ? message.model
+            : message?.role === "toolResult"
+              ? message.toolName
+              : undefined;
   return {
     id: entry.id,
     parentId: entry.parentId,
     kind,
     timestamp: entry.timestamp,
+    name: typeof name === "string" ? displayText(name).slice(0, 128) : undefined,
+    tokens:
+      message?.role === "assistant" && Number.isFinite(message.usage?.totalTokens)
+        ? message.usage?.totalTokens
+        : undefined,
+    status:
+      message?.role === "toolResult" && typeof message.isError === "boolean"
+        ? message.isError
+          ? "error"
+          : "success"
+        : message?.role === "assistant" && message.stopReason === "error"
+          ? "error"
+          : message?.role === "assistant" && message.stopReason === "aborted"
+            ? "cancelled"
+            : undefined,
+    toolCallId: message?.role === "toolResult" ? message.toolCallId : undefined,
     label: displayText(label ?? (typeof preview === "string" ? preview : JSON.stringify(preview))).slice(0, 180),
   };
 }

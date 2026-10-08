@@ -72,6 +72,30 @@ describe("read-only projection", () => {
     const future = SessionManager.inMemory("/fixture", undefined, [header, unknown as unknown as SessionEntry]);
     expect(snapshot(future, new Collector(), "g", 0, "", [], [], []).nodes[0]?.kind).toBe("future_entry");
   });
+  it("derives display metadata only from recorded messages and tolerates legacy missing usage", () => {
+    const f = fixture();
+    const entry = f.manager.getEntry(f.assistant);
+    if (entry?.type !== "message" || entry.message.role !== "assistant") throw new Error("Missing assistant fixture");
+    const copy = JSON.parse(JSON.stringify(entry)) as typeof entry;
+    if (copy.message.role !== "assistant") throw new Error("Invalid clone");
+    copy.message.usage.totalTokens = 1234;
+    expect(summarize(copy)).toMatchObject({ name: "faux-1", tokens: 1234 });
+    const legacy = JSON.parse(JSON.stringify(copy));
+    delete legacy.message.usage;
+    delete legacy.message.model;
+    expect(summarize(legacy).tokens).toBeUndefined();
+    expect(summarize(legacy).name).toBeUndefined();
+    copy.message.stopReason = "error";
+    expect(summarize(copy).status).toBe("error");
+    copy.message.stopReason = "aborted";
+    expect(summarize(copy).status).toBe("cancelled");
+    const result = f.manager.getEntry(f.result);
+    if (!result) throw new Error("Missing result fixture");
+    expect(summarize(result)).toMatchObject({ status: "success", name: "codemode", toolCallId: "parent" });
+    const legacyResult = JSON.parse(JSON.stringify(result));
+    delete legacyResult.message.isError;
+    expect(summarize(legacyResult).status).toBeUndefined();
+  });
   it("replays serialized resumed history without rewriting raw entries", () => {
     const f = fixture();
     const header = f.manager.getHeader();

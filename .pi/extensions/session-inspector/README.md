@@ -31,7 +31,13 @@ The default command is a frequent single action, not a manager menu. `stop` is t
 
 ## Views and data provenance
 
-The left pane offers branch selection, collapse controls, search, and entry-type filtering. Controls use ordinary Tab/Shift+Tab, Enter/Space, and Radix keybindings; this is a collapsible navigation list, not an ARIA TreeView. The middle pane displays a paginated raw transcript and session-wide live calls. The right pane contains Raw, Prompt, Tools, Skills, Context, and Codemode tabs. Browser branch selection never changes Pi's active leaf.
+The interface uses a top identity/session bar, left tree and filter cards, central session overview and expandable trace table, right event inspector, and bottom connection bar. The center is intentionally wider than either side pane. At narrower widths, the panes stack without horizontal page scrolling.
+
+The tree supports branch previews, collapse controls, search, entry-type filtering, and Model/Tool/Custom category filters. Checked categories are combined with OR; error and slow-call filters add AND constraints. Slow filtering uses only captured tool durations. The selected preview leaf scrolls into view on selection, not on every live update. Controls use ordinary Tab/Shift+Tab, Enter/Space, and Radix keybindings; the tree is a collapsible navigation list, not an ARIA TreeView.
+
+The trace table provides Timeline/List views, Expand all/Collapse all for the current branch page, independently selectable/expandable rows, inline overview/content/context, and separate parent-correlated live executions. Expanded unselected rows use summaries rather than fetching every entry. The right inspector provides Formatted/JSON views, metadata, related-entry navigation, bounded data copying, and Raw/Prompt/Tools/Context/Skills/Codemode tabs. Browser selection never changes Pi\'s active leaf.
+
+Overview counts distinguish persisted entries and assistant messages from the bounded live call/error collector. Recorded span is the first-to-last indexed entry timestamp, not execution duration. Tokens are persisted assistant `totalTokens`, excluding compaction and auxiliary usage; missing values show `—`. Model durations, transport latency, p95 and full-request token totals are not invented. The small chart shows only supplied live tool durations.
 
 | View | Available | Limitations |
 | --- | --- | --- |
@@ -52,6 +58,7 @@ Codemode discovery helpers (`searchTools`, `describeTool`, `describeNamespace`, 
 - The server binds only `127.0.0.1` on a random port, checks Host and Origin, rejects cross-site requests and non-GET methods, and authenticates every data/SSE request with a random per-session token and generation.
 - The URL token is in the fragment, not the query or HTTP request. The browser moves it to origin-scoped sessionStorage and removes the fragment from history. The launch notification necessarily contains the private credential URL for manual opening; it is not an API key. No request logs are written.
 - A data-free shell and bundled JS/CSS are publicly readable on that loopback port; session data requires authentication. There is no CORS grant, arbitrary file read, attachment path endpoint, or upstream credential/header/environment API.
+- Data previews are literal text with line numbers and bounded JSON coloring (at most 1,000 lines and 512 colored tokens per preview); long lines fall back to plain text. Copy acts only on the bounded redacted display value, including lines omitted by the local preview cap, and reports success or denial. Pending clipboard feedback is ignored after its owning component is disposed; the browser clipboard API itself cannot be aborted.
 - CSP blocks remote scripts, connections, frames, fonts, and images. Tool text and Markdown are shown literally, not as executable HTML. Only small validated PNG/JPEG/GIF/WebP base64 blocks can render as images; SVG, remote images, opaque signatures, and large image payloads are omitted. No filesystem attachment is opened automatically.
 - The collector keeps 128 records, at most 8 KiB-equivalent argument characters and 32 KiB-equivalent result characters per call, with depth/node limits. Tool schemas are bounded, inventory limits are 256 tools/skills, prompt/raw/projection fields are bounded to 64 KiB-equivalent characters, and evictions/truncation are visible. These are character/traversal budgets, not exact serialized-byte caps; JSON overhead adds size.
 - SSE sends revision invalidations rather than result payloads. At most eight stream clients and 32 sockets are accepted. A backpressured stream is closed, and reconnect triggers a fresh snapshot. Pending fetches, readers, reconnect timers, browser-launch tasks, and session resources are cancelled on their owning boundary.
@@ -81,7 +88,10 @@ Tests cover Pi's real nested tool pipeline, non-mutating request prefixes, compa
 - `index.ts`, `extension.ts`: factory registration, command and session ownership.
 - `projection.ts`, `model.ts`, `collector.ts`, `privacy.ts`: public-data projection and bounded display copies.
 - `server.ts`: authenticated loopback snapshot/details/SSE.
-- `web/`, `build.mjs`: Radix frontend and static assets build.
+- `web/app.tsx`: cancellable live requests and top-level layout.
+- `web/tree.tsx`, `overview.tsx`, `trace.tsx`, `inspector.tsx`: screenshot-form navigation, metrics, trace table and inspector.
+- `web/components.tsx`, `format.ts`, focused CSS modules: bounded display primitives and formatting.
+- `build.mjs`: static browser assets build.
 - `test/`, local configs, `smoke.mjs`: local tests and non-interactive loading smoke.
 
 ## License

@@ -126,6 +126,118 @@ test("live child results, error expansion, raster preview, no script execution o
   await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
 });
 
+test("screenshot-form layout, trace controls, formatted JSON, filters and bounded copy", async ({ page }) => {
+  await page.setViewportSize({ width: 1672, height: 941 });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) => {
+          Object.defineProperty(window, "copiedDisplay", { value: text, configurable: true });
+        },
+      },
+      configurable: true,
+    });
+  });
+  collector.end(
+    {
+      type: "tool_execution_end",
+      toolCallId: "parent",
+      toolName: "codemode",
+      isError: false,
+      durationMs: 4280,
+      result: { content: [{ type: "text", text: "done" }] },
+    },
+    data.assistant,
+  );
+  collector.end(
+    {
+      type: "tool_execution_end",
+      toolCallId: "parent/1",
+      parentToolCallId: "parent",
+      toolName: "read",
+      isError: true,
+      durationMs: 11000,
+      result: { content: [{ type: "text", text: "fixture read failure" }] },
+    },
+    data.assistant,
+  );
+  await page.goto(server.url);
+  await expect(page.getByRole("heading", { name: "Session overview" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Trace explorer" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Event inspector" })).toBeVisible();
+  const positions = await page.locator(".sidebar, .center-column, .inspector-panel").evaluateAll((elements) =>
+    elements.map((element) => ({
+      x: element.getBoundingClientRect().x,
+      width: element.getBoundingClientRect().width,
+    })),
+  );
+  expect(positions[0]?.x).toBeLessThan(positions[1]?.x ?? 0);
+  expect(positions[1]?.width).toBeGreaterThan(positions[2]?.width ?? 0);
+  expect(positions[1]?.x).toBeLessThan(positions[2]?.x ?? 0);
+  await page.getByRole("button", { name: "Expand all", exact: true }).click();
+  await expect(page.locator(".trace-item[data-state=open]")).toHaveCount(
+    data.manager.getBranch(data.manager.getLeafId() ?? undefined).length,
+  );
+  await page.getByRole("button", { name: "Collapse all", exact: true }).click();
+  await expect(page.locator(".trace-item[data-state=open]")).toHaveCount(0);
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await expect(page.locator(".trace-list")).toBeVisible();
+  await page.locator(`[data-entry-id="${data.alternate}"]`).click();
+  await expect(page.locator(".trace-list")).toBeVisible();
+  await page.locator(`[data-entry-id="${data.manager.getLeafId()}"]`).click();
+  await expect(page.locator(".trace-list")).toBeVisible();
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await page.getByRole("button", { name: `Expand event ${data.assistant}` }).click();
+  await expect(page.locator(".event-overview-grid")).toBeVisible();
+  await page.getByRole("button", { name: "JSON", exact: true }).click();
+  await expect(page.locator(".inspector-metadata")).toHaveCount(0);
+  await page.getByRole("button", { name: "Formatted", exact: true }).click();
+  await expect(page.locator(".inspector-metadata")).toBeVisible();
+  await page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first().click();
+  expect(await page.evaluate(() => Reflect.get(window, "copiedDisplay"))).toContain("future-state");
+  await page.getByRole("checkbox", { name: "Errors only", exact: true }).check();
+  await expect(page.locator(".call-trigger")).toHaveCount(1);
+  await page.getByRole("checkbox", { name: "Slow tool calls (> 10s)", exact: true }).check();
+  await expect(page.locator(".call-trigger")).toHaveCount(1);
+  await page.getByRole("checkbox", { name: "Errors only", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "Slow tool calls (> 10s)", exact: true }).uncheck();
+  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await expect(page.locator(".node")).toHaveCount(1);
+  await page.getByRole("button", { name: "All", exact: true }).click();
+  await page.screenshot({ path: test.info().outputPath("session-inspector-desktop.png") });
+});
+
+test("clipboard denial is observable and preview rendering stays bounded", async ({ page }) => {
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async () => {
+          throw new Error("denied");
+        },
+      },
+    }),
+  );
+  data.manager.appendCustomEntry("large-preview", {
+    text: Array.from({ length: 1200 }, (_, i) => `line ${i}`).join("\n"),
+  });
+  data.manager.appendMessage({
+    role: "system",
+    content: Array.from({ length: 1200 }, (_, i) => `prompt line ${i}`).join("\n"),
+    timestamp: 10,
+  });
+  await page.goto(server.url);
+  await page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first().click();
+  await expect(page.getByText("Copy failed", { exact: true })).toBeVisible();
+  // A plain multiline historical prompt exercises the DOM line cap, not JSON escaping.
+  await page.getByRole("tab", { name: "prompt", exact: true }).click();
+  await expect(page.locator(".code-line").first()).toBeVisible();
+  const preview = page
+    .locator(".data")
+    .filter({ has: page.getByText("Historical prompt · browser preview branch", { exact: true }) });
+  await expect(preview.locator(".code-line")).toHaveCount(1000);
+  await expect(preview.locator(".preview-limit")).toBeVisible();
+});
+
 test("large-session inventory and paginated lazy details stay bounded", async ({ page }) => {
   for (let i = 0; i < 1500; i++)
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });
