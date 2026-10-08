@@ -10,12 +10,12 @@ From the repository root:
 
 ```bash
 npm install
-node .pi/extensions/session-inspector/build.mjs
+node .pi/extensions/inspect/build.mjs
 ```
 
-Pi discovers `.pi/extensions/session-inspector/index.ts` after project trust. In an existing trusted session, use `/reload`, then `/inspect`. Accept the sensitive-data warning to start serving and collecting live child results. The command opens your default browser; if opening fails, it shows a private URL instead.
+Pi discovers `.pi/extensions/inspect/index.ts` after project trust. In an existing trusted session, use `/reload`, then `/inspect`. Accept the sensitive-data warning to start serving and collecting live child results. The command opens your default browser; if opening fails, it shows a private URL instead.
 
-For explicit loading, use `pi --no-extensions -e ./.pi/extensions/session-inspector/index.ts`. Browser assets must be built first; factory loading does not start a server or require those assets.
+For explicit loading, use `pi --no-extensions -e ./.pi/extensions/inspect/index.ts`. Browser assets must be built first; factory loading does not start a server or require those assets.
 
 Use `/inspect stop` to stop recording, clear the owned collector, close connections, and revoke the URL. Reload, session replacement, and shutdown do the same. Closing the browser tab alone does not stop the server; collection continues until stopped, within its bounds. Revoking the URL cannot erase data already received by a browser; close the tab to release that view.
 
@@ -96,12 +96,12 @@ Session IDs and parent IDs over 512 characters are rejected, not truncated; malf
 Root TypeScript and Vitest discovery exclude project-local extensions. Run these checks explicitly from the root:
 
 ```bash
-node .pi/extensions/session-inspector/build.mjs
-npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json
-npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts
+node .pi/extensions/inspect/build.mjs
+npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json
+npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts
 npm exec playwright -- install chromium
-npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts
-node .pi/extensions/session-inspector/smoke.mjs
+npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts
+node .pi/extensions/inspect/smoke.mjs
 npm run check
 npm test
 ```

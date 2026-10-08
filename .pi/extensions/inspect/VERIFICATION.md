@@ -6,11 +6,11 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 
 | Gate | Evidence |
 | --- | --- |
-| Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
-| Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 11 files, 108 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 39 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
-| Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
+| Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
+| Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 11 files, 108 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 39 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
 | Dependency installation | Root `npm install` completed; comparison with the base lockfile found no changed version at any existing package path. New dependencies support local frontend building and browser verification only. |
@@ -48,6 +48,12 @@ Fallback URLs use a 43-character Base64url encoding of the original 32 random to
 ## Primary /inspect command
 
 `/inspect` and `/inspect stop` are the primary routes and all usage/fallback prompts use them. `/session-inspector` retains the identical handler as a compatibility alias. Extension-conventions command MUST rules were audited for preserved established routes, argument completion/rejection, consent, non-TUI observability and shared lifecycle ownership; no settings or model-visible behavior changed. Local tests exercise primary mode guards and alias consent/start/stop reuse; the real Pi/browser lifecycle test and explicit/trusted-discovery/reload/replacement smoke now exercise `/inspect`. The other browser flows are unchanged and reuse the preceding full 30-test run.
+
+## Local directory rename
+
+The project-local directory is now `.pi/extensions/inspect/`; no package promotion, command or runtime behavior changes. All 63 tracked files moved: 59 implementation/test/config files are byte-identical, with only README/verification paths, Vitest discovery and the smoke auto-discovery directory updated. Root generated-path ignores and retained-plan links follow the new path; `/session-inspector` remains a compatibility alias.
+
+Against AGENTS.md and docs/extension-conventions.md, the final audit confirms local boundaries, relative imports, preserved default entrypoint/command ownership, no stale old-directory references and ignored generated outputs. New-path build/types/Biome, all 108 local tests, 39 Chromium tests, explicit/trusted-discovery/reload/replacement Pi smoke and both root gates passed (7,461 root tests, one existing skip). No new unverified runtime path or policy deviation is introduced; existing paid-provider/physical-desktop limitations remain unchanged.
 
 ## Fifth-review remediation
 
@@ -87,7 +93,7 @@ Metrics intentionally differ from the mockup where data is unavailable: recorded
 
 Applicable guides: root `AGENTS.md`, `docs/extension-conventions.md`, and `docs/extension-settings.md` (persistent settings are not implemented).
 
-- **Boundary:** All implementation, browser source, build helper, tests, configs and documentation are local to `.pi/extensions/session-inspector/`. Root changes are limited to frontend/test development dependencies, their lockfile, and generated-path ignores. No workspace, package manifest, Changeset, shared TypeScript configuration, root test support, root script or root extension registration was added.
+- **Boundary:** All implementation, browser source, build helper, tests, configs and documentation are local to `.pi/extensions/inspect/`. Root changes are limited to frontend/test development dependencies, their lockfile, and generated-path ignores. No workspace, package manifest, Changeset, shared TypeScript configuration, root test support, root script or root extension registration was added.
 - **Read-only contract:** Actual model-visible inputs are identical in enabled and disabled inspector sessions after excluding non-model metadata. Consecutive requests preserve the earlier normalized prefix. Activation does not alter prompt, messages or ordered active tools. Browser previews leave the Pi leaf unchanged.
 - **Data provenance:** Pi AI replay and Pi projection helpers own prompt/tool/context reconstruction. Direct, parallel nested, permission-blocked, schema-invalid, unknown-tool and cancelled calls are represented without inventing child transcript entries. Live results are observed after result transformation; historical nested metadata is not mistaken for saved results. Unknown/legacy data and missing system checkpoints remain explicit.
 - **Lifecycle:** Consent receives an owned abort signal. Startup reads/listening and the opener task are cancellable. Ownership is revalidated after awaits, including overlapping lifecycle boundaries. Resources are keyed by session manager rather than UI. Stop/reload/replacement/shutdown revoke serving resources, while browser effects cancel stale fetches/readers/timers. Tests cover partial startup, failed startup/retry, cancelled consent, stale launch, repeated activation, two managers sharing a UI, native SSE socket closure, real reload token rotation, and real runtime disposal.

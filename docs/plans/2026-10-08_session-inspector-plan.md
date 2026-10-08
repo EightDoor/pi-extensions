@@ -4,7 +4,7 @@
 
 Build a local, read-only, live web inspector for the current Pi session using React and Radix UI. Show the session tree, prompt history, tool and MCP calls, skill-use evidence, and codemode execution without changing the agent's model-visible context or active branch.
 
-This document authorizes no implementation by itself. The initial implementation is project-local under `.pi/extensions/session-inspector/`; independent installation, promotion to a package, and publication require explicit user approval.
+This document authorizes no implementation by itself. The initial implementation is project-local under `.pi/extensions/inspect/`; independent installation, promotion to a package, and publication require explicit user approval.
 
 ## Context
 
@@ -37,7 +37,7 @@ flowchart LR
     A[Prebuilt static assets] --> H
 ```
 
-- Keep entrypoint, implementation, browser source, build helper, documentation, local configuration, and tests within `.pi/extensions/session-inspector/`.
+- Keep entrypoint, implementation, browser source, build helper, documentation, local configuration, and tests within `.pi/extensions/inspect/`.
 - Do not add a local package manifest, workspace, Changeset, root extension registration, root test support, or shared TypeScript configuration.
 - Use React, Radix Themes, Radix Primitives where Themes lacks the interaction, Radix Icons, and Themes/Colors tokens. Bundle browser dependencies into static assets so runtime auto-discovery needs no browser build server.
 - Prefer the existing esbuild tool over introducing Vite for a static browser bundle. If new frontend development dependencies are needed, record their purpose and add only required root development dependencies; confirm the local build and runtime boundary first.
@@ -99,10 +99,10 @@ Guides: `docs/extension-conventions.md`, `docs/extension-settings.md`, and root 
 
 ### 5. Document and verify
 
-- [x] Write `.pi/extensions/session-inspector/README.md` documenting command/mode behavior, build and local test commands, activation consent, ephemeral collection, browser/server lifecycle, security limits, and the capability table; review every user-visible claim against tests.
+- [x] Write `.pi/extensions/inspect/README.md` documenting command/mode behavior, build and local test commands, activation consent, ephemeral collection, browser/server lifecycle, security limits, and the capability table; review every user-visible claim against tests.
 - [x] Run the agreed local build, local typecheck, local tests, and browser checks after a root `npm install`; record exact commands and finite fixture-based performance evidence, with every Vitest test within 5,000 ms and no timing assertions based on sleeps.
 - [x] Run `npm run format`, inspect the intended diff, then run `npm run check` and `npm test` separately; record results, and do not run root gates concurrently with a Kit build/check.
-- [x] Smoke explicit loading with `pi --no-extensions -e ./.pi/extensions/session-inspector/index.ts`, then verify trusted-project auto-discovery, `/reload`, live nested calls, branch preview, and shutdown in a real browser; record outcomes or specific unavailable paths rather than claiming untested compatibility.
+- [x] Smoke explicit loading with `pi --no-extensions -e ./.pi/extensions/inspect/index.ts`, then verify trusted-project auto-discovery, `/reload`, live nested calls, branch preview, and shutdown in a real browser; record outcomes or specific unavailable paths rather than claiming untested compatibility.
 - [x] Audit the complete diff against touched-area MUST rules, privacy boundaries, async ownership, and non-mutating request behavior; acceptance is a handoff naming guides, semantic audits, checks, smokes, deviations, and any unresolved evidence.
 
 ## Screenshot-directed interface revision
@@ -142,7 +142,7 @@ Applicable MUST rules: public APIs and stage equivalence (Review + native/observ
 
 ## Execution evidence
 
-Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/session-inspector/VERIFICATION.md): 22 local tests, six Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.
+Implementation was authorized by the user's execution request. Completed implementation and automated acceptance evidence is recorded in [the local verification report](../../.pi/extensions/inspect/VERIFICATION.md): 22 local tests, six Chromium tests, Pi loading/mode/reload/replacement smokes, root checks, and 7,461 passing root tests with one existing skip. The selected diff contains only the local extension, required root development dependencies/lockfile/ignores, and this plan.
 
 A physical terminal/default desktop opener and macOS/Windows opener behavior were not automated; the report records the deterministic substitutes and exact unverified paths. User acceptance remains pending, so this plan is retained and must not be reported as fully completed or deleted yet.
 

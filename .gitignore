@@ -206,8 +206,8 @@ vite.config.ts.timestamp-*
 .pi/settings.json
 **/.pi-*-build-test-*/
 **/.pi-*-dist-*/
-.pi/extensions/session-inspector/dist-staging/
-.pi/extensions/session-inspector/test-results/
-.pi/extensions/session-inspector/playwright-report/
+.pi/extensions/inspect/dist-staging/
+.pi/extensions/inspect/test-results/
+.pi/extensions/inspect/playwright-report/
 docs/plans/archived/
 docs/roadmaps/archived/

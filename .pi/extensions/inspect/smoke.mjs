@@ -60,7 +60,7 @@ for (const mode of ["explicit", "discovery"]) {
   const agentDir = join(temp, "agent");
   if (mode === "discovery") {
     await mkdir(join(temp, ".pi", "extensions"), { recursive: true });
-    await symlink(root, join(temp, ".pi", "extensions", "session-inspector"), "dir");
+    await symlink(root, join(temp, ".pi", "extensions", "inspect"), "dir");
   }
   const args = [
     cli,
