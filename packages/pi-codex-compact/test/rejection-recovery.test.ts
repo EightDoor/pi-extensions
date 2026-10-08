@@ -113,11 +113,11 @@ async function harness(
   const specifier = options.codex
     ? "@earendil-works/pi-ai/providers/openai-codex"
     : options.azure
-      ? "@earendil-works/pi-ai/providers/azure-openai-responses"
+      ? "@earendil-works/pi-ai/providers/azure"
       : "@earendil-works/pi-ai/providers/openai";
   const module = (await import(specifier)) as Record<string, () => Provider>;
   const nativeProvider =
-    module[options.codex ? "openaiCodexProvider" : options.azure ? "azureOpenAIResponsesProvider" : "openaiProvider"]();
+    module[options.codex ? "openaiCodexProvider" : options.azure ? "azureProvider" : "openaiProvider"]();
   const provider: Provider = options.custom
     ? {
         ...nativeProvider,
