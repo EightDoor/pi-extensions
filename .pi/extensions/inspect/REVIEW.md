@@ -147,7 +147,7 @@ Before continuing CI implementation, applicable MUST audit: successful exact-mai
 
 ## Final-refresh findings R49–R56
 
-Head e216c423 CI succeeded in run 37822339765; 55 threads, eight new unresolved, no pagination. The reviewer evidence was independently checked against native buildContextEntries/projectContextEntry, Collector/correlatedCalls, snapshot selection, live hierarchy remapping, credential classifier and skill-evidence loops. Each is P2 and exposes this PR's read-only/accurate/bounded inspection goal; all are actionable and not yet addressed.
+Head e216c423 CI succeeded in run 37822339765; 55 threads, eight new unresolved, no pagination. The reviewer evidence was independently checked against native buildContextEntries/projectContextEntry, Collector/correlatedCalls, snapshot selection, live hierarchy remapping, credential classifier and skill-evidence loops. Each is P2 and exposes this PR's read-only/accurate/bounded inspection goal; all are already addressed in signed published 6610f66c. Eight evidence replies are posted and threads resolved; handoff 6066136884. Passed 298 local/46 browser tests, Pi smoke, root check and 7,676 root tests (two skips). Latest CI status is maintained in the handoff; prior e216c423 CI passed.
 
 | Item | Evidence / intended verification |
 | --- | --- |
