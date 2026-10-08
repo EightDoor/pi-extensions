@@ -64,6 +64,7 @@ export class DurableRecorder {
   private readonly root: Span;
   private run?: RunSpan;
   private readonly submissions = new Map<SubmissionId, SubmissionSpan>();
+  private readonly pendingSubmissions = new Set<SubmissionId>();
   private readonly entries = new Set<number>();
   private readonly completedRuns = new Set<SubmissionId>();
   private disposed = false;
@@ -98,7 +99,7 @@ export class DurableRecorder {
   }
 
   get submissionIds(): readonly SubmissionId[] {
-    return [...this.submissions.keys()];
+    return [...this.pendingSubmissions];
   }
 
   report(stage: string): void {
@@ -130,7 +131,7 @@ export class DurableRecorder {
   }
 
   private start(name: string, type: ObservationType, parent?: Span, attributes: ObservationAttributes = {}): Span {
-    if (this.disposed) return { ended: true };
+    if (this.disposed || (parent && (parent.ended || !parent.observation))) return { ended: true };
     const span: Span = { ended: false };
     const inherited = parent === this.run?.span ? this.correlationAttributes(this.run?.correlation ?? {}) : {};
     this.safe(() => {
@@ -147,6 +148,8 @@ export class DurableRecorder {
         { asType: type, parent: parent?.observation },
       );
     });
+    // A missing parent handle must never become a new exporter root for descendants.
+    if (!span.observation) span.ended = true;
     if (this.disposed) this.interrupted(span, "Observer disposed during exporter start.");
     return span;
   }
@@ -231,9 +234,11 @@ export class DurableRecorder {
       };
       if (this.disposed) return;
       this.submissions.set(record.id, state);
+      this.pendingSubmissions.add(record.id);
     }
     if (state.terminal) return;
-    if (record.status === "placed" && this.run && !this.run.inputs.includes(record.id)) {
+    // Status reads can be newer than the run snapshot. Only ordered placement events extend membership.
+    if (!snapshot && record.status === "placed" && this.run && !this.run.inputs.includes(record.id)) {
       this.run.inputs = [...this.run.inputs, record.id];
       this.update(this.run.span, { metadata: { "pi.durable.inputs": this.run.inputs } });
     }
@@ -241,9 +246,13 @@ export class DurableRecorder {
       state.correlation = sanitizeTraceValue({ ...state.correlation, ...correlation }, true) as DurableCorrelation;
       this.update(state.span, this.correlationAttributes(state.correlation));
     }
-    if (this.run?.primary === record.id) {
-      this.run.correlation = state.correlation;
-      this.update(this.run.span, this.correlationAttributes(state.correlation));
+    const run = this.run;
+    if (run?.primary === record.id) {
+      run.correlation = state.correlation;
+      const attributes = this.correlationAttributes(state.correlation);
+      this.update(run.span, attributes);
+      if (run.generation) this.update(run.generation, attributes);
+      for (const tool of run.tools.values()) this.update(tool, attributes);
     }
     this.update(state.span, { metadata: { "pi.durable.submission_status": record.status } });
     if (record.entry !== undefined && record.type === "input") {
@@ -262,6 +271,7 @@ export class DurableRecorder {
       const reason =
         record.status === "unanswered" && SAFE_UNANSWERED_REASONS.has(record.reason) ? record.reason : undefined;
       state.terminal = true;
+      this.pendingSubmissions.delete(record.id);
       this.end(state.span, {
         ...(output !== undefined ? { output } : {}),
         level:
@@ -308,6 +318,7 @@ export class DurableRecorder {
     if (primary === undefined || this.completedRuns.has(primary)) return;
     if (this.run?.primary === primary) {
       this.run.inputs = [...inputs];
+      this.update(this.run.span, { metadata: { "pi.durable.inputs": this.run.inputs } });
       return;
     }
     if (this.run) this.closeRun("Unexpected run replacement.");
@@ -475,6 +486,7 @@ export class DurableRecorder {
     for (const state of this.submissions.values()) if (!state.terminal) this.interrupted(state.span, reason);
     this.end(this.root, { metadata: { "pi.durable.resync_count": this.gaps } });
     this.submissions.clear();
+    this.pendingSubmissions.clear();
     this.entries.clear();
     this.completedRuns.clear();
   }

@@ -129,26 +129,25 @@ export async function createPiLangfuseDurableConversation(
       ownsConversation = true;
       const internal = getLangfuseRuntimeInternal(runtime);
       releaseRuntime = internal.registerSession(dispose);
-      // Snapshot host metadata before retaining it; no settings or coding-agent registration is loaded.
+      const attached = await watchEvents(options.harness, options.conversationId, context);
+      // Retain the owned stream before callback-capable trace acquisition so partial disposal joins it.
+      stream = attached;
+      if (disposed || runtime.closed) {
+        void dispose();
+        return;
+      }
+      // Failed attachment must not open a trace or publish its ID.
       recorder = new DurableRecorder(internal.backend, { ...options, metadata: { ...options.metadata } });
       if (disposed || runtime.closed) {
         recorder.dispose();
         void dispose();
         return;
       }
-      const attached = await watchEvents(options.harness, options.conversationId, context);
-      if (disposed || runtime.closed) {
-        await attached.stop();
-        void dispose();
-        return;
-      }
-      stream = attached;
       recorder.snapshot(stream.snapshot, true);
       stream.start(async (events) => {
-        if (disposed) return;
-        try {
-          for (const event of events) {
-            if (disposed) return;
+        for (const event of events) {
+          if (disposed) return;
+          try {
             if (event.type === "snapshot") {
               recorder?.snapshot(event);
               const ids = new Set([
@@ -164,9 +163,9 @@ export async function createPiLangfuseDurableConversation(
               await recorder?.submission(event.record, readEntry);
               if (disposed) return;
             } else recorder?.event(event);
+          } catch {
+            if (!disposed) report("observer delivery");
           }
-        } catch {
-          if (!disposed) report("observer delivery");
         }
       });
       // Observe closure even if the host never awaits closed. No execution wait is used.
