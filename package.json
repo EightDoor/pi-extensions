@@ -117,6 +117,7 @@
   "allowScripts": {
     "esbuild@0.28.2": true,
     "@google/genai": false,
-    "protobufjs": false
+    "protobufjs": false,
+    "fsevents": false
   }
 }
