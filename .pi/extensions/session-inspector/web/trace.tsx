@@ -237,7 +237,7 @@ export function Trace({
                     <InlineEntry entry={entry} inspect={select} />
                     {childCount > 0 && (
                       <span className="children-label">
-                        {childCount} recorded child {childCount === 1 ? "entry" : "entries"}
+                        {childCount} visible child {childCount === 1 ? "entry" : "entries"}
                       </span>
                     )}
                     {entry.parentId && !tree.nodes.has(entry.parentId) && (

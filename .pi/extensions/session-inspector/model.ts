@@ -56,6 +56,8 @@ export interface Snapshot {
   totalEntries: number;
   nodes: EntrySummary[];
   incomplete: boolean;
+  invalidEntryCount?: number;
+  invalidEntries?: { index: number; reason: string; raw: Capture }[];
   currentPrompt: Capture;
   tools: ToolView[];
   skills: SkillView[];

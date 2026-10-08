@@ -20,6 +20,9 @@ function App() {
   const [revision, setRevision] = useState(-1);
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [branch, setBranch] = useState<BranchView>();
+  const [branchError, setBranchError] = useState("");
+  const [branchAttempt, setBranchAttempt] = useState(0);
+  const branchOwner = useRef<{ entryId: string; attempt: number } | undefined>(undefined);
   const [selection, setSelection] = useState<Selection>();
   const [view, setView] = useState("list");
   const [liveOpen, setLiveOpen] = useState(false);
@@ -169,21 +172,25 @@ function App() {
     return () => controller.abort();
   }, [revision]);
   useEffect(() => {
+    setBranchError("");
     if (!entryId) {
       setBranch(undefined);
       return;
     }
     const controller = new AbortController();
     setBranch(undefined);
+    const owner = { entryId, attempt: branchAttempt };
+    branchOwner.current = owner;
     void request<BranchView>(`branch?leaf=${encodeURIComponent(entryId)}&offset=0`, controller.signal)
       .then((value) => {
-        if (!controller.signal.aborted) setBranch(value);
+        if (!controller.signal.aborted && branchOwner.current === owner) setBranch(value);
       })
-      .catch((error) => {
-        if (!controller.signal.aborted) setError(String(error.message));
+      .catch(() => {
+        if (!controller.signal.aborted && branchOwner.current === owner)
+          setBranchError("Could not load selected branch context.");
       });
     return () => controller.abort();
-  }, [entryId]);
+  }, [entryId, branchAttempt]);
 
   const sidebar = (
     <Sidebar
@@ -206,6 +213,8 @@ function App() {
       retryDetails={retryDetails}
       call={selectedCall}
       branch={branch}
+      branchError={branchError}
+      retryBranch={() => setBranchAttempt((attempt) => attempt + 1)}
       snapshot={snapshot}
       tab={tab}
       changeTab={setTab}

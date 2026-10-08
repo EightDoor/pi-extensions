@@ -17,10 +17,13 @@ type ReadonlySessionManager = ExtensionContext["sessionManager"];
 import { ancestry } from "./ancestry.ts";
 import type { Collector } from "./collector.ts";
 import { correlatedCalls } from "./correlation.ts";
+import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { BranchView, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
 
 export function summarize(entry: SessionEntry, label?: string): EntrySummary {
+  const issue = identityIssue(entry);
+  if (issue) throw new Error(issue);
   const message = entry.type === "message" ? entry.message : undefined;
   const kind = message ? message.role : entry.type;
   const value = message && "content" in message ? message.content : entry;
@@ -76,7 +79,16 @@ export function snapshot(
 ): Snapshot {
   const entries = manager.getEntries();
   const owning = new Map<string, { id: string; ids: Set<string> }>();
-  const nodes = entries.slice(0, 10000).map((entry) => {
+  const invalidEntries: NonNullable<Snapshot["invalidEntries"]> = [];
+  let invalidEntryCount = 0;
+  const nodes: EntrySummary[] = [];
+  for (const [index, entry] of entries.slice(0, 10000).entries()) {
+    const reason = identityIssue(entry);
+    if (reason) {
+      invalidEntryCount++;
+      if (invalidEntries.length < 20) invalidEntries.push({ index, reason, raw: capture(entry, 2048) });
+      continue;
+    }
     const source =
       entry.type === "message" && entry.message.role === "assistant"
         ? {
@@ -89,18 +101,20 @@ export function snapshot(
     if (source) owning.set(entry.id, source);
     const node = summarize(entry, manager.getLabel(entry.id));
     if (node.toolCallId && source?.ids.has(node.toolCallId)) node.toolAnchor = source.id;
-    return node;
-  });
+    nodes.push(node);
+  }
   return {
     protocol: 1,
     generation,
     revision,
     sessionId: manager.getSessionId(),
     ...sessionName(manager.getSessionName() ?? "Current session"),
-    leafId: manager.getLeafId(),
+    leafId: recordedLeaf(manager),
     totalEntries: entries.length,
     nodes,
-    incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256,
+    incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256 || invalidEntryCount > 0,
+    invalidEntryCount,
+    invalidEntries,
     currentPrompt: capture(prompt, 65536),
     tools: tools.slice(0, 256).map((t) => ({
       name: displayText(t.name),

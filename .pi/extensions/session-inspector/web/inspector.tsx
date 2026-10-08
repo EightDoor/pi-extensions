@@ -15,6 +15,8 @@ export function Inspector({
   retryDetails,
   call,
   branch,
+  branchError,
+  retryBranch,
   snapshot,
   tab,
   changeTab,
@@ -28,6 +30,8 @@ export function Inspector({
   retryDetails(): void;
   call?: Call;
   branch?: BranchView;
+  branchError: string;
+  retryBranch(): void;
   snapshot?: Snapshot;
   tab: string;
   changeTab(tab: string): void;
@@ -92,6 +96,14 @@ export function Inspector({
           {detailError}
           <Button size="1" variant="ghost" onClick={retryDetails}>
             Retry selected details
+          </Button>
+        </div>
+      )}
+      {branchError && (
+        <div role="alert" className="branch-failure">
+          {branchError}
+          <Button size="1" variant="ghost" onClick={retryBranch}>
+            Retry selected branch
           </Button>
         </div>
       )}
@@ -218,15 +230,27 @@ export function Inspector({
           </Collapsible.Root>
         </Tabs.Content>
         <Tabs.Content value="prompt">
-          <Data label="Historical prompt · browser preview branch" data={branch?.prompt} />
-          <Data label="Previous-node prompt · compare with selected branch" data={branch?.previousPrompt} />
-          <Data label="Prompt diff · removed / added lines" data={promptDiff(branch?.previousPrompt, branch?.prompt)} />
-          <Data label="Historical sections" data={branch?.sections} />
-          <Data label="Prompt updates on branch" data={branch?.promptUpdates} />
+          <Data label="Historical prompt · browser preview branch" data={branch?.prompt} scope={`${selected}-prompt`} />
+          <Data
+            label="Previous-node prompt · compare with selected branch"
+            data={branch?.previousPrompt}
+            scope={`${selected}-previousPrompt`}
+          />
+          <Data
+            label="Prompt diff · removed / added lines"
+            data={promptDiff(branch?.previousPrompt, branch?.prompt)}
+            scope={`${selected}-prompt-diff`}
+          />
+          <Data label="Historical sections" data={branch?.sections} scope={`${selected}-sections`} />
+          <Data label="Prompt updates on branch" data={branch?.promptUpdates} scope={`${selected}-promptUpdates`} />
           <Data label="Current runtime effective prompt · may not yet be sent" data={snapshot?.currentPrompt} />
         </Tabs.Content>
         <Tabs.Content value="tools">
-          <Data label="Historical declared tools · preview branch" data={branch?.declaredTools} />
+          <Data
+            label="Historical declared tools · preview branch"
+            data={branch?.declaredTools}
+            scope={`${selected}-declaredTools`}
+          />
           <Text as="p" size="2" color="gray">
             Current active ≠ provider-visible. MCP connection status is unavailable.
           </Text>
@@ -273,15 +297,15 @@ export function Inspector({
               </Text>
             </Card>
           ))}
-          <Data label="Evidence on preview branch" data={branch?.skillEvidence} />
+          <Data label="Evidence on preview branch" data={branch?.skillEvidence} scope={`${selected}-skillEvidence`} />
         </Tabs.Content>
         <Tabs.Content value="context">
           <Text as="p" size="2" color="gray">
             Pi projection applies compaction and context edits. Request-local hooks can still transform it; this is not
             the final provider HTTP request.
           </Text>
-          <Data label="Projected branch entries" data={branch?.projection} />
-          <Data label="Selected entry contribution" data={detail?.projected} />
+          <Data label="Projected branch entries" data={branch?.projection} scope={`${selected}-projection`} />
+          <Data label="Selected entry contribution" data={detail?.projected} scope={`${selected}-projected`} />
         </Tabs.Content>
         <Tabs.Content value="codemode">
           <Text as="p" size="2" color="gray">

@@ -68,7 +68,7 @@ export function JsonTree({ value, scope }: { value: Json; scope: string }) {
   }
   return (
     <fieldset className="json-tree" aria-label="Structured display data">
-      <JsonNode value={value} name="$" path="$" state={state} root />
+      <JsonNode key={scope} value={value} name="$" path="$" state={state} root />
     </fieldset>
   );
 }

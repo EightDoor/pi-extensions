@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 7 files, 42 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 21 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 8 files, 56 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 25 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -28,6 +28,12 @@ The reconciliation path uses only public readonly APIs. No private extension imp
 Four additional comments at head `745969a2` were verified against current code and native Pi ancestry traversal. New regressions cover a visible roving trace target after paging, keyboard page crossing, collapse and filtering; 429/503 reconnect and terminal HTTP/generation refusal; self/disconnected parent cycles, missing parents, both selected/leaf ancestry and the explicit 10,000-entry inspection budget; and sanitized 512-character session-name publication/reconciliation with truncation metadata and unchanged raw source. Browser cycle selection retains raw evidence and remains responsive. All ancestry traversal call sites were audited; unsafe native `getBranch()` is no longer used by the inspector. Canonical Pi projections remain unchanged for valid bounded paths.
 
 Both root gates, local build/types/Biome, 42 local tests, 21 browser tests and explicit/discovery Pi CLI smoke passed. Original model-prefix/native pipeline and prior UI regressions remain covered. No package promotion, private extension dependency, settings or model-visible prefix transition was introduced.
+
+## Third-review remediation
+
+Four new comments at `c63b99f7` were confirmed independently. Runtime identity tests cover missing/null/numeric/object/array/boolean/empty entry IDs; missing/non-string/empty parent IDs; ancestry rejection; malformed leaf publication; bounded diagnostic samples and unchanged source. A browser test serves a real synthetic malformed entry through the native fixture server and verifies healthy navigation plus raw evidence. Other browser regressions verify branch-error survival across live snapshot refresh and retry, independent retained JSON disclosure across A/B/A/B selections, and visible child counts with matching/hidden siblings. All Inspector historical structured-data scopes were audited alongside the core scope-key fix.
+
+The full local suite now contains 56 tests and 25 Chromium tests. Identity validation uses public readonly fields only and does not repair sessions or invent IDs. Scoped branch requests preserve abort/stale-owner protection, and no model-visible prefix or settings transition is introduced.
 
 ## Progressive Explorer revision
 

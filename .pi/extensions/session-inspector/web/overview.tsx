@@ -1,4 +1,5 @@
 import type { Snapshot } from "../model.ts";
+import { Data } from "./components.tsx";
 import { count, duration } from "./format.ts";
 import { timestamp } from "./timing.ts";
 
@@ -41,6 +42,26 @@ export function Overview({ snapshot }: { snapshot?: Snapshot }) {
           </div>
         ))}
       </div>
+      {Boolean(snapshot?.invalidEntryCount) && (
+        <details className="invalid-entries">
+          <summary>
+            {snapshot?.invalidEntryCount} invalid entry identities omitted from navigation; bounded raw evidence
+          </summary>
+          <Data
+            label="Invalid entry identity evidence · up to 20 indexed records"
+            data={{
+              value: (snapshot?.invalidEntries ?? []).map((item) => ({
+                index: item.index,
+                reason: item.reason,
+                raw: item.raw.value,
+                truncated: item.raw.truncated,
+              })),
+              truncated: (snapshot?.invalidEntryCount ?? 0) > 20,
+            }}
+            scope="invalid-identities"
+          />
+        </details>
+      )}
     </section>
   );
 }

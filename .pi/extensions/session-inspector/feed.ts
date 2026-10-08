@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Collector } from "./collector.ts";
+import { identityIssue, recordedLeaf } from "./identity.ts";
 import type { SkillView, Snapshot } from "./model.ts";
 import { capture, displayText, sessionName } from "./privacy.ts";
 import { snapshot } from "./projection.ts";
@@ -29,8 +30,8 @@ export class SessionFeed {
     const entries = manager.getEntries(); // Public readonly API; shallow references only, no projection.
     return JSON.stringify({
       count: entries.length,
-      last: entries.at(-1)?.id,
-      leaf: manager.getLeafId(),
+      last: identityIssue(entries.at(-1)) ? "[invalid identity]" : entries.at(-1)?.id,
+      leaf: recordedLeaf(manager),
       name: sessionName(manager.getSessionName() ?? "Current session"),
       active: this.options.pi.getActiveTools(),
       toolCount: tools.length,

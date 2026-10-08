@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { ancestry } from "./ancestry.ts";
 import { Collector } from "./collector.ts";
 import { SessionFeed } from "./feed.ts";
+import { recordedLeaf } from "./identity.ts";
 import type { SkillView } from "./model.ts";
 import { branch, detail } from "./projection.ts";
 import { startServer, type ViewerServer } from "./server.ts";
@@ -98,9 +99,9 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     changed(ctx);
   });
   function executionAnchor(ctx: ExtensionContext, rawId: string): string | null {
-    const leaf = ctx.sessionManager.getLeafId();
+    const leaf = recordedLeaf(ctx.sessionManager);
     const entry = ctx.sessionManager.getLeafEntry();
-    if (entry?.type === "message" && entry.message.role === "assistant") return entry.id;
+    if (leaf && entry?.type === "message" && entry.message.role === "assistant") return leaf;
     return (
       (leaf ? ancestry(ctx.sessionManager, leaf).path : [])
         .slice()
@@ -120,7 +121,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
   });
   pi.on("tool_execution_update", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
-    if (owner?.collector?.update(event, ctx.sessionManager.getLeafId())) changed(ctx, false);
+    if (owner?.collector?.update(event, recordedLeaf(ctx.sessionManager))) changed(ctx, false);
   });
   pi.on("tool_execution_end", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);

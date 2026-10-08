@@ -621,6 +621,79 @@ test("R12/R13: cyclic selection preserves raw evidence, and long session names e
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
 });
 
+test("R14: malformed runtime identity remains bounded raw evidence without a render crash", async ({ page }) => {
+  const id = data.manager.appendCustomEntry("broken", { evidence: "evidence" });
+  const entry = data.manager.getEntry(id);
+  if (!entry) throw new Error("Missing malformed fixture");
+  (entry as unknown as Record<string, unknown>).id = 42;
+  await page.goto(server.url);
+  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await page.locator(".invalid-entries > summary").click();
+  await expect(page.locator(".invalid-entries")).toContainText("non-string entry id");
+  await expect(page.locator(".invalid-entries")).toContainText("evidence");
+});
+
+test("R15: selected branch failure survives live snapshots and retries without moving selection", async ({ page }) => {
+  let failed = true;
+  await page.route("**/api/branch?**", async (route) => {
+    if (failed) await route.fulfill({ status: 503, body: "Temporary failure" });
+    else await route.continue();
+  });
+  await page.goto(server.url);
+  const alert = page.locator(".branch-failure");
+  await expect(alert).toContainText("Could not load selected branch context.");
+  const next = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
+  server.invalidate(++revision);
+  await next;
+  await expect(alert).toBeVisible();
+  failed = false;
+  await page.getByRole("button", { name: "Retry selected branch", exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(page.locator(".inspector-identity")).toContainText(data.manager.getLeafId() ?? "");
+  await page.getByRole("tab", { name: "prompt", exact: true }).click();
+  await expect(page.locator(".inspector-panel")).toContainText("changed");
+});
+
+test("R16: JSON object disclosure is independent and retained for each selected-entry scope", async ({ page }) => {
+  const a = data.manager.appendCustomEntry("json-a", { shared: { nested: { a: 1 } } });
+  const b = data.manager.appendCustomEntry("json-b", { shared: { nested: { b: 2 } } });
+  await page.goto(server.url);
+  await nav(page, a).click();
+  const shared = page.locator(".inspector-panel").getByText("shared", { exact: true }).locator("..").locator("..");
+  await expect(shared).not.toHaveAttribute("open", "");
+  await shared.locator(":scope > summary").click();
+  await expect(shared).toHaveAttribute("open", "");
+  await nav(page, b).click();
+  await expect(shared).not.toHaveAttribute("open", "");
+  await shared.locator(":scope > summary").click();
+  await expect(shared).toHaveAttribute("open", "");
+  await nav(page, a).click();
+  await expect(shared).toHaveAttribute("open", "");
+  await shared.locator(":scope > summary").click();
+  await expect(shared).not.toHaveAttribute("open", "");
+  await nav(page, b).click();
+  await expect(shared).toHaveAttribute("open", "");
+});
+
+test("R17: filtered direct-child count is labeled visible rather than recorded total", async ({ page }) => {
+  data.manager.branch(data.leaf);
+  const parent = data.manager.appendCustomEntry("sibling-parent", {});
+  data.manager.appendCustomEntry("match-child", {});
+  data.manager.branch(parent);
+  data.manager.appendCustomEntry("hidden-child-one", {});
+  data.manager.branch(parent);
+  data.manager.appendCustomEntry("hidden-child-two", {});
+  await page.goto(server.url);
+  await page.getByRole("textbox", { name: "Search session" }).fill("match-child");
+  const disclosure = page.locator(`[data-trace-entry-id="${parent}"] .expand-button`);
+  if ((await disclosure.getAttribute("aria-expanded")) === "true") await disclosure.click();
+  await disclosure.click();
+  await expect(page.locator(`[data-trace-entry-id="${parent}"] .children-label`)).toContainText(
+    "1 visible child entry",
+  );
+  await expect(page.locator(`[data-trace-entry-id="${parent}"] .children-label`)).not.toContainText("recorded");
+});
+
 test("large history pages visible rows lazily and preserves arbitrary absolute depth", async ({ page }) => {
   for (let i = 0; i < 1500; i++)
     data.manager.appendMessage({ role: "user", content: `fixture row ${i}`, timestamp: i });

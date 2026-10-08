@@ -1,5 +1,7 @@
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
+import { identityIssue } from "./identity.ts";
+
 // Pi's native projection walks parent links without cycle detection; validate before invoking it.
 export function ancestry(
   manager: ExtensionContext["sessionManager"],
@@ -9,6 +11,8 @@ export function ancestry(
   const seen = new Set<string>();
   let current = manager.getEntry(id);
   while (current) {
+    const issue = identityIssue(current);
+    if (issue) return { path: path.reverse(), issue };
     if (seen.has(current.id)) return { path: path.reverse(), issue: "recorded parent cycle" };
     if (path.length >= 10000)
       return { path: path.reverse(), issue: "ancestry exceeds the 10,000-entry inspection budget" };
