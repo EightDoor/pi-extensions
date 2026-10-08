@@ -1,5 +1,11 @@
 # @narumitw/pi-tui-kit
 
+## 0.65.4
+
+### Patch Changes
+
+- Preserve Settings search and cursor through successful save refreshes. Restore saved Settings and Choice searches as sanitized pasted content so printable keybindings cannot consume the query.
+
 ## 0.65.3
 
 ### Patch Changes
