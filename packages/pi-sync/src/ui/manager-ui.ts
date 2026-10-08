@@ -129,8 +129,8 @@ export async function showSyncManager(
         return result === "pull-attempted" || result === "closed" ? { kind: "close" } : { kind: "stay" };
       },
       settings: async () => {
-        await showSyncSettings(ctx, runRoute, sessionSignal);
-        return { kind: "stay" };
+        const result = await showSyncSettings(ctx, runRoute, sessionSignal);
+        return { kind: result === "exit" ? "close" : "stay" };
       },
       pull: async () => {
         const result = await runCancellableOperation(ctx, "Checking remote changes…", "pull", runRoute, {

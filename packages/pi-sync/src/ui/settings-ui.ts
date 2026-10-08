@@ -26,7 +26,12 @@ export async function showSyncSettings(
   ctx: ExtensionCommandContext,
   runRoute: SyncSettingsRoute,
   signal?: AbortSignal,
-) {
+): Promise<"back" | "exit"> {
+  let disposition: "back" | "exit" = "back";
+  const exitSettings = () => {
+    disposition = "exit";
+    return { kind: "close" as const };
+  };
   if (ctx.mode !== "tui") {
     ctx.ui.notify(`Edit pi-sync settings manually: ${safeTerminalText(localConfigPath())}`, "info");
     if (ctx.mode === "rpc" && ctx.hasUI) {
@@ -47,7 +52,7 @@ export async function showSyncSettings(
         actions: {
           setups: async ({ signal: actionSignal }) => {
             const result = await showSyncSetupManager(ctx, runRoute, actionSignal);
-            return { kind: result === "exit" ? "close" : "stay" };
+            return result === "exit" ? exitSettings() : { kind: "stay" };
           },
           connections: async ({ signal: actionSignal }) => {
             await showStorageConnections(ctx, actionSignal);
@@ -57,10 +62,10 @@ export async function showSyncSettings(
       });
       await runMenu(ctx, management, { getState: () => undefined, signal, isCurrent: () => !signal?.aborted });
     }
-    return;
+    return disposition;
   }
   const initial = await loadConfig();
-  if (signal?.aborted) return;
+  if (signal?.aborted) return "back";
   const setupName = initial.setupName;
   type Action =
     | "automatic"
@@ -214,7 +219,7 @@ export async function showSyncSettings(
       setups: async ({ signal: actionSignal }) => {
         const editorSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
         const result = await showSyncSetupManager(ctx, runRoute, editorSignal);
-        return result === "exit" ? { kind: "close" } : resumeSettings(editorSignal);
+        return result === "exit" ? exitSettings() : resumeSettings(editorSignal);
       },
       connections: async ({ signal: actionSignal }) => {
         const editorSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
@@ -433,9 +438,9 @@ export async function showSyncSettings(
         if (reviewSignal.aborted) return { kind: "rejected" };
         if (review.kind === "route-result") {
           const disposition = await dispatchManagerResult(ctx, review.result, review.route, runRoute, reviewSignal);
-          return disposition.kind === "close" ? { kind: "close" } : { kind: "stay" };
+          return disposition.kind === "close" ? exitSettings() : { kind: "stay" };
         }
-        return review.kind === "closed" || review.kind === "stale" ? { kind: "close" } : { kind: "stay" };
+        return review.kind === "closed" || review.kind === "stale" ? exitSettings() : { kind: "stay" };
       },
     },
   });
@@ -444,8 +449,8 @@ export async function showSyncSettings(
     try {
       const active = await loadConfig();
       if (editorSignal.aborted || active.setupName !== setupName) return { kind: "close" as const };
-      // Complex management can change row values; rebuild only after returning from it.
-      return { kind: "to" as const, screen: "settings" as const };
+      // Stay reloads authoritative rows without pushing a duplicate screen or clearing search.
+      return { kind: "stay" as const };
     } catch {
       return { kind: "close" as const };
     }
@@ -455,6 +460,7 @@ export async function showSyncSettings(
     signal,
     isCurrent: () => !signal?.aborted,
   });
+  return disposition;
 }
 
 function notifySaveFailure(ctx: ExtensionCommandContext, error: unknown) {

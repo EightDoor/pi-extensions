@@ -4,7 +4,7 @@ import { type ExtensionCommandContext, initTheme } from "@earendil-works/pi-codi
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
 import { test } from "vitest";
 import { createMockContext } from "../../../test/support.js";
-import { loadConfig } from "../src/settings/config.js";
+import { loadConfig, syncConfigReviewIdentity } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { removeSyncSetup } from "../src/settings/settings-management.js";
 import { updateLocalConfig } from "../src/settings/settings-store.js";
@@ -144,8 +144,188 @@ for (const row of ["Storage location", "Manage sync setups", "Manage storage con
         input: async () => undefined,
       });
       await showSyncSettings(context.ctx, async () => undefined);
-      assert.ok(titles.filter((title) => title.includes("Pi Sync Settings")).length >= 2);
+      assert.equal(titles.filter((title) => title.includes("Pi Sync Settings")).length, 2);
       assert.deepEqual(readFileSync(localConfigPath()), before);
+      assert.deepEqual(context.notifications, []);
+    });
+  });
+}
+
+for (const mode of ["tui", "rpc"] as const) {
+  for (const outcome of ["applied", "resolved-conflict"] as const) {
+    test(`${mode} nested setup ${outcome} exits Settings and the owning manager`, async () => {
+      await configured(async () => {
+        await updateLocalConfig((settings) => ({
+          ...settings,
+          onSwitch: "pull-after-switch",
+          syncSetups: {
+            ...settings.syncSetups,
+            work: {
+              storage: { connection: "r2", bucket: "pi-sync-test", path: "work" },
+              sync: { include: ["AGENTS.md"], automatic: false },
+            },
+          },
+        }));
+        const choices = [
+          "Settings",
+          "Manage sync setups",
+          "work",
+          "Make current…",
+          ...(outcome === "resolved-conflict" ? ["Use remote content and replace local…"] : []),
+        ];
+        const titles: string[] = [];
+        const context = createMockContext({
+          mode,
+          select: async (title: string) => {
+            titles.push(title);
+            return choices.shift();
+          },
+        });
+        if (mode === "tui") {
+          (context.ctx as ExtensionCommandContext).ui.custom = (async (factory) => {
+            const tui = createTuiHarness({ width: 100, rows: 28 });
+            try {
+              const result = tui.custom(factory);
+              try {
+                await tui.waitForOpen();
+              } catch (error) {
+                // An immediately completed loader can settle before its host opens.
+                if (error instanceof Error && error.message === "TUI custom component settled before opening")
+                  return await result;
+                throw error;
+              }
+              const frame = tui.render().join("\n");
+              const title = frame
+                .split("\n")
+                .find((line) =>
+                  /^(Manage sync|Pi Sync Settings|Sync setups|Sync setup “|Resolve sync conflict)/u.test(line),
+                );
+              if (title) {
+                titles.push(title);
+                const choice = choices.shift();
+                if (!choice) tui.press("ctrl+c");
+                else {
+                  if (title === "Pi Sync Settings") tui.send(`\u001b[200~${choice}\u001b[201~`);
+                  else {
+                    for (let index = 0; index < 20; index++) {
+                      if (tui.render().some((line) => line.includes(`→ ${choice}`))) break;
+                      tui.press("tui.select.down");
+                    }
+                  }
+                  tui.press("tui.select.confirm");
+                }
+              }
+              return await result;
+            } finally {
+              tui.dispose();
+            }
+          }) as ExtensionCommandContext["ui"]["custom"];
+        }
+        const routes: string[] = [];
+        await showSyncManager(context.ctx, async (route) => {
+          routes.push(route);
+          if (outcome === "resolved-conflict" && route === "pull") {
+            const config = await loadConfig();
+            return {
+              kind: "decision-required",
+              decision: {
+                kind: "both-changed",
+                setupName: "work",
+                configIdentity: syncConfigReviewIdentity(config),
+                causes: { localChanged: true, remoteChanged: true, policyChanged: false },
+                currentInclude: config.include,
+                review: "Both versions changed",
+                directions: ["push", "pull"],
+                directMessage: "Both local and remote changed.",
+              },
+            };
+          }
+          return { kind: "completed", outcome: "applied" };
+        });
+        assert.equal(choices.length, 0);
+        assert.deepEqual(
+          routes,
+          outcome === "applied" ? ["pull"] : ["pull", "pull --force"],
+          JSON.stringify({ titles, notifications: context.notifications }),
+        );
+        assert.equal(
+          titles.filter((title) => title.split("\n").includes("Manage sync")).length,
+          1,
+          JSON.stringify({ titles, notifications: context.notifications }),
+        );
+        assert.equal(
+          titles.length,
+          outcome === "applied" ? 4 : 5,
+          JSON.stringify({ titles, notifications: context.notifications }),
+        );
+        assert.equal((await loadConfig()).setupName, "work");
+      });
+    });
+  }
+}
+
+for (const row of ["Storage location", "Manage sync setups", "Manage storage connections"]) {
+  test(`repeated ${row} returns retain search and require only one remapped Back`, async () => {
+    await configured(async () => {
+      const frames: string[] = [];
+      let visits = 0;
+      let inputs = 0;
+      const context = createMockContext({
+        mode: "tui",
+        input: async () => {
+          inputs++;
+          await updateLocalConfig((settings) => ({
+            ...settings,
+            syncSetups: {
+              ...settings.syncSetups,
+              home: {
+                ...settings.syncSetups.home!,
+                storage: { ...settings.syncSetups.home!.storage, path: "refreshed" },
+              },
+            },
+          }));
+          return undefined;
+        },
+      });
+      (context.ctx as ExtensionCommandContext).ui.custom = (async (factory) => {
+        const tui = createTuiHarness({
+          width: 100,
+          rows: 28,
+          keybindings: {
+            matches: (data, action) =>
+              data === ({ "tui.select.confirm": "x", "tui.select.cancel": "q" } as Record<string, string>)[action],
+            getKeys: (action) =>
+              ((({ "tui.select.confirm": ["x"], "tui.select.cancel": ["q"] }) as Record<string, readonly string[]>)[
+                action
+              ] as never) ?? [],
+          },
+        });
+        try {
+          const result = tui.custom(factory);
+          await tui.waitForOpen();
+          const frame = tui.render().join("\n");
+          if (frame.includes("Pi Sync Settings")) {
+            visits++;
+            if (visits === 1) tui.send(`\u001b[200~${row}\u001b[201~`);
+            frames.push(tui.render().join("\n"));
+            // A broken self-to will produce extra Settings visits after this single Back.
+            tui.send(visits <= 2 ? "x" : "q");
+          } else tui.send("q");
+          return await result;
+        } finally {
+          tui.dispose();
+        }
+      }) as ExtensionCommandContext["ui"]["custom"];
+      assert.equal(await showSyncSettings(context.ctx, async () => undefined), "back");
+      assert.equal(visits, 3);
+      for (const frame of frames) {
+        assert.match(frame, new RegExp(row, "u"));
+        assert.doesNotMatch(frame, /Included content|Automatic sync/u);
+      }
+      if (row === "Storage location") {
+        assert.equal(inputs, 2);
+        assert.match(frames[1] ?? "", /refreshed/u);
+      }
       assert.deepEqual(context.notifications, []);
     });
   });
