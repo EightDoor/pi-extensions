@@ -29,9 +29,21 @@ export function LiveDrawer({
   dropped: number;
   filters: Filters;
 }) {
-  const tree = useMemo(() => hierarchy(calls.map((call) => ({ ...call, parentId: call.parentId ?? null }))), [calls]);
+  const tree = useMemo(
+    () =>
+      hierarchy(
+        calls.map((call) => ({
+          ...call,
+          id: call.occurrenceId,
+          rawId: call.id,
+          parentId: call.parentOccurrenceId ?? null,
+        })),
+      ),
+    [calls],
+  );
   const keep = useMemo(
-    () => withAncestors(tree, new Set(calls.filter((call) => matchesCall(call, filters)).map((call) => call.id))),
+    () =>
+      withAncestors(tree, new Set(calls.filter((call) => matchesCall(call, filters)).map((call) => call.occurrenceId))),
     [tree, calls, filters],
   );
   const [expanded, setExpanded] = useState(new Set<string>());
@@ -71,9 +83,10 @@ export function LiveDrawer({
           {rows.map(({ node: call, depth }) => (
             <div
               key={call.id}
-              id={`live-call-${call.id}`}
+              id={`live-call-${call.occurrenceId}`}
               className="live-trace-item"
               data-parent-id={call.parentId ?? ""}
+              data-raw-id={call.rawId}
               style={{ marginLeft: depth * 12 }}
             >
               <div className={`live-call-row ${selected === call.id ? "selected" : ""}`}>
@@ -100,16 +113,34 @@ export function LiveDrawer({
                   onClick={() => select(call.id)}
                 >
                   <strong title={call.name}>{call.name}</strong>
-                  <code>{call.id}</code>
+                  <code title={call.occurrenceId}>{call.rawId}</code>
                   <Status value={call.status} />
                   <span>{duration(call.durationMs)}</span>
                 </button>
                 {view === "timeline" && (
-                  <TimelineMark range={range} call={{ ...call, parentId: call.parentId ?? undefined }} />
+                  <TimelineMark
+                    range={range}
+                    call={{
+                      ...call,
+                      id: call.rawId,
+                      parentId: call.parentOccurrenceId
+                        ? calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id
+                        : undefined,
+                    }}
+                  />
                 )}
               </div>
               {expanded.has(call.id) && (
-                <CallView call={{ ...call, parentId: call.parentId ?? undefined }} all={calls} />
+                <CallView
+                  call={{
+                    ...call,
+                    id: call.rawId,
+                    parentId: call.parentOccurrenceId
+                      ? calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id
+                      : undefined,
+                  }}
+                  all={calls}
+                />
               )}
             </div>
           ))}

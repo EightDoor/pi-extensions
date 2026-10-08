@@ -231,7 +231,7 @@ export function Metadata({ rows }: { rows: [string, string | undefined][] }) {
 }
 export function CallView({ call, all, group: scope = "live" }: { call: Call; all: Call[]; group?: string }) {
   return (
-    <div className="call" id={scope === "detail" ? `${scope}-call-${call.id}` : undefined}>
+    <div className="call" id={scope === "detail" ? `${scope}-call-${call.occurrenceId}` : undefined}>
       <Flex align="center" gap="2">
         <Glyph kind="toolResult" />
         <Text weight="bold">{call.name}</Text>
@@ -240,6 +240,8 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
       <Metadata
         rows={[
           ["Call ID", call.id],
+          ["Occurrence", call.occurrenceId],
+          ["Correlation", call.correlationUnavailable ? "Overlapping raw IDs; association unavailable" : undefined],
           ["Source", "Observed tool execution"],
           [
             "Start observed",
@@ -250,12 +252,12 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
             call.observedEndedAt === undefined ? undefined : new Date(call.observedEndedAt).toISOString(),
           ],
           ["Duration", duration(call.durationMs)],
-          ["Children", String(all.filter((child) => child.parentId === call.id).length)],
+          ["Children", String(all.filter((child) => child.parentOccurrenceId === call.occurrenceId).length)],
         ]}
       />
       {call.parentId &&
-        (all.some((parent) => parent.id === call.parentId) ? (
-          <a className="parent-link" href={`#${scope}-call-${encodeURIComponent(call.parentId)}`}>
+        (all.some((parent) => parent.occurrenceId === call.parentOccurrenceId) ? (
+          <a className="parent-link" href={`#${scope}-call-${encodeURIComponent(call.parentOccurrenceId ?? "")}`}>
             Parent {call.parentId}
             <ChevronRightIcon />
           </a>
@@ -264,11 +266,11 @@ export function CallView({ call, all, group: scope = "live" }: { call: Call; all
             Parent {call.parentId} (not captured)
           </Text>
         ))}
-      <Data label="Arguments" data={call.args} scope={`${call.id}-args`} defaultOpen={false} />
+      <Data label="Arguments" data={call.args} scope={`${call.occurrenceId}-args`} defaultOpen={false} />
       <Data
         label={call.result ? "Result · tool_execution event" : "Result · not captured"}
         data={call.result}
-        scope={`${call.id}-result`}
+        scope={`${call.occurrenceId}-result`}
       />
     </div>
   );

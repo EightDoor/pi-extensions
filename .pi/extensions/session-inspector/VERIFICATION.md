@@ -8,14 +8,20 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/session-inspector/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/session-inspector/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 5 files, 28 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 12 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/session-inspector/vitest.config.ts`: 6 files, 37 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/session-inspector/playwright.config.ts`: 16 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/session-inspector/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
 | Dependency installation | Root `npm install` completed; comparison with the base lockfile found no changed version at any existing package path. New dependencies support local frontend building and browser verification only. |
 
 The current 1,500-entry browser fixture verifies at most 50 trace rows and 100 navigator rows in the DOM, an actual hierarchy level beyond 1,500, and only one initial selected-entry detail request. A separate deterministic chain test covers 1,600 levels without recursive traversal or a UI depth cap. The older pre-redesign sample (182,216 snapshot characters in 2.2 ms) was observational evidence, not an SLA; it is not claimed as a benchmark of the current layout. The deterministic 10,000-entry inventory cap test remains.
+
+## Review remediation
+
+All nine original threads were evaluated independently in `REVIEW.md`: eight introduced/exposed defects are fixed in scope; the old endpoint-page issue is already covered by the current 1,500-level selected-leaf regression. New tests cover coalesced notifications and static-node identity during high-frequency partials, zero retained timers after abort, silent append/label/name/active/schema changes without projection polling, missing versus known-empty historical tool baselines, long OSC/CSI sanitation before visible budgets, repeated raw/nested IDs and per-assistant correlation, overlapping ambiguous IDs and occurrence eviction, independent repeated-ID selection, eviction fallback, navigator scrolling without live-update scroll resets, and selected-detail error/retry recovery. Final native pipeline tests continue to compare enabled/disabled model-visible prefixes.
+
+The reconciliation path uses only public readonly APIs. No private extension implementation, model-prefix transition, new dependency or persistent setting is introduced. Static cache strips live-call references so it cannot retain evicted results. Existing budgets remain; sanitization scans complete strings before output truncation, using Node\'s control-sequence remover and bounded object traversal. Original payloads remain unchanged.
 
 ## Progressive Explorer revision
 

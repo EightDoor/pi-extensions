@@ -11,6 +11,8 @@ export function Inspector({
   selected,
   node,
   detail,
+  detailError,
+  retryDetails,
   call,
   branch,
   snapshot,
@@ -22,6 +24,8 @@ export function Inspector({
   selected: string;
   node?: EntrySummary;
   detail?: DetailView;
+  detailError: string;
+  retryDetails(): void;
   call?: Call;
   branch?: BranchView;
   snapshot?: Snapshot;
@@ -35,7 +39,9 @@ export function Inspector({
   const message = record(raw?.message);
   const payload = raw?.data ?? message?.content;
   const related = snapshot?.nodes.filter((entry) => entry.parentId === selected || entry.id === node?.parentId) ?? [];
-  const recordedCall = snapshot?.calls.find((item) => item.id === node?.toolCallId);
+  const recordedCall = snapshot?.calls.find(
+    (item) => item.id === node?.toolCallId && item.branchAnchor === detail?.toolAnchor && !item.parentOccurrenceId,
+  );
   const liveRaw: Capture | undefined = call
     ? {
         value: JSON.parse(JSON.stringify(call)) as Json,
@@ -43,7 +49,7 @@ export function Inspector({
       }
     : undefined;
   const activeRaw = liveRaw ?? detail?.raw;
-  const captured = entryCalls(detail?.raw, snapshot?.calls ?? []);
+  const captured = entryCalls(detail?.raw, snapshot?.calls ?? [], detail?.toolAnchor);
   const code = call ? (record(call.args.value)?.code as Json | undefined) : scripts(detail?.raw)?.value;
   const codemode = call?.name === "codemode" || Boolean(scripts(detail?.raw)) || message?.toolName === "codemode";
   const isCall = Boolean(call);
@@ -81,6 +87,14 @@ export function Inspector({
           {call?.name ?? node?.name ?? "Session log entry"}
         </Text>
       </div>
+      {detailError && (
+        <div role="alert" className="detail-failure">
+          {detailError}
+          <Button size="1" variant="ghost" onClick={retryDetails}>
+            Retry selected details
+          </Button>
+        </div>
+      )}
       <Tabs.Root value={tab} onValueChange={changeTab} className="inspector-tabs">
         <Tabs.List wrap="nowrap" aria-label="Event detail views">
           {["raw", "prompt", "tools", "context", "skills", "codemode"].map((tab) => (
@@ -152,8 +166,8 @@ export function Inspector({
           )}
           {format === "formatted" && call ? (
             <>
-              <Data label="Arguments · redacted display copy" data={call.args} scope={`${call.id}-args`} />
-              <Data label="Result · observed tool event" data={call.result} scope={`${call.id}-result`} />
+              <Data label="Arguments · redacted display copy" data={call.args} scope={`${call.occurrenceId}-args`} />
+              <Data label="Result · observed tool event" data={call.result} scope={`${call.occurrenceId}-result`} />
               {call.branchAnchor && (
                 <Button variant="ghost" size="1" onClick={() => select(call.branchAnchor ?? "")}>
                   Inspect recorded anchor →
@@ -181,9 +195,12 @@ export function Inspector({
             <Collapsible.Content>
               {call
                 ? snapshot?.calls
-                    .filter((item) => item.parentId === call.id || item.id === call.parentId)
+                    .filter(
+                      (item) =>
+                        item.parentOccurrenceId === call.occurrenceId || item.occurrenceId === call.parentOccurrenceId,
+                    )
                     .map((item) => (
-                      <button type="button" key={item.id} onClick={() => selectCall(item.id)}>
+                      <button type="button" key={item.occurrenceId} onClick={() => selectCall(item.occurrenceId)}>
                         {item.name} · {item.id}
                       </button>
                     ))
@@ -277,7 +294,7 @@ export function Inspector({
           />
           <Data label="Source / output / persisted nestedCalls" data={detail?.raw} />
           {captured.map((call) => (
-            <CallView key={call.id} call={call} all={captured} group="detail" />
+            <CallView key={call.occurrenceId} call={call} all={captured} group="detail" />
           ))}
         </Tabs.Content>
       </Tabs.Root>

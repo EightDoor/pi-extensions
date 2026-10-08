@@ -141,7 +141,7 @@ test("real Pi codemode, live browser, reload credential rotation and shutdown", 
       for (const element of elements) (element as HTMLDetailsElement).open = true;
     });
     await expect(page.locator(".inspector-panel").getByText('"answer 42"', { exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Parent script" })).toHaveAttribute("href", "#live-call-script");
+    await expect(page.getByRole("link", { name: "Parent script" })).toHaveAttribute("href", "#live-call-call-1");
     faux.appendResponses([
       fauxAssistantMessage([
         fauxToolCall("codemode", { code: "await tools.fixture_wait({});" }, { id: "cancel-script" }),

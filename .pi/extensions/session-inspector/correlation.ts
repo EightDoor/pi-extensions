@@ -1,0 +1,23 @@
+import type { Call } from "./model.ts";
+
+// Occurrence IDs form the captured execution graph. Raw IDs are only used with an owning assistant anchor.
+export function correlatedCalls(rawIds: Set<string>, anchor: string | undefined, all: Call[]): Call[] {
+  if (!anchor) return [];
+  const ids = new Set(
+    all
+      .filter(
+        (call) =>
+          (rawIds.has(call.id) ||
+            (call.parentId !== undefined &&
+              rawIds.has(call.parentId) &&
+              !all.some((parent) => parent.id === call.parentId && parent.branchAnchor === anchor))) &&
+          call.branchAnchor === anchor &&
+          !call.parentOccurrenceId &&
+          !call.correlationUnavailable,
+      )
+      .map((call) => call.occurrenceId),
+  );
+  for (let i = 0; i < all.length; i++)
+    for (const call of all) if (call.parentOccurrenceId && ids.has(call.parentOccurrenceId)) ids.add(call.occurrenceId);
+  return all.filter((call) => ids.has(call.occurrenceId));
+}

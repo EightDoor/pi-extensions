@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DetailView } from "../model.ts";
 
 const params = new URLSearchParams(location.hash.slice(1));
@@ -82,19 +82,26 @@ function loadDetail(id: string, signal: AbortSignal): Promise<DetailView> {
     pump();
   });
 }
-export function useDetail(id: string | undefined): { detail?: DetailView; error: string } {
+export function useDetail(id: string | undefined): { detail?: DetailView; error: string; retry(): void } {
+  const [attempt, setAttempt] = useState(0);
+  const owner = useRef<{ id: string; attempt: number } | undefined>(undefined);
+  const retry = () => setAttempt((value) => value + 1);
   const [state, setState] = useState<{ id?: string; detail?: DetailView; error: string }>({ error: "" });
   useEffect(() => {
     if (!id) return;
+    const requestOwner = { id, attempt };
+    owner.current = requestOwner;
     const controller = new AbortController();
+    setState({ id, error: "" });
     void loadDetail(id, controller.signal)
       .then((detail) => {
-        if (!controller.signal.aborted) setState({ id, detail, error: "" });
+        if (!controller.signal.aborted && owner.current === requestOwner) setState({ id, detail, error: "" });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setState({ id, error: "Could not load entry details." });
+        if (!controller.signal.aborted && owner.current === requestOwner)
+          setState({ id, error: "Could not load entry details." });
       });
     return () => controller.abort();
-  }, [id]);
-  return state.id === id ? state : { error: "" };
+  }, [id, attempt]);
+  return { ...(state.id === id ? state : { error: "" }), retry };
 }

@@ -233,8 +233,8 @@ test("list is default; timeline uses a shared axis and log points, never duratio
   await expect(page.locator(".trace-tree .timeline-point").first()).toBeVisible();
   await expect(page.locator(".trace-tree .timeline-span")).toHaveCount(0);
   await openLive(page);
-  await expect(page.locator('[id="live-call-unknown-start"] .timeline-span')).toHaveCount(0);
-  await expect(page.locator('[id="live-call-unknown-start"] .timeline-point')).toBeVisible();
+  await expect(page.locator('[data-raw-id="unknown-start"] .timeline-span')).toHaveCount(0);
+  await expect(page.locator('[data-raw-id="unknown-start"] .timeline-point')).toBeVisible();
   await nav(page, data.alternate).click();
   await expect(page.locator(".trace-timeline")).toBeVisible();
 });
@@ -430,6 +430,97 @@ test("long labels/tab overflow and resize cancellation preserve readable panes",
   await expect(navSplitter).toHaveAttribute("aria-valuenow", stopped ?? "");
   await page.setViewportSize({ width: 1115, height: 627 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("R7: eviction reconciles a captured selection to its remembered transcript anchor", async ({ page }) => {
+  collector.start({ type: "tool_execution_start", toolCallId: "chosen", toolName: "read", args: {} }, data.assistant);
+  collector.end(
+    { type: "tool_execution_end", toolCallId: "chosen", toolName: "read", isError: false, result: "chosen" },
+    data.assistant,
+  );
+  await page.goto(server.url);
+  await openLive(page);
+  await page.getByRole("button", { name: "read · ok", exact: true }).click();
+  await expect(page.locator(".inspector-identity")).toContainText("Captured execution");
+  for (let i = 0; i < 128; i++)
+    collector.end(
+      { type: "tool_execution_end", toolCallId: `new-${i}`, toolName: "test", isError: false, result: i },
+      data.leaf,
+    );
+  server.invalidate(++revision);
+  await expect(page.locator(".inspector-identity")).toContainText(data.assistant);
+  await expect(page.locator(".inspector-identity")).not.toContainText("Captured execution");
+  await expect(nav(page, data.assistant)).toHaveAttribute("aria-current", "true");
+});
+
+test("R6: repeated raw IDs remain independently selectable across live updates", async ({ page }) => {
+  for (const anchor of [data.assistant, data.leaf]) {
+    collector.start({ type: "tool_execution_start", toolCallId: "same", toolName: "read", args: { anchor } }, anchor);
+    collector.end(
+      { type: "tool_execution_end", toolCallId: "same", toolName: "read", isError: false, result: anchor },
+      anchor,
+    );
+  }
+  const records = collector.list();
+  await page.goto(server.url);
+  await openLive(page);
+  await expect(page.getByRole("button", { name: "read · ok", exact: true })).toHaveCount(2);
+  await page.locator(`[id="live-call-${records[0]?.occurrenceId}"] .call-trigger`).click();
+  await expect(page.locator(".inspector-identity")).toContainText(records[0]?.occurrenceId ?? "");
+  await expect(page.locator(".inspector-metadata")).toContainText(data.assistant);
+  await page.locator(`[id="live-call-${records[1]?.occurrenceId}"] .call-trigger`).click();
+  await expect(page.locator(".inspector-metadata")).toContainText(data.leaf);
+});
+
+test("R8: navigator reveals a new selection on the same page without resetting scroll on live refresh", async ({
+  page,
+}) => {
+  const ids: string[] = [];
+  for (let i = 0; i < 80; i++) ids.push(data.manager.appendCustomEntry(`step-${i}`, {}));
+  const target = ids[25];
+  if (!target) throw new Error("No target");
+  await page.goto(server.url);
+  await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
+  await page.locator(".trace-panel").getByRole("button", { name: "Previous", exact: true }).click();
+  await row(page, target).click();
+  await expect(nav(page, target)).toHaveAttribute("aria-current", "true");
+  await expect
+    .poll(() =>
+      page.locator(".tree-scroll").evaluate((container) => {
+        const selected = container.querySelector('[aria-current="true"]');
+        if (!selected) return false;
+        const a = container.getBoundingClientRect();
+        const b = selected.getBoundingClientRect();
+        return b.top >= a.top && b.bottom <= a.bottom;
+      }),
+    )
+    .toBe(true);
+  await page.locator(".tree-scroll").evaluate((container) => {
+    container.scrollTop = 0;
+  });
+  const refreshed = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
+  server.invalidate(++revision);
+  await refreshed;
+  await expect(page.locator(".tree-scroll")).toHaveJSProperty("scrollTop", 0);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+});
+
+test("R9: selected detail errors are explicit and retry recovers without changing selection", async ({ page }) => {
+  let failed = true;
+  await page.route("**/api/detail**", async (route) => {
+    if (failed) await route.fulfill({ status: 400, contentType: "text/plain", body: "Unavailable session data" });
+    else await route.continue();
+  });
+  await page.goto(server.url);
+  await expect(page.locator(".inspector-panel").getByRole("alert")).toContainText("Could not load entry details");
+  const selected = data.manager.getLeafId();
+  failed = false;
+  await page.getByRole("button", { name: "Retry selected details", exact: true }).click();
+  await expect(page.locator(".inspector-panel").getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.locator(".inspector-panel").getByRole("button", { name: "Copy display data" }).first(),
+  ).toBeVisible();
+  await expect(page.locator(".inspector-identity")).toContainText(selected ?? "");
 });
 
 test("large history pages visible rows lazily and preserves arbitrary absolute depth", async ({ page }) => {

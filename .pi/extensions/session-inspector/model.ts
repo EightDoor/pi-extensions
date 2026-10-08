@@ -14,9 +14,13 @@ export interface EntrySummary {
   tokens?: number;
   status?: "success" | "error" | "cancelled";
   toolCallId?: string;
+  toolAnchor?: string;
 }
 export interface Call {
   id: string;
+  occurrenceId: string;
+  parentOccurrenceId?: string;
+  correlationUnavailable?: boolean;
   parentId?: string;
   name: string;
   status: "running" | "ok" | "error" | "unfinished";
@@ -72,6 +76,7 @@ export interface BranchView {
   skillEvidence: Capture;
 }
 export interface DetailView {
+  toolAnchor?: string;
   raw: Capture;
   projected: Capture;
   calls: Call[];

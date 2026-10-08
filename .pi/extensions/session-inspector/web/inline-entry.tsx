@@ -6,7 +6,7 @@ import { count, eventName, record } from "./format.ts";
 import { label } from "./hierarchy.ts";
 
 export function InlineEntry({ entry, inspect }: { entry: EntrySummary; inspect(id: string): void }) {
-  const { detail, error } = useDetail(entry.id);
+  const { detail, error, retry } = useDetail(entry.id);
   const raw = record(detail?.raw.value);
   const message = record(raw?.message);
   const content = raw && Object.hasOwn(raw, "data") ? raw.data : message?.content;
@@ -105,9 +105,14 @@ export function InlineEntry({ entry, inspect }: { entry: EntrySummary; inspect(i
         </Tabs.Content>
       </Tabs.Root>
       {error && (
-        <Text size="1" color="red">
-          {error}
-        </Text>
+        <div role="alert">
+          <Text size="1" color="red">
+            {error}
+          </Text>
+          <Button size="1" variant="ghost" onClick={retry}>
+            Retry inline details
+          </Button>
+        </div>
       )}
       {!detail && !error && (
         <Text size="1" color="gray">

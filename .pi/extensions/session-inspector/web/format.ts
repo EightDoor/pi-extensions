@@ -35,7 +35,13 @@ export interface Filters {
   slowOnly: boolean;
 }
 export function matches(entry: EntrySummary, filters: Filters, calls: Call[]): boolean {
-  const call = calls.find((call) => call.id === entry.toolCallId);
+  const call = calls.find(
+    (call) =>
+      call.id === entry.toolCallId &&
+      call.branchAnchor === entry.toolAnchor &&
+      !call.parentOccurrenceId &&
+      !call.correlationUnavailable,
+  );
   return (
     (filters.kind === "all" || entry.kind === filters.kind) &&
     (!filters.groups.length || filters.groups.includes(group(entry.kind))) &&

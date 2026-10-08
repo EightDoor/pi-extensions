@@ -1,4 +1,9 @@
-import { getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemMessage,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  getInitialSystemMessage,
+} from "@earendil-works/pi-ai";
 import {
   buildSessionProjection,
   type ExtensionContext,
@@ -10,6 +15,7 @@ import {
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
 import type { Collector } from "./collector.ts";
+import { correlatedCalls } from "./correlation.ts";
 import type { BranchView, DetailView, EntrySummary, SkillView, Snapshot } from "./model.ts";
 import { capture, displayText } from "./privacy.ts";
 
@@ -68,6 +74,22 @@ export function snapshot(
   skills: SkillView[],
 ): Snapshot {
   const entries = manager.getEntries();
+  const owning = new Map<string, { id: string; ids: Set<string> }>();
+  const nodes = entries.slice(0, 10000).map((entry) => {
+    const source =
+      entry.type === "message" && entry.message.role === "assistant"
+        ? {
+            id: entry.id,
+            ids: new Set(entry.message.content.filter((block) => block.type === "toolCall").map((block) => block.id)),
+          }
+        : entry.parentId
+          ? owning.get(entry.parentId)
+          : undefined;
+    if (source) owning.set(entry.id, source);
+    const node = summarize(entry, manager.getLabel(entry.id));
+    if (node.toolCallId && source?.ids.has(node.toolCallId)) node.toolAnchor = source.id;
+    return node;
+  });
   return {
     protocol: 1,
     generation,
@@ -76,12 +98,12 @@ export function snapshot(
     name: displayText(manager.getSessionName() ?? "Current session"),
     leafId: manager.getLeafId(),
     totalEntries: entries.length,
-    nodes: entries.slice(0, 10000).map((e) => summarize(e, manager.getLabel(e.id))),
+    nodes,
     incomplete: entries.length > 10000 || tools.length > 256 || skills.length > 256,
     currentPrompt: capture(prompt, 65536),
     tools: tools.slice(0, 256).map((t) => ({
       name: displayText(t.name),
-      description: displayText(t.description.slice(0, 512)),
+      description: displayText(t.description).slice(0, 512),
       exposure: t.exposure,
       active: active.includes(t.name),
       callable:
@@ -92,7 +114,7 @@ export function snapshot(
     skills: skills.slice(0, 256).map((s) => ({
       name: displayText(s.name),
       path: displayText(s.path),
-      description: displayText(s.description.slice(0, 512)),
+      description: displayText(s.description).slice(0, 512),
     })),
     calls: collector.list(),
     droppedCalls: collector.dropped,
@@ -156,11 +178,13 @@ export function branch(
     ),
     sections: capture(historicalSystem?.sections),
     declaredTools: capture(
-      getCurrentTools(projection.messages).map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      })),
+      getInitialSystemMessage(projection.messages)
+        ? getCurrentTools(projection.messages).map((t) => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+          }))
+        : "[unavailable: no initial system/tool checkpoint]",
     ),
     promptUpdates: capture(
       path
@@ -185,12 +209,23 @@ export function detail(manager: ReadonlySessionManager, id: string, leafId: stri
     if (m.role === "assistant") for (const b of m.content) if (b.type === "toolCall") ids.add(b.id);
     if (m.role === "toolResult") ids.add(m.toolCallId);
   }
-  const all = collector.list();
-  // Parent chains are finite and bounded; include multi-depth descendants regardless of arrival order.
-  for (let i = 0; i < all.length; i++) for (const c of all) if (c.parentId && ids.has(c.parentId)) ids.add(c.id);
+  const toolAnchor =
+    entry.type === "message" && entry.message.role === "assistant"
+      ? entry.id
+      : manager
+          .getBranch(id)
+          .slice()
+          .reverse()
+          .find(
+            (candidate) =>
+              candidate.type === "message" &&
+              candidate.message.role === "assistant" &&
+              candidate.message.content.some((block) => block.type === "toolCall" && ids.has(block.id)),
+          )?.id;
   return {
+    toolAnchor,
     raw: capture(entry, 65536),
     projected: capture(projected?.messages),
-    calls: all.filter((c) => ids.has(c.id)),
+    calls: correlatedCalls(ids, toolAnchor, collector.list()),
   };
 }

@@ -14,7 +14,7 @@ import { PaneDrawer, ResizeHandle, useNarrow } from "./panes.tsx";
 import { Trace } from "./trace.tsx";
 import { Sidebar } from "./tree.tsx";
 
-type Selection = { kind: "entry" | "call"; id: string; serial: number; filterVersion?: number };
+type Selection = { kind: "entry" | "call"; id: string; serial: number; filterVersion?: number; anchor?: string | null };
 function App() {
   const [appearance, setAppearance] = useState<"dark" | "light">("dark");
   const [revision, setRevision] = useState(-1);
@@ -49,9 +49,14 @@ function App() {
   const narrow = useNarrow((navOpen ? navWidth : 0) + (inspectorOpen ? inspectorWidth : 0));
   const calls = snapshot?.calls ?? [];
   const entries = snapshot?.nodes ?? [];
-  const selectedCall = selection?.kind === "call" ? calls.find((call) => call.id === selection.id) : undefined;
+  const selectedCall =
+    selection?.kind === "call" ? calls.find((call) => call.occurrenceId === selection.id) : undefined;
   const entryId = selection?.kind === "entry" ? selection.id : (selectedCall?.branchAnchor ?? "");
-  const { detail } = useDetail(selection?.kind === "entry" ? entryId : undefined);
+  const {
+    detail,
+    error: detailError,
+    retry: retryDetails,
+  } = useDetail(selection?.kind === "entry" ? entryId : undefined);
   const selectedNode = entries.find((node) => node.id === entryId);
   const matching = useMemo(
     () => new Set(entries.filter((node) => matches(node, filters, calls)).map((node) => node.id)),
@@ -61,7 +66,13 @@ function App() {
     setSelection((old) => ({ kind: "entry", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
   }
   function selectCall(id: string) {
-    setSelection((old) => ({ kind: "call", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
+    setSelection((old) => ({
+      kind: "call",
+      id,
+      serial: (old?.serial ?? 0) + 1,
+      filterVersion,
+      anchor: calls.find((call) => call.occurrenceId === id)?.branchAnchor,
+    }));
     setLiveOpen(true);
   }
   useEffect(() => {
@@ -135,7 +146,13 @@ function App() {
         setSnapshot(value);
         setError("");
         const id = value.leafId ?? value.nodes[0]?.id;
-        if (id) setSelection((old) => old ?? { kind: "entry", id, serial: 0 });
+        setSelection((old) => {
+          if (old?.kind === "call" && !value.calls.some((call) => call.occurrenceId === old.id)) {
+            const fallback = old.anchor ?? id;
+            return fallback ? { kind: "entry", id: fallback, serial: old.serial + 1 } : undefined;
+          }
+          return old ?? (id ? { kind: "entry", id, serial: 0 } : undefined);
+        });
       })
       .catch((error) => {
         if (!controller.signal.aborted) setError(String(error.message));
@@ -176,6 +193,8 @@ function App() {
       selected={selection?.id ?? ""}
       node={selectedNode}
       detail={detail}
+      detailError={detailError}
+      retryDetails={retryDetails}
       call={selectedCall}
       branch={branch}
       snapshot={snapshot}
@@ -290,7 +309,7 @@ function App() {
           <LiveDrawer
             entries={entries}
             calls={calls}
-            selected={selectedCall?.id}
+            selected={selectedCall?.occurrenceId}
             select={selectCall}
             open={liveOpen}
             changeOpen={setLiveOpen}

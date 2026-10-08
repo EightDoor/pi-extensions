@@ -45,12 +45,16 @@ function Tree({
     const index = flatten(tree, next, keep).findIndex((row) => row.node.id === selected);
     if (index >= 0) setOffset(Math.floor(index / 100) * 100);
   }, [selected, tree, expanded, keep]);
+  const selectedVisible = rows.slice(offset, offset + 100).some((row) => row.node.id === selected);
+  const lastScroll = useRef<{ selected: string; offset: number; element: HTMLElement } | undefined>(undefined);
   useEffect(() => {
-    if (nav.current) {
-      const element = nav.current.querySelector<HTMLElement>('[aria-current="true"]');
-      if (element) scrollWithin(nav.current, element);
-    }
-  }, []);
+    const element = nav.current?.querySelector<HTMLElement>('[aria-current="true"]');
+    if (!selectedVisible || !nav.current || !element || element.dataset.entryId !== selected) return;
+    const last = lastScroll.current;
+    if (last?.selected === selected && last.offset === offset && last.element === element) return;
+    lastScroll.current = { selected, offset, element };
+    scrollWithin(nav.current, element);
+  }, [selected, offset, selectedVisible]);
   useEffect(() => {
     if (offset >= rows.length && offset) setOffset(0);
   }, [offset, rows.length]);

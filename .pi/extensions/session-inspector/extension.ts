@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Collector } from "./collector.ts";
+import { SessionFeed } from "./feed.ts";
 import type { SkillView } from "./model.ts";
-import { branch, detail, snapshot } from "./projection.ts";
+import { branch, detail } from "./projection.ts";
 import { startServer, type ViewerServer } from "./server.ts";
 
 interface Owner {
   controller: AbortController;
   generation: string;
-  revision: number;
+  feed?: SessionFeed;
   ctx: ExtensionContext;
   collector?: Collector;
   skills: SkillView[];
@@ -45,6 +46,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     if (!owner) return;
     owners.delete(ctx.sessionManager);
     owner.controller.abort();
+    owner.feed?.close();
     await owner.server?.close();
     await owner.opening;
     owner.collector = undefined;
@@ -53,18 +55,17 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     epochFor(ctx);
     let owner = owners.get(ctx.sessionManager);
     if (!owner) {
-      owner = { controller: new AbortController(), generation: randomUUID(), revision: 0, ctx, skills: [] };
+      owner = { controller: new AbortController(), generation: randomUUID(), ctx, skills: [] };
       owners.set(ctx.sessionManager, owner);
     }
     owner.ctx = ctx;
     return owner;
   }
-  function changed(ctx: ExtensionContext): Owner | undefined {
+  function changed(ctx: ExtensionContext, structural = true): Owner | undefined {
     const owner = owners.get(ctx.sessionManager);
     if (!owner || !alive(owner)) return;
     owner.ctx = ctx;
-    owner.revision++;
-    owner.server?.invalidate(owner.revision);
+    owner.feed?.changed(structural);
     return owner;
   }
   pi.on("session_start", async (_event, ctx) => {
@@ -95,24 +96,40 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
   pi.on("thinking_level_select", (_event, ctx) => {
     changed(ctx);
   });
+  function executionAnchor(ctx: ExtensionContext, rawId: string): string | null {
+    const leaf = ctx.sessionManager.getLeafId();
+    const entry = ctx.sessionManager.getLeafEntry();
+    if (entry?.type === "message" && entry.message.role === "assistant") return entry.id;
+    return (
+      ctx.sessionManager
+        .getBranch(leaf ?? undefined)
+        .slice()
+        .reverse()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "assistant" &&
+            entry.message.content.some((block) => block.type === "toolCall" && block.id === rawId),
+        )?.id ?? leaf
+    );
+  }
   pi.on("tool_execution_start", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
-    owner?.collector?.start(event, ctx.sessionManager.getLeafId());
-    changed(ctx);
+    owner?.collector?.start(event, executionAnchor(ctx, event.toolCallId));
+    changed(ctx, false);
   });
   pi.on("tool_execution_update", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
-    owner?.collector?.update(event, ctx.sessionManager.getLeafId());
-    changed(ctx);
+    if (owner?.collector?.update(event, ctx.sessionManager.getLeafId())) changed(ctx, false);
   });
   pi.on("tool_execution_end", (event, ctx) => {
     const owner = owners.get(ctx.sessionManager);
-    owner?.collector?.end(event, ctx.sessionManager.getLeafId());
-    changed(ctx);
+    owner?.collector?.end(event, executionAnchor(ctx, event.toolCallId));
+    changed(ctx, false);
   });
   pi.on("agent_settled", (_event, ctx) => {
     owners.get(ctx.sessionManager)?.collector?.settle();
-    changed(ctx);
+    changed(ctx, false);
   });
 
   async function open(owner: Owner, ctx: ExtensionCommandContext): Promise<void> {
@@ -129,20 +146,21 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
           .slice(0, 257) // One sentinel lets the snapshot disclose an incomplete catalog.
           .map((s) => ({ name: s.name, path: s.filePath, description: s.description }));
         owner.collector = new Collector();
+        owner.feed = new SessionFeed({
+          pi,
+          context: () => owner.ctx,
+          collector: owner.collector,
+          skills: owner.skills,
+          generation: owner.generation,
+          signal: owner.controller.signal,
+          invalidate: (revision) => {
+            if (alive(owner)) owner.server?.invalidate(revision);
+          },
+        });
         const server = await deps.start({
           generation: owner.generation,
           signal: owner.controller.signal,
-          snapshot: () =>
-            snapshot(
-              ctx.sessionManager,
-              owner.collector ?? new Collector(),
-              owner.generation,
-              owner.revision,
-              owner.ctx.getSystemPrompt(),
-              pi.getAllTools(),
-              pi.getActiveTools(),
-              owner.skills,
-            ),
+          snapshot: () => owner.feed?.snapshot(),
           branch: (id, offset) => branch(ctx.sessionManager, id, offset, owner.skills),
           detail: (id, leaf) => detail(ctx.sessionManager, id, leaf, owner.collector ?? new Collector()),
         });
@@ -151,6 +169,7 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
           return;
         }
         owner.server = server;
+        owner.feed.start();
       }
       if (!alive(owner)) return;
       const url = owner.server.url;
@@ -168,6 +187,8 @@ export function registerInspector(pi: ExtensionAPI, deps: Dependencies = default
     } catch {
       if (!alive(owner)) return;
       owner.collector = undefined;
+      owner.feed?.close();
+      owner.feed = undefined;
       await owner.server?.close();
       owner.server = undefined;
       if (alive(owner))

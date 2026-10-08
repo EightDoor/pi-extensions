@@ -12,8 +12,8 @@ import { axis } from "./timing.ts";
 export function scrollWithin(container: HTMLElement, element: HTMLElement): void {
   const parent = container.getBoundingClientRect();
   const child = element.getBoundingClientRect();
-  if (child.top < parent.top) container.scrollTop -= parent.top - child.top;
-  else if (child.bottom > parent.bottom) container.scrollTop += child.bottom - parent.bottom;
+  if (child.top < parent.top) container.scrollTop -= Math.ceil(parent.top - child.top);
+  else if (child.bottom > parent.bottom) container.scrollTop += Math.ceil(child.bottom - parent.bottom);
 }
 export function Trace({
   entries,
