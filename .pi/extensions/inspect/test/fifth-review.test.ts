@@ -77,7 +77,7 @@ describe("R25/R26/R29/R31: malformed persisted evidence", () => {
     expect(() => x.instance.start()).not.toThrow();
     x.controller.abort();
   });
-  it.each([undefined, null, "content", {}, 42, true])(
+  it.each(["content", {}, 42, true])(
     "rejects non-array assistant content %j without breaking descendant raw details",
     (content) => {
       const f = fixture();

@@ -223,7 +223,7 @@ describe("R41: complete system fields consumed by native replay", () => {
       await server.close();
     }
   });
-  it.each([undefined, null, {}, 42, true, [null], [[]], [{ type: "text", text: {} }]])(
+  it.each([{}, 42, true, [null], [[]], [{ type: "text", text: {} }]])(
     "diagnoses unsafe content %j and retains selected/descendant raw evidence",
     (content) => {
       const f = fixture();

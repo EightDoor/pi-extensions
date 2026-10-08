@@ -852,3 +852,53 @@ test("R37: eviction reveals a filtered-out anchor using filter ownership at asyn
     release();
   }
 });
+
+test("R43: bounded refresh reconciles an omitted entry, reveals filtered fallback and preserves represented previews", async ({
+  page,
+}) => {
+  for (let i = 0; i < 10001; i++) {
+    data.manager.branch(data.user);
+    data.manager.appendCustomEntry("off", {});
+  }
+  data.manager.branch(data.user);
+  const late = data.manager.appendCustomEntry("late-selected", {});
+  await explore(page);
+  await expect(row(page, late)).toBeVisible();
+  await expect(page.locator(".inspector-identity")).toContainText(late);
+  const search = page.getByRole("textbox", { name: "Search session" });
+  await search.fill("no-record-matches-this-query");
+  data.manager.branch(data.alternate);
+  server.invalidate(++revision);
+  await expect(page.locator(".inspector-identity")).toContainText(data.alternate);
+  await expect(page.locator(".inspector-identity")).not.toContainText(late);
+  await expect(nav(page, data.alternate)).toHaveAttribute("aria-current", "true");
+  await expect(row(page, data.alternate)).toBeVisible();
+  await expect(search).toHaveValue("no-record-matches-this-query");
+  expect(data.manager.getLeafId()).toBe(data.alternate);
+  data.manager.branch(data.user);
+  const updated = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
+  server.invalidate(++revision);
+  await updated;
+  await expect(page.locator(".inspector-identity")).toContainText(data.alternate);
+  expect(data.manager.getLeafId()).toBe(data.user);
+});
+
+test("R43: an empty represented inventory clears prior selection and cached detail", async ({ page }) => {
+  let empty = false;
+  await page.route("**/api/snapshot?**", async (route) => {
+    const response = await route.fetch();
+    const value = await response.json();
+    await route.fulfill({
+      response,
+      json: empty ? { ...value, nodes: [], leafId: null, calls: [], totalEntries: 0 } : value,
+    });
+  });
+  await explore(page);
+  await nav(page, data.assistant).click();
+  await expect(page.locator(".inspector-identity")).toContainText(data.assistant);
+  empty = true;
+  server.invalidate(++revision);
+  await expect(page.locator(".inspector-identity")).toContainText("no selection");
+  await expect(page.locator(".inspector-identity")).not.toContainText(data.assistant);
+  await expect(page.locator('.node[aria-current="true"]')).toHaveCount(0);
+});

@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 12 files, 185 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 40 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 13 files, 216 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 42 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -60,6 +60,12 @@ Semantic audit against AGENTS.md and docs/extension-conventions.md covered every
 ## Final-refresh system-envelope fix
 
 R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
+
+## Seventh-review checkpoint and selection fixes
+
+R42/R43 and native-audit finding R44 are recorded in REVIEW.md. Every stored system-message source was enumerated from sessionEntryToContextMessages: ordinary message entries normalize legacy missing/null content; compaction-owned checkpoints inject their message directly; custom/branch/compaction summaries contribute distinct non-system roles. Shared system-message.ts guards checkpoint content/sections/tool deltas without altering raw data, while ordinary system/user/assistant/toolResult missing/null normalization remains native-owned. Tests cover malformed and absent/falsy checkpoints, valid native prompt/tool equality, newest-checkpoint-only retention, all four legacy message roles and authenticated checkpoint/descendant raw routes.
+
+Snapshot selection is reconciled against represented IDs at async admission. Omitted entries fall back to a represented leaf/node with the current filter epoch; empty inventories clear selection/details; represented historical previews remain selected even when Pi moves its leaf. Browser fixtures exceed 10,000 entries and verify filtered fallback visibility in navigator/trace, retained search, represented preview stability and no inspector-driven leaf mutation. Validation commands and final totals above apply; the unchanged R1–R41/native-prefix/lifecycle suites are retained. Guides: AGENTS.md and docs/extension-conventions.md; audit covers projection sources/normalization, bounded membership, original payload preservation, async ownership and standalone Jiti imports. CI1 and pre-existing paid-provider/desktop limitations remain deferred/unverified; no package/settings/release or model-prefix transition.
 
 ## Local directory rename
 

@@ -176,13 +176,17 @@ function App() {
           if (controller.signal.aborted || lifecycle.current.terminal) return;
           setSnapshot(value);
           setError("");
-          const id = value.leafId ?? value.nodes[0]?.id;
+          const represented = new Set(value.nodes.map((node) => node.id));
+          const id = value.leafId && represented.has(value.leafId) ? value.leafId : value.nodes[0]?.id;
           setSelection((old) => {
             if (old?.kind === "call" && !value.calls.some((call) => call.occurrenceId === old.id)) {
-              const fallback = value.nodes.some((node) => node.id === old.anchor) ? old.anchor : id;
+              const fallback = old.anchor && represented.has(old.anchor) ? old.anchor : id;
               return fallback
                 ? { kind: "entry", id: fallback, serial: old.serial + 1, filterVersion: filterEpoch.current }
                 : undefined;
+            }
+            if (old?.kind === "entry" && !represented.has(old.id)) {
+              return id ? { kind: "entry", id, serial: old.serial + 1, filterVersion: filterEpoch.current } : undefined;
             }
             return old ?? (id ? { kind: "entry", id, serial: 0 } : undefined);
           });

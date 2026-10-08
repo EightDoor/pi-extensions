@@ -1,4 +1,5 @@
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { systemMessageIssue } from "./system-message.ts";
 
 export function identityIssue(entry: SessionEntry | undefined): string | undefined {
   if (typeof entry?.id !== "string" || !entry.id.length) return "missing, empty or non-string entry id";
@@ -14,46 +15,19 @@ export function identityIssue(entry: SessionEntry | undefined): string | undefin
   if (entry.type === "message" && (typeof entry.message?.role !== "string" || !entry.message.role.length))
     return "missing, empty or non-string message role";
   if (entry.type === "message" && entry.message.role === "system") {
+    // Native sessionEntryToContextMessages restores legacy missing/null content.
     const m = entry.message;
-    if (
-      typeof m.content !== "string" &&
-      (!Array.isArray(m.content) ||
-        m.content.some(
-          (block) =>
-            !block ||
-            typeof block !== "object" ||
-            Array.isArray(block) ||
-            (block.type === "text" && typeof block.text !== "string"),
-        ))
-    )
-      return "malformed system-message content";
-    if (
-      m.sections != null &&
-      (typeof m.sections !== "object" ||
-        Array.isArray(m.sections) ||
-        Object.values(m.sections).some((value) => value !== null && typeof value !== "string"))
-    )
-      return "malformed system-message sections";
-    for (const delta of [m.toolsAdded, m.toolsRemoved]) {
-      if (
-        delta != null &&
-        (!Array.isArray(delta) ||
-          delta.some(
-            (tool) =>
-              !tool ||
-              typeof tool !== "object" ||
-              Array.isArray(tool) ||
-              typeof tool.name !== "string" ||
-              !tool.name.length ||
-              tool.name.length > 512,
-          ))
-      )
-        return "malformed system-message tool delta";
-    }
+    const issue = systemMessageIssue(m.content == null ? { ...m, content: "" } : m);
+    if (issue) return issue;
+  }
+  if (entry.type === "compaction" && entry.systemMessage) {
+    const issue = systemMessageIssue(entry.systemMessage);
+    if (issue) return `checkpoint: ${issue}`;
   }
   if (
     entry.type === "message" &&
     entry.message.role === "assistant" &&
+    entry.message.content != null &&
     (!Array.isArray(entry.message.content) ||
       entry.message.content.some((block) => !block || typeof block !== "object" || Array.isArray(block)))
   )
