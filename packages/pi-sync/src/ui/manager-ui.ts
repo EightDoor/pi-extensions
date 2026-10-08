@@ -162,6 +162,7 @@ export async function showSyncManager(
         const result = await runCancellableOperation(ctx, "Loading sync history…", "history", runRoute, {
           signal: sessionSignal,
           commitAware: true,
+          cancelAcrossDialogs: true,
           cancelledMessage: "History review cancelled; no files were changed.",
         });
         return { kind: result.kind === "closed" ? "close" : "stay" };
