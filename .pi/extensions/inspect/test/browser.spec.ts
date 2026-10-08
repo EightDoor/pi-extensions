@@ -791,3 +791,64 @@ test("large history pages visible rows lazily and preserves arbitrary absolute d
   expect(Number(await row(page, data.manager.getLeafId() ?? "").getAttribute("aria-level"))).toBeGreaterThan(1500);
   expect(requests.filter((url) => url.includes("/api/detail"))).toHaveLength(1);
 });
+
+test("R37: eviction reveals a filtered-out anchor using filter ownership at async admission", async ({ page }) => {
+  const initialLeaf = data.manager.getLeafId();
+  collector.start(
+    { type: "tool_execution_start", toolCallId: "chosen", toolName: "unique-selection-name", args: {} },
+    data.assistant,
+  );
+  collector.end(
+    {
+      type: "tool_execution_end",
+      toolCallId: "chosen",
+      toolName: "unique-selection-name",
+      isError: false,
+      result: "chosen",
+    },
+    data.assistant,
+  );
+  let hold = false;
+  let release!: () => void;
+  let ready!: () => void;
+  const admitted = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/snapshot?**", async (route) => {
+    const response = await route.fetch();
+    if (hold) {
+      ready();
+      await pending;
+    }
+    await route.fulfill({ response });
+  });
+  try {
+    await explore(page);
+    await openLive(page);
+    await page.getByRole("button", { name: "unique-selection-name · ok", exact: true }).click();
+    const search = page.getByRole("textbox", { name: "Search session" });
+    await search.fill("unique-selection-name");
+    for (let i = 0; i < 128; i++)
+      collector.end(
+        { type: "tool_execution_end", toolCallId: `new-${i}`, toolName: "test", isError: false, result: i },
+        data.leaf,
+      );
+    hold = true;
+    server.invalidate(++revision);
+    await admitted;
+    await search.fill("UNIQUE-SELECTION-NAME");
+    hold = false;
+    release();
+    await expect(page.locator(".inspector-identity")).toContainText(data.assistant);
+    await expect(nav(page, data.assistant)).toHaveAttribute("aria-current", "true");
+    await expect(row(page, data.assistant)).toBeVisible();
+    await expect(search).toHaveValue("UNIQUE-SELECTION-NAME");
+    expect(data.manager.getLeafId()).toBe(initialLeaf);
+  } finally {
+    hold = false;
+    release();
+  }
+});

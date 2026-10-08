@@ -8,8 +8,8 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 11 files, 108 tests pass within the 5,000 ms test limit. |
-| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 39 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 12 files, 162 tests pass within the 5,000 ms test limit. |
+| Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 40 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
 | Root tests | `npm test`: 542 files pass; 7,461 tests pass and one existing test is skipped. |
@@ -48,6 +48,14 @@ Fallback URLs use a 43-character Base64url encoding of the original 32 random to
 ## Primary /inspect command
 
 `/inspect` and `/inspect stop` are the primary routes and all usage/fallback prompts use them. `/session-inspector` retains the identical handler as a compatibility alias. Extension-conventions command MUST rules were audited for preserved established routes, argument completion/rejection, consent, non-TUI observability and shared lifecycle ownership; no settings or model-visible behavior changed. Local tests exercise primary mode guards and alias consent/start/stop reuse; the real Pi/browser lifecycle test and explicit/trusted-discovery/reload/replacement smoke now exercise `/inspect`. The other browser flows are unchanged and reuse the preceding full 30-test run.
+
+## Sixth-review remediation
+
+R36–R40 are confirmed in-scope fixes. Sanitized credential keys are classified across camelCase/acronym boundaries while tokenCount/apiKeyCount and prose labels remain visible. Snapshot eviction uses filter ownership at async admission and only represented anchors. Entry-summary timestamp/result IDs use 512-character rejection budgets with bounded raw diagnostics. Context edits validate target identity plus null/string/object-array replacements before native replay, preserving authenticated raw access for the edit and descendants. Optional missing/empty session_info names retain native title-clear semantics; other non-string values remain diagnostic.
+
+Native comparison covers user, assistant, toolResult and custom edit targets, null omissions, strings (including empty), empty/object arrays, and loaded strings requiring native role normalization. Malformed replacement/target classes and exact/over-budget summary identities are table-tested. The delayed browser snapshot test changes filters after the server response is captured and verifies visible fallback in both views, unchanged filters and unchanged Pi leaf. Validation: local build/types/Biome, 162 local tests, 40 Chromium tests, explicit/trusted-discovery/reload/replacement Pi smoke and both root gates passed (7,461 root tests, one skip). Final native-equivalence test additions were locally revalidated; production source and root inputs are unchanged since those full gates.
+
+Semantic audit against AGENTS.md and docs/extension-conventions.md covered every EntrySummary string, sanitation-before-classification, all native replacement branches, optional name semantics, async generation/filter ownership, immutable raw payloads, request-prefix stability and owned lifecycle cleanup. No new task/settings/dependency/package/protocol/prefix transition. CI1 remains deferred; paid-provider/final-transport/physical-desktop limitations are unchanged.
 
 ## Local directory rename
 

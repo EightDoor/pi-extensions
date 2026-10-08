@@ -38,9 +38,10 @@ function App() {
     slowOnly: false,
   });
   const [filterVersion, setFilterVersion] = useState(0);
+  const filterEpoch = useRef(0);
   function changeFilters(value: Filters) {
     setFilters({ ...value, query: boundedSearch(value.query) });
-    setFilterVersion((previous) => previous + 1);
+    setFilterVersion(++filterEpoch.current);
   }
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
@@ -178,8 +179,10 @@ function App() {
           const id = value.leafId ?? value.nodes[0]?.id;
           setSelection((old) => {
             if (old?.kind === "call" && !value.calls.some((call) => call.occurrenceId === old.id)) {
-              const fallback = old.anchor ?? id;
-              return fallback ? { kind: "entry", id: fallback, serial: old.serial + 1 } : undefined;
+              const fallback = value.nodes.some((node) => node.id === old.anchor) ? old.anchor : id;
+              return fallback
+                ? { kind: "entry", id: fallback, serial: old.serial + 1, filterVersion: filterEpoch.current }
+                : undefined;
             }
             return old ?? (id ? { kind: "entry", id, serial: 0 } : undefined);
           });

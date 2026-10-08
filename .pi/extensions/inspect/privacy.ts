@@ -106,7 +106,8 @@ export function capture(input: unknown, maxChars = 32768): Capture {
         result[name] = "[accessor omitted]";
         continue;
       }
-      result[name] = secretKey.test(cleanKey)
+      const classifiedKey = cleanKey.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2");
+      result[name] = secretKey.test(classifiedKey)
         ? "[redacted]"
         : key === "data" && type === "image"
           ? raster
