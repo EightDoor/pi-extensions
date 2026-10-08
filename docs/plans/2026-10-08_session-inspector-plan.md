@@ -111,7 +111,7 @@ The user requests the supplied screenshot's interface form, not a color-only ref
 
 - [x] Implement the screenshot's layout, hierarchy, styling and functional trace/filter/detail controls while preserving the local boundary and read-only data contract; acceptance is Chromium interaction tests and rendered screenshot inspection.
 - [x] Verify bounded formatted/JSON previews, explicit copy failure reporting, lazy details, missing metrics, live updates and narrow/light layouts; acceptance is local types/tests and browser tests.
-- [ ] Update documentation/evidence, run both root gates and Pi smoke, audit the intended diff, and push the signed UI revision to PR #1510; leave user acceptance pending.
+- [x] Update documentation/evidence, run both root gates and Pi smoke, audit the intended diff, and push the signed UI revision to PR #1510; leave user acceptance pending. Evidence: signed UI commit `ee7bd318` pushed to PR #1510; 22 local tests, six Chromium tests, Pi smoke and both root gates pass.
 
 Applicable MUSTs: project-local boundaries, no model-visible mutations, safe display copies, async ownership/cancellation, deterministic tests and both repository gates. Verification methods: Review, local Validator/Test, Chromium visual/interaction Test and Pi Smoke.
 
