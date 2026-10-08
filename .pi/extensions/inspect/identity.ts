@@ -13,6 +13,44 @@ export function identityIssue(entry: SessionEntry | undefined): string | undefin
   if (typeof entry.type !== "string" || !entry.type.length) return "missing, empty or non-string entry type";
   if (entry.type === "message" && (typeof entry.message?.role !== "string" || !entry.message.role.length))
     return "missing, empty or non-string message role";
+  if (entry.type === "message" && entry.message.role === "system") {
+    const m = entry.message;
+    if (
+      typeof m.content !== "string" &&
+      (!Array.isArray(m.content) ||
+        m.content.some(
+          (block) =>
+            !block ||
+            typeof block !== "object" ||
+            Array.isArray(block) ||
+            (block.type === "text" && typeof block.text !== "string"),
+        ))
+    )
+      return "malformed system-message content";
+    if (
+      m.sections != null &&
+      (typeof m.sections !== "object" ||
+        Array.isArray(m.sections) ||
+        Object.values(m.sections).some((value) => value !== null && typeof value !== "string"))
+    )
+      return "malformed system-message sections";
+    for (const delta of [m.toolsAdded, m.toolsRemoved]) {
+      if (
+        delta != null &&
+        (!Array.isArray(delta) ||
+          delta.some(
+            (tool) =>
+              !tool ||
+              typeof tool !== "object" ||
+              Array.isArray(tool) ||
+              typeof tool.name !== "string" ||
+              !tool.name.length ||
+              tool.name.length > 512,
+          ))
+      )
+        return "malformed system-message tool delta";
+    }
+  }
   if (
     entry.type === "message" &&
     entry.message.role === "assistant" &&

@@ -8,7 +8,7 @@ Recorded on 2026-10-08 for the project-local Session Inspector. Commands run fro
 | --- | --- |
 | Browser build | `node .pi/extensions/inspect/build.mjs` passes; bundled React/Radix JS/CSS load through authenticated loopback serving with no development server. |
 | Local types | `npm exec tsc -- --project .pi/extensions/inspect/tsconfig.json` passes. |
-| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 12 files, 162 tests pass within the 5,000 ms test limit. |
+| Local tests | `npm exec vitest -- run --config .pi/extensions/inspect/vitest.config.ts`: 12 files, 185 tests pass within the 5,000 ms test limit. |
 | Browser tests | `npm exec playwright -- test --config .pi/extensions/inspect/playwright.config.ts`: 40 Chromium tests pass, including real Pi codemode, cancellation, reload and runtime shutdown. |
 | Pi loading/modes | `node .pi/extensions/inspect/smoke.mjs` passes explicit loading, trusted auto-discovery, RPC rejection/stop, reload, replacement, orderly exit, and text/JSON rejection without protocol corruption. |
 | Root gate | `npm run check` passes builds, Biome, boundaries and workspace typechecks. Existing unrelated `pi-sync` test lint warnings remain warnings. |
@@ -56,6 +56,10 @@ R36–R40 are confirmed in-scope fixes. Sanitized credential keys are classified
 Native comparison covers user, assistant, toolResult and custom edit targets, null omissions, strings (including empty), empty/object arrays, and loaded strings requiring native role normalization. Malformed replacement/target classes and exact/over-budget summary identities are table-tested. The delayed browser snapshot test changes filters after the server response is captured and verifies visible fallback in both views, unchanged filters and unchanged Pi leaf. Validation: local build/types/Biome, 162 local tests, 40 Chromium tests, explicit/trusted-discovery/reload/replacement Pi smoke and both root gates passed (7,461 root tests, one skip). Final native-equivalence test additions were locally revalidated; production source and root inputs are unchanged since those full gates.
 
 Semantic audit against AGENTS.md and docs/extension-conventions.md covered every EntrySummary string, sanitation-before-classification, all native replacement branches, optional name semantics, async generation/filter ownership, immutable raw payloads, request-prefix stability and owned lifecycle cleanup. No new task/settings/dependency/package/protocol/prefix transition. CI1 remains deferred; paid-provider/final-transport/physical-desktop limitations are unchanged.
+
+## Final-refresh system-envelope fix
+
+R41 was found by the required final feedback refresh and independently confirmed in Pi AI contentText/getCurrentSystemMessage/getCurrentTools. Before replay, malformed system content, section values and tool-delta shapes are diagnosed; valid string/text arrays, future non-text object blocks, null section removals and absent/null optional metadata retain native behavior. Native prompt/tool equality and authenticated system/descendant raw-route regressions pass. Total local suite: 185 tests. Full browser suite (40), Pi smoke and root check rerun; unchanged root test inputs reuse the full passing gate above. No new prefix, mutation, ownership or compatibility deviation beyond explicit unsafe-envelope diagnostics.
 
 ## Local directory rename
 

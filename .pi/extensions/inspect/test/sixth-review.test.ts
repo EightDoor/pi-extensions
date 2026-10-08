@@ -1,3 +1,4 @@
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { buildSessionProjection } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { Collector } from "../collector.ts";
@@ -192,6 +193,91 @@ describe("R39: context-edit native replacement classes", () => {
       expect(branch(f.manager, id, 0, []).ancestryIssue).toContain("target");
     },
   );
+});
+describe("R41: complete system fields consumed by native replay", () => {
+  it("serves malformed system and descendant raw details over authenticated routes", async () => {
+    const f = fixture();
+    const system = f.manager.getEntry(f.system);
+    if (system?.type !== "message") throw Error("No system");
+    Object.assign(system.message, { content: { bad: true } });
+    const c = new Collector();
+    const server = await startServer({
+      generation: "g",
+      signal: new AbortController().signal,
+      snapshot: () => snapshot(f.manager, c, "g", 0, "", [], [], []),
+      branch: (id, offset) => branch(f.manager, id, offset, []),
+      detail: (id, leaf) => detail(f.manager, id, leaf, c),
+    });
+    try {
+      for (const id of [f.system, f.result])
+        for (const route of ["branch", "detail"]) {
+          const response = await fetch(`${server.origin}/api/${route}?generation=g&id=${id}&leaf=${id}`, {
+            headers: { "X-Inspector-Token": server.token },
+          });
+          expect(response.status).toBe(200);
+          const body = await response.json();
+          expect(body.ancestryIssue).toContain("system-message content");
+          if (route === "detail") expect(body.raw).toBeDefined();
+        }
+    } finally {
+      await server.close();
+    }
+  });
+  it.each([undefined, null, {}, 42, true, [null], [[]], [{ type: "text", text: {} }]])(
+    "diagnoses unsafe content %j and retains selected/descendant raw evidence",
+    (content) => {
+      const f = fixture();
+      const system = f.manager.getEntry(f.system);
+      if (system?.type !== "message") throw Error("No system");
+      Object.assign(system.message, { content });
+      const before = JSON.stringify(f.manager.getEntries());
+      for (const selected of [f.system, f.result]) {
+        expect(branch(f.manager, selected, 0, []).ancestryIssue).toContain("system-message content");
+        expect(detail(f.manager, selected, selected, new Collector()).raw).toBeDefined();
+      }
+      expect(JSON.stringify(f.manager.getEntries())).toBe(before);
+    },
+  );
+  it.each([
+    ["sections", []],
+    ["sections", { rule: undefined }],
+    ["sections", { rule: {} }],
+    ["sections", 42],
+    ["toolsAdded", {}],
+    ["toolsAdded", [null]],
+    ["toolsAdded", [{ name: {} }]],
+    ["toolsRemoved", {}],
+    ["toolsRemoved", [null]],
+  ])("diagnoses malformed %s %j before replay", (key, value) => {
+    const f = fixture();
+    const system = f.manager.getEntry(f.system);
+    if (system?.type !== "message") throw Error("No system");
+    Object.assign(system.message, { [key]: value });
+    expect(branch(f.manager, f.result, 0, []).ancestryIssue).toContain("system-message");
+    expect(detail(f.manager, f.result, f.result, new Collector()).raw).toBeDefined();
+  });
+  it.each(["", [], [{ type: "text", text: "base" }], [{ type: "future", text: "ignored" }]])(
+    "matches native prompt/tool replay for safe content %j",
+    (content) => {
+      const f = fixture();
+      const system = f.manager.getEntry(f.system);
+      if (system?.type !== "message") throw Error("No system");
+      Object.assign(system.message, { content, sections: { removed: null, kept: "rule" } });
+      const messages = buildSessionProjection(f.manager.getEntries(), f.result).messages;
+      const result = branch(f.manager, f.result, 0, []);
+      expect(result.ancestryIssue).toBeUndefined();
+      expect(result.prompt.value).toBe(getCurrentSystemPrompt(messages));
+      expect(result.declaredTools.value).toEqual(JSON.parse(JSON.stringify(getCurrentTools(messages))));
+    },
+  );
+  it("retains native absent/null optional metadata as a no-op", () => {
+    const f = fixture();
+    const system = f.manager.getEntry(f.system);
+    if (system?.type !== "message") throw Error("No system");
+    Object.assign(system.message, { content: "", sections: null, toolsAdded: null, toolsRemoved: null });
+    expect(branch(f.manager, f.system, 0, []).ancestryIssue).toBeUndefined();
+    expect(branch(f.manager, f.system, 0, []).declaredTools.value).toEqual([]);
+  });
 });
 describe("R40: native title-clear equivalence", () => {
   it.each([undefined, "", "  ", "valid"])("retains supported title %j", (name) => {
