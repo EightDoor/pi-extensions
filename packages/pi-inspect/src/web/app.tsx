@@ -261,7 +261,10 @@ function App() {
       ),
     [scoped.rows, showInternal, selection?.filterVersion, filterVersion, entryId],
   );
-  const hiddenMatches = scoped.rows.filter(({ node }) => internalEntry(node) && matching.has(node.id)).length;
+  const visibleHistory = useMemo(() => new Set(historyRows.map(({ node }) => node.id)), [historyRows]);
+  const hiddenMatches = scoped.rows.filter(
+    ({ node }) => internalEntry(node) && matching.has(node.id) && !visibleHistory.has(node.id),
+  ).length;
   const sidebar = <SessionFilters filters={filters} change={changeFilters} />;
   const selectedBranch = branch?.leafId === entryId ? branch : undefined;
   const inspector = (

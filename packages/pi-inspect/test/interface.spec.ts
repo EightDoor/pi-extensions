@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { Type } from "typebox";
 import { Collector } from "../src/collector.js";
 import { captureContext } from "../src/context.js";
 import { branch, detail, snapshot } from "../src/projection.js";
@@ -8,14 +9,16 @@ import { fixture, skills, tools } from "./fixtures.js";
 let server: ViewerServer;
 let f: ReturnType<typeof fixture>;
 let collector: Collector;
+let inventoryTools = tools;
 test.beforeEach(async () => {
   f = fixture();
   collector = new Collector();
+  inventoryTools = tools;
   server = await startServer({
     generation: "reading-flow",
     signal: new AbortController().signal,
     snapshot: () => ({
-      ...snapshot(f.manager, collector, "reading-flow", 0, "Current runtime prompt", tools, ["read"], skills),
+      ...snapshot(f.manager, collector, "reading-flow", 0, "Current runtime prompt", inventoryTools, ["read"], skills),
       context: captureContext([{ role: "user", content: "Observed input only" }], "observed-pi-context", f.leaf),
       providerObservation: { observedAt: 1, data: { value: { request: "independent payload" }, truncated: false } },
     }),
@@ -243,6 +246,137 @@ test("execution details have one owner and preserve real parent navigation indep
   await page.getByRole("button", { name: "Inspect recorded anchor →", exact: true }).click();
   await expect(page.locator(".inspector-identity")).toContainText(f.assistant);
   await expect(page.getByRole("button", { name: "Branch view", exact: true })).toHaveAttribute("aria-pressed", "true");
+});
+
+for (const query of ["", "future-state"]) {
+  test(`review round 2: hidden counts exclude a retained internal match (${query || "all"})`, async ({ page }) => {
+    const selected = f.manager.getLeafId();
+    if (!selected) throw Error("Missing fixture leaf");
+    await session(page);
+    await page.getByRole("button", { name: "Toggle filters" }).click();
+    await page.getByRole("textbox", { name: "Search session" }).fill(query);
+    await page.getByRole("checkbox", { name: "Show internal events" }).check();
+    await primary(page).locator(`[data-trace-id="${selected}"]`).click();
+    await page.getByRole("checkbox", { name: "Show internal events" }).uncheck();
+    await expect(primary(page).locator(`[data-trace-id="${selected}"]`)).toBeVisible();
+    await expect(page.getByText(/matching internal events hidden/)).toHaveText(
+      `${query ? 0 : 1} matching internal events hidden`,
+    );
+    await page.getByRole("textbox", { name: "Search session" }).fill("no-matches");
+    await expect(primary(page).locator(`[data-trace-id="${selected}"]`)).toHaveCount(0);
+    await expect(page.getByText(/matching internal events hidden/)).toHaveText("0 matching internal events hidden");
+    await page.getByRole("textbox", { name: "Search session" }).fill("");
+    await expect(page.getByText(/matching internal events hidden/)).toHaveText("2 matching internal events hidden");
+  });
+}
+
+for (const presentation of ["List", "Timeline"] as const) {
+  test(`review round 2: explicit branch History reveals its selected leaf in ${presentation}`, async ({ page }) => {
+    const active = f.manager.getLeafId();
+    if (!active) throw Error("Missing active fixture leaf");
+    f.manager.branch(f.alternate);
+    for (let i = 0; i < 60; i++) f.manager.appendMessage({ role: "user", content: `scope-row-${i}`, timestamp: i });
+    const target = f.manager.getLeafId();
+    if (!target) throw Error("Missing target fixture leaf");
+    f.manager.branch(active);
+    await session(page);
+    await page.getByRole("button", { name: "Branch view", exact: true }).click();
+    await primary(page).getByRole("button", { name: "Expand all", exact: true }).click();
+    await primary(page).getByRole("button", { name: "Next", exact: true }).click();
+    await primary(page).getByRole("button", { name: presentation, exact: true }).click();
+    await primary(page).locator(`[data-trace-id="${target}"]`).click();
+    await page.getByRole("button", { name: "History at selected entry", exact: true }).click();
+    await expect(primary(page).getByRole("button", { name: presentation, exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const selected = primary(page).locator(`[data-trace-id="${target}"]`);
+    await expect(selected).toBeVisible();
+    await expect(selected).toHaveAttribute("tabindex", "0");
+    await expect
+      .poll(() =>
+        primary(page)
+          .locator(".trace-scroll")
+          .evaluate((container) => {
+            const row = container.querySelector('[aria-current="true"]');
+            if (!row) return false;
+            const bounds = container.getBoundingClientRect();
+            const selected = row.getBoundingClientRect();
+            return selected.top >= bounds.top - 1 && selected.bottom <= bounds.bottom + 1;
+          }),
+      )
+      .toBe(true);
+    expect(f.manager.getLeafId()).toBe(active);
+    await primary(page).getByRole("button", { name: "Previous", exact: true }).click();
+    await primary(page)
+      .locator(".trace-scroll")
+      .evaluate((container) => {
+        container.scrollTop = 0;
+      });
+    f.manager.appendMessage({ role: "user", content: "live append on another branch", timestamp: 100 });
+    server.invalidate(1);
+    await expect(page.locator(".overview-metrics .metric").first().locator("strong")).toHaveText(
+      String(f.manager.getEntries().length),
+    );
+    await expect(selected).toHaveCount(0);
+    await expect(primary(page).locator(".trace-scroll")).toHaveJSProperty("scrollTop", 0);
+    await expect(page.getByText(`Branch leaf: ${target}`, { exact: true })).toBeVisible();
+  });
+}
+
+test("review round 2: closed inventories and schemas do not mount hidden trees", async ({ page }) => {
+  const template = tools[0];
+  if (!template) throw Error("Missing tool fixture");
+  inventoryTools = Array.from({ length: 256 }, (_, i) => ({
+    ...template,
+    name: `inventory-tool-${i}`,
+    parameters: Type.Object(
+      Object.fromEntries(Array.from({ length: 64 }, (_, field) => [`field_${field}`, Type.String()])),
+    ),
+  }));
+  await page.goto(server.url);
+  await expect(page.locator(".segment-row").first()).toBeVisible();
+  const inventory = page.locator(".context-inventory");
+  await expect(inventory.locator(".inventory-card")).toHaveCount(0);
+  await expect(inventory.locator(".json-tree")).toHaveCount(0);
+  await inventory.locator(":scope > summary").click();
+  await expect(inventory.getByText("Current tools", { exact: true })).toBeVisible();
+  await expect(inventory.locator(".inventory-card")).toHaveCount(0);
+  await expect(inventory.locator(".code-preview")).toHaveCount(0);
+  await inventory.getByText("Current tools", { exact: true }).click();
+  await expect(inventory.locator(".inventory-card")).toHaveCount(256);
+  await expect(inventory.locator(".json-tree")).toHaveCount(0);
+  const schema = inventory.locator(".inventory-card").first().locator(".data");
+  await expect(schema.getByRole("button", { name: "Copy display data" })).toBeEnabled();
+  const toggle = schema.getByRole("button", { name: "Schema · inventory-tool-0", exact: true });
+  await toggle.click();
+  await expect(inventory.locator(".json-tree")).toHaveCount(1);
+  const properties = schema.locator("summary").filter({ hasText: /^properties / });
+  await properties.click();
+  await expect(properties.locator("..")).toHaveJSProperty("open", true);
+  await toggle.click();
+  await expect(inventory.locator(".json-tree")).toHaveCount(0);
+  await toggle.click();
+  await expect(properties.locator("..")).toHaveJSProperty("open", true);
+  await page.getByRole("button", { name: "Session", exact: true }).click();
+  await page.getByRole("button", { name: "Context", exact: true }).click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await inventory.getByText("Current tools", { exact: true }).click();
+  await expect(inventory.locator(".inventory-card")).toHaveCount(0);
+  await expect(inventory.locator(".json-tree")).toHaveCount(0);
+  await inventory.getByText("Currently advertised skills", { exact: true }).click();
+  await expect(inventory.locator(".inventory-card")).toHaveCount(1);
+  await inventory.getByText("Currently advertised skills", { exact: true }).click();
+  await inventory.locator(":scope > summary").click();
+  inventoryTools = inventoryTools.map((tool) => ({ ...tool, description: "Updated inventory" }));
+  const refreshed = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
+  server.invalidate(1);
+  await refreshed;
+  await expect(inventory.locator(".inventory-card")).toHaveCount(0);
+  await inventory.locator(":scope > summary").click();
+  await inventory.getByText("Current tools", { exact: true }).click();
+  await expect(inventory.locator(".inventory-card").first()).toContainText("Updated inventory");
+  await expect(inventory.locator(".json-tree")).toHaveCount(0);
 });
 
 for (const action of ["select", "evict"] as const) {

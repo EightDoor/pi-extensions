@@ -178,50 +178,52 @@ export function Data({
           {data && <Copy key={value} value={value} />}
         </Flex>
       </div>
-      <div hidden={!open}>
-        {structured && (
-          <div className="data-mode">
-            {["tree", "text"].map((mode) => (
-              <button type="button" key={mode} aria-pressed={format === mode} onClick={() => setFormat(mode)}>
-                {mode === "tree" ? "Objects" : "JSON text"}
-              </button>
-            ))}
-            <span>Redacted display copy</span>
-          </div>
-        )}
-        {structured && format === "tree" && data ? (
-          <JsonTree value={data.value} scope={scope} />
-        ) : (
-          <pre className="code-preview">
-            {lines.slice(0, 1000).map((line, index) => {
-              const start = sourceOffset;
-              sourceOffset += line.length + 1;
-              return (
-                <span className="code-line" key={`line-${start}`}>
-                  <span className="line-number" aria-hidden="true">
-                    {index + 1}
+      {open && (
+        <div>
+          {structured && (
+            <div className="data-mode">
+              {["tree", "text"].map((mode) => (
+                <button type="button" key={mode} aria-pressed={format === mode} onClick={() => setFormat(mode)}>
+                  {mode === "tree" ? "Objects" : "JSON text"}
+                </button>
+              ))}
+              <span>Redacted display copy</span>
+            </div>
+          )}
+          {structured && format === "tree" && data ? (
+            <JsonTree value={data.value} scope={scope} />
+          ) : (
+            <pre className="code-preview">
+              {lines.slice(0, 1000).map((line, index) => {
+                const start = sourceOffset;
+                sourceOffset += line.length + 1;
+                return (
+                  <span className="code-line" key={`line-${start}`}>
+                    <span className="line-number" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                    <code>{colored(line, budget)}</code>
                   </span>
-                  <code>{colored(line, budget)}</code>
+                );
+              })}
+              {lines.length > 1000 && (
+                <span className="preview-limit">
+                  Preview limited to 1,000 lines; Copy includes the bounded display value.
                 </span>
-              );
-            })}
-            {lines.length > 1000 && (
-              <span className="preview-limit">
-                Preview limited to 1,000 lines; Copy includes the bounded display value.
-              </span>
-            )}
-          </pre>
-        )}
-        {data &&
-          images(data.value).map((image) => (
-            <img
-              key={`${image.mimeType}-${image.data}`}
-              className="preview-image"
-              src={`data:${image.mimeType};base64,${image.data}`}
-              alt="Captured raster tool output"
-            />
-          ))}
-      </div>
+              )}
+            </pre>
+          )}
+          {data &&
+            images(data.value).map((image) => (
+              <img
+                key={`${image.mimeType}-${image.data}`}
+                className="preview-image"
+                src={`data:${image.mimeType};base64,${image.data}`}
+                alt="Captured raster tool output"
+              />
+            ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -81,11 +81,12 @@ export function Trace({
   const range = useMemo(() => axis(entries, calls), [entries, calls]);
   useEffect(() => {
     if (!tree.nodes.has(selected) || serial === lastReveal.current) return;
-    lastReveal.current = serial;
     const next = historyRows ? expanded : reveal(tree, expanded, selected);
-    if (!historyRows) setExpanded(next);
     const index = (historyRows ? rows : flatten(tree, next, keep)).findIndex((row) => row.node.id === selected);
     if (index >= 0) {
+      // Keep reveal pending until the selection belongs to this projection.
+      lastReveal.current = serial;
+      if (!historyRows) setExpanded(next);
       setOffset(Math.floor(index / 50) * 50);
       setFocused(selected);
     }
