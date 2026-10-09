@@ -25,6 +25,11 @@ test.beforeEach(async () => {
 });
 test.afterEach(async () => server.close());
 const primary = (page: Page) => page.locator(".session-primary:not([hidden])");
+const metadata = (page: Page, label: string) =>
+  page
+    .locator(".inspector-panel dt")
+    .filter({ hasText: new RegExp(`^${label}$`) })
+    .locator("xpath=following-sibling::dd[1]");
 async function session(page: Page) {
   await page.goto(server.url);
   await expect(page.locator(".segment-row").first()).toBeVisible();
@@ -239,6 +244,131 @@ test("execution details have one owner and preserve real parent navigation indep
   await expect(page.locator(".inspector-identity")).toContainText(f.assistant);
   await expect(page.getByRole("button", { name: "Branch view", exact: true })).toHaveAttribute("aria-pressed", "true");
 });
+
+for (const action of ["select", "evict"] as const) {
+  for (const presentation of ["List", "Timeline"] as const) {
+    test(`review: History ${presentation} stays active on call-to-entry ${action}`, async ({ page }) => {
+      const leaf = f.manager.getLeafId();
+      collector.start(
+        { type: "tool_execution_start", toolCallId: "review-call", toolName: "review-call", args: {} },
+        f.assistant,
+      );
+      await session(page);
+      await page.getByRole("button", { name: /^Captured executions ·/ }).click();
+      await page.getByRole("button", { name: "review-call · running", exact: true }).click();
+      await page.getByRole("button", { name: "History", exact: true }).click();
+      await primary(page).getByRole("button", { name: presentation, exact: true }).click();
+      if (action === "select") {
+        await primary(page).locator(`[data-trace-id="${f.user}"]`).click();
+        await expect(page.locator(".recorded-content")).toContainText("first request");
+      } else {
+        collector = new Collector();
+        server.invalidate(1);
+        await expect(page.locator(".inspector-identity")).toContainText(f.assistant);
+      }
+      await expect(page.getByRole("button", { name: "History", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(primary(page).getByRole("button", { name: presentation, exact: true })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(f.manager.getLeafId()).toBe(leaf);
+    });
+  }
+}
+
+for (const relationship of ["root", "resolved", "missing", "invalid", "overlapping", "evicted"] as const) {
+  test(`review: execution parent provenance distinguishes ${relationship}`, async ({ page }) => {
+    if (relationship === "evicted") collector = new Collector(1);
+    const parent = {
+      type: "tool_execution_start",
+      toolCallId: "review-parent",
+      toolName: "review-parent",
+      args: {},
+    } as const;
+    if (["resolved", "overlapping", "evicted"].includes(relationship)) collector.start(parent, f.assistant);
+    if (relationship === "overlapping") collector.start(parent, f.assistant);
+    const child = {
+      type: "tool_execution_start",
+      toolCallId: "review-child",
+      toolName: "review-child",
+      args: {},
+    } as const;
+    if (relationship !== "root")
+      Object.assign(child, { parentToolCallId: relationship === "invalid" ? 7 : "review-parent" });
+    collector.start(child, f.assistant);
+    await session(page);
+    await page.getByRole("button", { name: /^Captured executions ·/ }).click();
+    await page.getByRole("button", { name: "Expand calls", exact: true }).click();
+    await page.getByRole("button", { name: "review-child · running", exact: true }).click();
+    const expected = {
+      root: "none (root)",
+      resolved: "call-1",
+      missing: "unavailable",
+      invalid: "Invalid or over-budget parent ID; relationship unavailable",
+      overlapping: "Overlapping running parent IDs; relationship unavailable",
+      evicted: "call-1",
+    }[relationship];
+    await expect(metadata(page, "Parent relationship")).toHaveText(expected);
+    if (relationship === "evicted")
+      await expect(page.getByText("Parent review-parent (not captured)", { exact: true })).toBeVisible();
+  });
+}
+
+for (const anchor of ["missing", "invalid", "reused", "unrepresented", "inherited"] as const) {
+  test(`review: execution correlation reflects ${anchor} anchor evidence`, async ({ page }) => {
+    const event = {
+      type: "tool_execution_start",
+      toolCallId: "review-anchor",
+      toolName: "review-anchor",
+      args: {},
+    } as const;
+    if (anchor === "inherited") {
+      collector.start({ ...event, toolCallId: "review-parent", toolName: "review-parent" }, f.assistant);
+      Object.assign(event, { parentToolCallId: "review-parent" });
+    }
+    if (anchor === "reused") {
+      collector.start(event, f.assistant);
+      collector.end(
+        {
+          type: "tool_execution_end",
+          toolCallId: "review-anchor",
+          toolName: "review-anchor",
+          isError: false,
+          result: "done",
+        },
+        f.assistant,
+      );
+    }
+    collector.start(
+      event,
+      anchor === "missing" || anchor === "inherited"
+        ? null
+        : anchor === "invalid"
+          ? ""
+          : anchor === "unrepresented"
+            ? "outside-index"
+            : f.assistant,
+    );
+    await session(page);
+    await page.getByRole("button", { name: /^Captured executions ·/ }).click();
+    await page.getByRole("button", { name: "Expand calls", exact: true }).click();
+    await page.getByRole("button", { name: "review-anchor · running", exact: true }).click();
+    await expect(metadata(page, "Correlation")).toHaveText(
+      ["missing", "invalid", "reused"].includes(anchor)
+        ? "unavailable"
+        : "Recorded anchor only; not request association",
+    );
+    await expect(metadata(page, "Anchor entry")).toHaveText(
+      anchor === "missing" || anchor === "invalid"
+        ? "unavailable"
+        : anchor === "unrepresented"
+          ? "outside-index"
+          : f.assistant,
+    );
+    if (["missing", "invalid", "unrepresented"].includes(anchor))
+      await expect(page.getByRole("button", { name: "Inspect recorded anchor →", exact: true })).toHaveCount(0);
+  });
+}
 
 test("terminal snapshot failure cancels pending Details and branch work without stale publication", async ({
   page,

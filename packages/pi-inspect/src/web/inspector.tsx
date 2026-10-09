@@ -137,10 +137,17 @@ export function Inspector({
                 <Metadata
                   rows={[
                     ["Source", "Observed tool execution"],
-                    ["Parent relationship", call.parentUnavailable ?? call.parentOccurrenceId ?? "unavailable"],
+                    [
+                      "Parent relationship",
+                      call.parentUnavailable ??
+                        call.parentOccurrenceId ??
+                        (call.parentId ? "unavailable" : "none (root)"),
+                    ],
                     [
                       "Correlation",
-                      call.correlationUnavailable ? "unavailable" : "Recorded anchor only; not request association",
+                      call.correlationUnavailable || !call.branchAnchor
+                        ? "unavailable"
+                        : "Recorded anchor only; not request association",
                     ],
                     ["Reported duration", duration(call.durationMs)],
                     ["Occurrence", call.occurrenceId],

@@ -78,9 +78,10 @@ function App() {
   const { detail, error: detailError, retry: retryDetails } = useDetail(paneActive ? entryId : undefined);
   const previousSelection = useRef<Selection | undefined>(undefined);
   useEffect(() => {
-    if (previousSelection.current?.kind === "call" && selection?.kind === "entry") setSessionView("branches");
+    if (sessionView === "executions" && previousSelection.current?.kind === "call" && selection?.kind === "entry")
+      setSessionView("branches");
     previousSelection.current = selection;
-  }, [selection]);
+  }, [selection, sessionView]);
   const selectedNode = entries.find((node) => node.id === entryId);
   const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
   const matching = useMemo(
