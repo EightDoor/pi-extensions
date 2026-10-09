@@ -69,6 +69,8 @@ import { assertPlanModeHelperToolsAvailable, planModeHelperToolsAvailable } from
 import { preflightSavedPlanImplementation, savedPlanBlocksNewWorkflow } from "./saved-plan-preflight.js";
 import {
   awaitPlanModeSettingsWrites,
+  configuredAutoSwitchModel,
+  configuredAutoSwitchModelTarget,
   configuredImplementationPlanRetention,
   configuredPlanModeToggleShortcut,
   configuredThinkingLevel,
@@ -81,6 +83,7 @@ import {
   updatePlanModeSettings,
 } from "./settings.js";
 import {
+  type ImplementationModelOverride,
   type ImplementationRuntimeSelection,
   type PlanCompletionSource,
   type PlanModeState,
@@ -203,8 +206,8 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   const planExports = createPlanExportController({
     getState: () => state,
     getSettings: () => settings,
-    finishReady: (ctx) => {
-      exitPlanMode(ctx);
+    finishReady: async (ctx) => {
+      await exitPlanMode(ctx);
     },
   });
   const planActions = createPlanActionController({
@@ -226,13 +229,13 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     settings: showSettings,
     save: savePlanForLater,
     stay: updateUi,
-    exitReady: (ctx) => {
-      if (exitPlanMode(ctx)) {
+    exitReady: async (ctx) => {
+      if (await exitPlanMode(ctx)) {
         ctx.ui.notify("Plan mode disabled. Proposed plan discarded.", "info");
       }
     },
-    clearSaved: (ctx) => {
-      if (exitPlanMode(ctx)) ctx.ui.notify("Saved plan cleared.", "info");
+    clearSaved: async (ctx) => {
+      if (await exitPlanMode(ctx)) ctx.ui.notify("Saved plan cleared.", "info");
     },
   });
 
@@ -310,7 +313,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
           ctx.ui.notify("Plan mode is already active.", "info");
           return;
         }
-        if (enterPlanMode(ctx)) {
+        if (await enterPlanMode(ctx)) {
           ctx.ui.notify("Plan mode enabled. I will explore and plan, but not modify files.", "info");
         }
         return;
@@ -332,7 +335,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         return;
       }
       if (command === "save") {
-        savePlanForLater(ctx);
+        await savePlanForLater(ctx);
         return;
       }
       if (command === "settings") {
@@ -351,7 +354,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       }
       if (command === "exit" || command === "off") {
         const notification = planModeDisableNotification();
-        if (exitPlanMode(ctx)) ctx.ui.notify(notification, "info");
+        if (await exitPlanMode(ctx)) ctx.ui.notify(notification, "info");
         return;
       }
       if (command === "tools") {
@@ -371,7 +374,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       }
       if (prompt) {
         if (savedPlanBlocksNewWorkflow(ctx, state.savedPlan !== undefined && !state.enabled)) return;
-        enterPlanModeWithPrompt(prompt, ctx);
+        await enterPlanModeWithPrompt(prompt, ctx);
         return;
       }
       if (!ctx.hasUI) {
@@ -862,7 +865,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     }
   });
 
-  function enterPlanMode(
+  async function enterPlanMode(
     ctx: ExtensionContext,
     candidate: Pick<PlanModeState, "selectedToolNames" | "selectedToolKeys"> = state,
   ) {
@@ -901,6 +904,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       applyPlanThinkingLevel();
       persistState();
       updateUi(ctx);
+      await applyAutoModelSwitch("plan", ctx);
       return true;
     } catch (error: unknown) {
       rollbackNewActivation(previousState, ctx);
@@ -908,20 +912,28 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     }
   }
 
-  function enterPlanModeWithPrompt(prompt: string, ctx: ExtensionContext) {
+  async function enterPlanModeWithPrompt(prompt: string, ctx: ExtensionContext) {
     const previousState = state;
+    const previousModel = ctx.model;
     const previousOwner = workflowOwner;
     const wasEnabled = state.enabled;
-    if (!enterPlanMode(ctx)) return;
+    if (!(await enterPlanMode(ctx))) return;
     if (!wasEnabled) {
       ctx.ui.notify("Plan mode enabled. I will explore and plan, but not modify files.", "info");
     }
     if (sendPlanModeUserMessage(prompt, ctx)) return;
     if (wasEnabled) return;
     rollbackNewActivation(previousState, ctx, previousOwner);
+    if (previousModel) {
+      // 回滚到切换前的模型，而不是配置的退出模型（可能未配置）
+      await applyAutoModelSwitch("normal", ctx, {
+        provider: previousModel.provider,
+        modelId: previousModel.id,
+      });
+    }
   }
 
-  function exitPlanMode(ctx: ExtensionContext) {
+  async function exitPlanMode(ctx: ExtensionContext) {
     if (!allowModeTransition(ctx, "leave or clear Plan mode")) return false;
     const wasEnabled = state.enabled;
     if ((wasEnabled || modeContractsRelevant) && !publishModeContract("normal", ctx)) {
@@ -948,7 +960,10 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     }
     persistState();
     updateUi(ctx);
-    if (wasEnabled) releaseWorkflowOwner();
+    if (wasEnabled) {
+      releaseWorkflowOwner();
+      await applyAutoModelSwitch("normal", ctx);
+    }
     return true;
   }
 
@@ -1037,14 +1052,14 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     return completedPlanIsCurrent(intent) && readyPresentationIntent?.nonce === intent.nonce;
   }
 
-  function togglePlanMode(ctx: ExtensionContext) {
+  async function togglePlanMode(ctx: ExtensionContext) {
     if (state.enabled) {
       const notification = planModeDisableNotification();
-      if (exitPlanMode(ctx)) ctx.ui.notify(notification, "info");
+      if (await exitPlanMode(ctx)) ctx.ui.notify(notification, "info");
       return;
     }
     if (savedPlanBlocksNewWorkflow(ctx, state.savedPlan !== undefined)) return;
-    if (enterPlanMode(ctx)) {
+    if (await enterPlanMode(ctx)) {
       ctx.ui.notify("Plan mode enabled. I will explore and plan, but not modify files.", "info");
     }
   }
@@ -1068,7 +1083,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     if (!sendPlanModeUserMessage(FINALIZE_PLAN_PROMPT, ctx)) finalizationRequest.reset();
   }
 
-  function savePlanForLater(ctx: ExtensionContext) {
+  async function savePlanForLater(ctx: ExtensionContext) {
     const plan = state.enabled ? state.latestPlan?.trim() : undefined;
     if (!plan) {
       const message = "No completed plan is available to save.";
@@ -1100,6 +1115,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     persistState();
     updateUi(ctx);
     releaseWorkflowOwner();
+    await applyAutoModelSwitch("normal", ctx);
     ctx.ui.notify("Plan saved for later. Plan mode disabled.", "info");
   }
 
@@ -1256,6 +1272,8 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     }
     persistState();
     updateUi(ctx);
+    const preImplementModel = ctx.model;
+    if (wasEnabled) await applyAutoModelSwitch("normal", ctx);
 
     const handoff = usesConversationHistory
       ? wasEnabled
@@ -1270,6 +1288,13 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         restoreWorkflowToolPolicy(state.workflowToolPolicy);
         publishModeContract("plan", ctx);
         applyPlanThinkingLevel();
+        if (preImplementModel) {
+          // 回滚到实现切换前的模型，而不是配置的进入模型（可能未配置）
+          await applyAutoModelSwitch("plan", ctx, {
+            provider: preImplementModel.provider,
+            modelId: preImplementModel.id,
+          });
+        }
       }
       persistState();
       updateUi(ctx);
@@ -1362,19 +1387,19 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         }),
       ],
       ...lifecycle,
-      start: (signal) => {
+      start: async (signal) => {
         if (signal.aborted || !lifecycle.isCurrent()) return;
-        if (enterPlanMode(ctx)) {
+        if (await enterPlanMode(ctx)) {
           ctx.ui.notify("Plan mode enabled. I will explore and plan, but not modify files.", "info");
         }
       },
-      startWithTools: (names, signal) => {
+      startWithTools: async (names, signal) => {
         if (signal.aborted || !lifecycle.isCurrent()) return;
         const availableNames = new Set(filterAvailableSelectedToolNames(names, tools, activeToolNames));
         const selectedToolNames = Array.from(
           new Set(names.filter((name) => availableNames.has(name) || retainedInactiveNames.has(name))),
         );
-        if (enterPlanMode(ctx, { selectedToolNames, selectedToolKeys: undefined })) {
+        if (await enterPlanMode(ctx, { selectedToolNames, selectedToolKeys: undefined })) {
           ctx.ui.notify("Plan mode enabled with the selected tools.", "info");
         }
       },
@@ -1399,13 +1424,13 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       show: () => showStoredPlan(pi, ctx, state),
       exportPlan: (path, signal) => planExports.export(path, ctx, signal, lifecycle.isCurrent),
       settings: (signal) => showSettings(ctx, signal, lifecycle.isCurrent),
-      startNew: () => {
-        if (enterPlanMode(ctx)) {
+      startNew: async () => {
+        if (await enterPlanMode(ctx)) {
           ctx.ui.notify("Plan mode enabled. I will explore and plan, but not modify files.", "info");
         }
       },
-      clear: () => {
-        if (exitPlanMode(ctx)) ctx.ui.notify("Active implementation plan cleared.", "info");
+      clear: async () => {
+        if (await exitPlanMode(ctx)) ctx.ui.notify("Active implementation plan cleared.", "info");
       },
     });
   }
@@ -1868,6 +1893,69 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       pi.setThinkingLevel(previousThinkingLevel);
     }
     state = { ...state, appliedThinkingLevel: undefined, previousThinkingLevel: undefined };
+  }
+
+  /**
+   * autoSwitchModel 开启时，按方向切换到配置的物理模型。
+   * 切换保持当前 thinking level 不变（pi.setModel 会按新模型重置 thinking，这里还原），
+   * 只换模型不影响既有的 thinking 语义；任何失败仅通知，不阻断模式切换。
+   */
+  async function applyAutoModelSwitch(
+    direction: "plan" | "normal",
+    ctx: ExtensionContext,
+    targetOverride?: ImplementationModelOverride,
+  ): Promise<void> {
+    try {
+      if (!configuredAutoSwitchModel(settings)) return;
+      const target = targetOverride ?? configuredAutoSwitchModelTarget(settings, direction);
+      if (!target) return;
+      const current = ctx.model;
+      if (current && current.provider === target.provider && current.id === target.modelId) return;
+      let model: ReturnType<ExtensionContext["modelRegistry"]["find"]>;
+      try {
+        model = ctx.modelRegistry.find(target.provider, target.modelId);
+      } catch (error: unknown) {
+        ctx.ui.notify(
+          `Auto model switch (${direction}) could not resolve ${target.provider}/${target.modelId}: ${safeTerminalText(error instanceof Error ? error.message : String(error))}. Keeping the current model.`,
+          "warning",
+        );
+        return;
+      }
+      if (!model) {
+        ctx.ui.notify(
+          `Auto model switch (${direction}) target ${target.provider}/${target.modelId} is unavailable. Keeping the current model.`,
+          "warning",
+        );
+        return;
+      }
+      const thinkingLevel = pi.getThinkingLevel();
+      try {
+        const applied = await pi.setModel(model);
+        if (!applied) {
+          ctx.ui.notify(
+            `Auto model switch (${direction}) to ${target.provider}/${target.modelId} was not applied. Keeping the current model.`,
+            "warning",
+          );
+        }
+      } catch (error: unknown) {
+        ctx.ui.notify(
+          `Auto model switch (${direction}) to ${target.provider}/${target.modelId} failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}. Keeping the current model.`,
+          "warning",
+        );
+      } finally {
+        if (pi.getThinkingLevel() !== thinkingLevel) pi.setThinkingLevel(thinkingLevel);
+      }
+    } catch (error: unknown) {
+      // 通知本身失败也不能影响模式切换
+      try {
+        ctx.ui.notify(
+          `Auto model switch (${direction}) failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}`,
+          "warning",
+        );
+      } catch {
+        // 通知失败忽略，不向调用方抛出
+      }
+    }
   }
 
   function safeGetActiveTools() {
