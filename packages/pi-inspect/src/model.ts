@@ -8,6 +8,9 @@ export interface EntrySummary {
   parentId: string | null;
   kind: string;
   label: string;
+  summary?: string;
+  summaryTruncated?: boolean;
+  internal?: true;
   timestamp: string;
   name?: string;
   nameTruncated?: boolean;
@@ -102,6 +105,7 @@ export interface BranchView {
   declaredTools: Capture;
   promptUpdates: Capture;
   projection: Capture;
+  context?: ContextComposition;
   skillEvidence: Capture;
 }
 export interface DetailView {

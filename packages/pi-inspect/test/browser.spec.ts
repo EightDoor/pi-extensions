@@ -27,16 +27,18 @@ test.afterEach(async () => {
 });
 async function explore(page: Page): Promise<void> {
   await page.goto(server.url);
-  await page.getByRole("button", { name: "Session events", exact: true }).click();
+  await page.getByRole("button", { name: "Session", exact: true }).click();
+  await page.getByRole("button", { name: "Branch view", exact: true }).click();
   if ((page.viewportSize()?.width ?? 0) >= 1200) {
-    await page.getByRole("button", { name: "Toggle navigator", exact: true }).click();
-    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+    await page.getByRole("button", { name: "Toggle filters", exact: true }).click();
+    await page.getByRole("button", { name: "Toggle details", exact: true }).click();
+    await page.getByRole("tab", { name: "raw", exact: true }).click();
   }
 }
-const nav = (page: Page, id: string) => page.locator(`.node[data-entry-id="${id}"]`);
-const row = (page: Page, id: string) => page.locator(`[data-trace-id="${id}"]`);
+const nav = (page: Page, id: string) => page.locator(`.session-primary:not([hidden]) [data-trace-id="${id}"]`);
+const row = nav;
 async function openLive(page: Page) {
-  await page.getByRole("button", { name: /^Live calls/ }).click();
+  await page.getByRole("button", { name: /^Captured executions ·/ }).click();
 }
 async function openObjects(page: Page, section: string) {
   const container = page
@@ -52,7 +54,7 @@ test("compact links authenticate, clear fragments and survive reload; legacy lin
 }) => {
   expect(server.url.length).toBeLessThanOrEqual(68);
   await explore(page);
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-panel [role=treeitem]").first()).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   await page.reload();
   await expect(page.locator(".segment-row").first()).toBeVisible();
@@ -81,7 +83,10 @@ test("existing prompt/tools/skills/context/codemode, filtering, read-only select
   await nav(page, data.delta).click();
   await expect(page.getByText("+ changed", { exact: false })).toBeVisible();
   await page.getByRole("tab", { name: "tools", exact: true }).click();
-  await expect(page.getByText("mcp__docs__search", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Historical declared tools · preview branch", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".inspector-panel .inventory-card")).toHaveCount(0);
   await page.getByRole("tab", { name: "skills", exact: true }).click();
   await openObjects(page, "Evidence on preview branch");
   await expect(page.getByText('"successfully read (nested metadata)"', { exact: true })).toBeVisible();
@@ -89,12 +94,12 @@ test("existing prompt/tools/skills/context/codemode, filtering, read-only select
   await expect(page.getByRole("button", { name: "Projected branch entries", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "raw", exact: true }).click();
   await page.getByRole("textbox", { name: "Search session" }).fill("Alternative");
-  await expect(page.locator('.node[data-match="true"]')).toHaveCount(2);
+  await expect(page.locator('.session-primary:not([hidden]) .trace-row[data-match="true"]')).toHaveCount(2);
   await page.getByRole("textbox", { name: "Search session" }).fill("");
-  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.locator(".filter-panel > summary").click();
   await page.getByRole("combobox", { name: "Filter entry type" }).click();
   await page.getByRole("option", { name: "assistant", exact: true }).click();
-  await expect(page.locator('.node[data-match="true"]')).toHaveCount(1);
+  await expect(page.locator('.session-primary:not([hidden]) .trace-row[data-match="true"]')).toHaveCount(1);
   await nav(page, data.assistant).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("tab", { name: "codemode", exact: true }).click();
@@ -125,7 +130,10 @@ test("true hierarchy, independent selection/disclosure, retained descendants, ke
   const initial = data.manager.getLeafId();
   await explore(page);
   await expect(row(page, c)).toBeVisible();
-  await expect(page.locator(`[data-trace-entry-id="${c}"]`)).toHaveAttribute("data-parent-id", b);
+  await expect(page.locator(`.session-primary:not([hidden]) [data-trace-entry-id="${c}"]`)).toHaveAttribute(
+    "data-parent-id",
+    b,
+  );
   await expect(row(page, c)).toHaveAttribute("aria-level", "6");
   await page.getByRole("button", { name: `Expand event ${root}`, exact: true }).click();
   await expect(row(page, a)).toHaveCount(0);
@@ -149,7 +157,7 @@ test("true hierarchy, independent selection/disclosure, retained descendants, ke
   await page.keyboard.press("ArrowLeft");
   await expect(row(page, b)).toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("ArrowRight");
-  const inline = page.locator(`[data-trace-entry-id="${b}"] .inline-entry`);
+  const inline = page.locator(`.session-primary:not([hidden]) [data-trace-entry-id="${b}"] .inline-entry`);
   await expect(inline.getByRole("button", { name: "Recorded content", exact: true })).toBeVisible();
   await inline.locator("summary").filter({ hasText: "nested" }).click();
   await inline.locator("summary").filter({ hasText: "deeper" }).click();
@@ -174,18 +182,20 @@ test("related navigation reveals a filtered-out child without clearing filters o
   await expect(row(page, data.result)).toHaveAttribute("aria-selected", "true");
   await expect(nav(page, data.result)).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("button", { name: "Model", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("selected outside filters", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".session-primary:not([hidden])").getByText("selected outside filters", { exact: true }),
+  ).toBeVisible();
 });
 
-test("live drawer stays compact and closed during updates; hostile text/raster remains safe", async ({ page }) => {
+test("executions remain an explicit view during updates; hostile text/raster remains safe", async ({ page }) => {
   const external: string[] = [];
   page.on("request", (request) => {
     if (!request.url().startsWith(server.origin)) external.push(request.url());
   });
   await explore(page);
-  const drawer = page.getByRole("button", { name: /^Live calls/ });
-  await expect(drawer).toHaveAttribute("aria-expanded", "false");
-  expect((await page.locator(".live-drawer").boundingBox())?.height).toBeLessThan(50);
+  const drawer = page.getByRole("button", { name: /^Captured executions ·/ });
+  await expect(drawer).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".live-drawer")).not.toBeVisible();
   collector.start(
     {
       type: "tool_execution_start",
@@ -197,8 +207,8 @@ test("live drawer stays compact and closed during updates; hostile text/raster r
     data.assistant,
   );
   server.invalidate(++revision);
-  await expect(drawer).toContainText("1 captured");
-  await expect(drawer).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer).toContainText("1 running");
+  await expect(drawer).toHaveAttribute("aria-pressed", "false");
   await openLive(page);
   await page.getByRole("button", { name: "mcp__docs__search · running", exact: true }).click();
   collector.end(
@@ -251,16 +261,17 @@ test("list is default; timeline uses a shared axis and log points, never duratio
     data.assistant,
   );
   await explore(page);
-  await expect(page.locator(".trace-list")).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-list")).toBeVisible();
   await expect(page.locator(".timeline-span")).toHaveCount(0);
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
-  await expect(page.locator(".trace-tree .timeline-point").first()).toBeVisible();
-  await expect(page.locator(".trace-tree .timeline-span")).toHaveCount(0);
+  await expect(page.locator(".session-primary:not([hidden]) .trace-tree .timeline-point").first()).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-tree .timeline-span")).toHaveCount(0);
   await openLive(page);
   await expect(page.locator('[data-raw-id="unknown-start"] .timeline-span')).toHaveCount(0);
   await expect(page.locator('[data-raw-id="unknown-start"] .timeline-point')).toBeVisible();
+  await page.getByRole("button", { name: "Branch view", exact: true }).click();
   await nav(page, data.alternate).click();
-  await expect(page.locator(".trace-timeline")).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-timeline")).toBeVisible();
 });
 
 test("compact desktop layout, resizing/collapse, overview/JSON, copy and screenshot", async ({ page }) => {
@@ -283,7 +294,7 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
   );
   expect(positions[0]?.x).toBeLessThan(positions[1]?.x ?? 0);
   expect(positions[1]?.width).toBeGreaterThan(positions[2]?.width ?? 0);
-  const splitter = page.getByRole("separator", { name: "Resize navigator" });
+  const splitter = page.getByRole("separator", { name: "Resize filters" });
   const width = Number(await splitter.getAttribute("aria-valuenow"));
   await splitter.focus();
   await page.keyboard.press("ArrowRight");
@@ -295,9 +306,9 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
   await page.mouse.move(box.x + 42, box.y + 60);
   await page.mouse.up();
   expect(Number(await splitter.getAttribute("aria-valuenow"))).toBeGreaterThan(width + 10);
-  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await page.getByRole("button", { name: "Toggle filters" }).click();
   await expect(page.locator(".sidebar")).not.toBeVisible();
-  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await page.getByRole("button", { name: "Toggle filters" }).click();
   await expect(page.locator(".sidebar")).toBeVisible();
   await page.getByRole("button", { name: "Raw JSON", exact: true }).click();
   await expect(page.locator(".inspector-metadata")).toHaveCount(0);
@@ -312,7 +323,7 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
   await resultToggle.click();
   await expect(
     page
-      .locator(`[data-trace-entry-id="${data.result}"] .inline-entry`)
+      .locator(`.session-primary:not([hidden]) [data-trace-entry-id="${data.result}"] .inline-entry`)
       .getByText("Script completed", { exact: false }),
   ).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("session-explorer-desktop.png"), animations: "disabled" });
@@ -321,18 +332,18 @@ test("compact desktop layout, resizing/collapse, overview/JSON, copy and screens
 test("medium/narrow and effective 150% viewport use accessible drawers without page scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 1115, height: 627 });
   await explore(page);
-  await expect(page.getByRole("heading", { name: "Trace explorer" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Branch view" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.setViewportSize({ width: 900, height: 700 });
   await expect(page.locator(".app-grid")).toHaveClass(/narrow-layout/);
-  await page.getByRole("button", { name: "Toggle navigator" }).click();
+  await page.getByRole("button", { name: "Toggle filters" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Search session" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Toggle navigator" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Toggle filters" })).toBeFocused();
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await page.getByRole("button", { name: "Toggle details" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.locator(".inspector-panel")).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("session-explorer-narrow.png"), animations: "disabled" });
@@ -412,6 +423,7 @@ test("inline detail requests are bounded and cancelled when rows collapse", asyn
     await page.getByRole("button", { name: "Collapse all", exact: true }).click();
     hold = false;
     release();
+    await page.getByRole("button", { name: "Expand all", exact: true }).click();
     await nav(page, data.assistant).click();
     await expect(page.locator(".inspector-identity")).toContainText(data.assistant);
     await expect(
@@ -428,11 +440,11 @@ test("long labels/tab overflow and resize cancellation preserve readable panes",
   const long = data.manager.appendCustomEntry(`thinking_level_change_${"long-name-".repeat(30)}`, { value: "test" });
   await explore(page);
   await expect(nav(page, long)).toBeVisible();
-  const title = nav(page, long).locator(".node-title strong");
+  const title = nav(page, long).locator(".row-title strong");
   expect(await title.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("nowrap");
-  const descriptions = await page.locator(".node-description").allTextContents();
+  const descriptions = await page.locator(".session-primary:not([hidden]) .row-title > span").allTextContents();
   expect(descriptions.every((description) => !description.trim().startsWith("{"))).toBe(true);
-  const separator = page.getByRole("separator", { name: "Resize inspector" });
+  const separator = page.getByRole("separator", { name: "Resize details" });
   await separator.focus();
   await page.keyboard.press("Home");
   const list = page.locator(".inspector-tabs > [role=tablist]");
@@ -441,7 +453,7 @@ test("long labels/tab overflow and resize cancellation preserve readable panes",
     element.scrollLeft = element.scrollWidth;
   });
   await expect(page.getByRole("tab", { name: "codemode", exact: true })).toBeVisible();
-  const navSplitter = page.getByRole("separator", { name: "Resize navigator" });
+  const navSplitter = page.getByRole("separator", { name: "Resize filters" });
   const box = await navSplitter.boundingBox();
   if (!box) throw new Error("Missing handle");
   await page.mouse.move(box.x + 2, box.y + 20);
@@ -505,12 +517,15 @@ test("R8: navigator reveals a new selection on the same page without resetting s
   if (!target) throw new Error("No target");
   await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
-  await page.locator(".trace-panel").getByRole("button", { name: "Previous", exact: true }).click();
+  await page
+    .locator(".session-primary:not([hidden]) .trace-panel")
+    .getByRole("button", { name: "Previous", exact: true })
+    .click();
   await row(page, target).click();
   await expect(nav(page, target)).toHaveAttribute("aria-current", "true");
   await expect
     .poll(() =>
-      page.locator(".tree-scroll").evaluate((container) => {
+      page.locator(".session-primary:not([hidden]) .trace-scroll").evaluate((container) => {
         const selected = container.querySelector('[aria-current="true"]');
         if (!selected) return false;
         const a = container.getBoundingClientRect();
@@ -519,13 +534,13 @@ test("R8: navigator reveals a new selection on the same page without resetting s
       }),
     )
     .toBe(true);
-  await page.locator(".tree-scroll").evaluate((container) => {
+  await page.locator(".session-primary:not([hidden]) .trace-scroll").evaluate((container) => {
     container.scrollTop = 0;
   });
   const refreshed = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
   server.invalidate(++revision);
   await refreshed;
-  await expect(page.locator(".tree-scroll")).toHaveJSProperty("scrollTop", 0);
+  await expect(page.locator(".session-primary:not([hidden]) .trace-scroll")).toHaveJSProperty("scrollTop", 0);
   expect(await page.evaluate(() => scrollY)).toBe(0);
 });
 
@@ -551,7 +566,7 @@ test("R10: pagination, collapse and filters retain a visible roving trace target
   for (let i = 0; i < 100; i++) data.manager.appendCustomEntry(`page-${i}`, {});
   await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
-  const trace = page.locator(".trace-panel");
+  const trace = page.locator(".session-primary:not([hidden]) .trace-panel");
   const targets = trace.locator('[role="treeitem"][tabindex="0"]');
   await expect(targets).toHaveCount(1);
   await trace.getByRole("button", { name: "Previous", exact: true }).click();
@@ -585,7 +600,7 @@ test("R11: transient SSE refusals retry, while authentication and generation fai
   await explore(page);
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
   expect(attempts).toBe(3);
-  expect(await page.locator(".trace-panel [role=treeitem]").count()).toBeGreaterThan(0);
+  await expect(page.locator(".session-primary:not([hidden]) .trace-panel [role=treeitem]").first()).toBeVisible();
 });
 
 test("R11: expired SSE credentials do not schedule another request", async ({ page }) => {
@@ -651,7 +666,7 @@ test("R14: malformed runtime identity remains bounded raw evidence without a ren
   if (!entry) throw new Error("Missing malformed fixture");
   (entry as unknown as Record<string, unknown>).id = 42;
   await explore(page);
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-panel [role=treeitem]").first()).toBeVisible();
   await page.locator(".invalid-entries > summary").click();
   await expect(page.locator(".invalid-entries")).toContainText("non-string entry id");
   await expect(page.locator(".invalid-entries")).toContainText("evidence");
@@ -709,13 +724,15 @@ test("R17: filtered direct-child count is labeled visible rather than recorded t
   data.manager.appendCustomEntry("hidden-child-two", {});
   await explore(page);
   await page.getByRole("textbox", { name: "Search session" }).fill("match-child");
-  const disclosure = page.locator(`[data-trace-entry-id="${parent}"] .expand-button`);
+  const disclosure = page.locator(`.session-primary:not([hidden]) [data-trace-entry-id="${parent}"] .expand-button`);
   if ((await disclosure.getAttribute("aria-expanded")) === "true") await disclosure.click();
   await disclosure.click();
-  await expect(page.locator(`[data-trace-entry-id="${parent}"] .children-label`)).toContainText(
-    "1 visible child entry",
-  );
-  await expect(page.locator(`[data-trace-entry-id="${parent}"] .children-label`)).not.toContainText("recorded");
+  await expect(
+    page.locator(`.session-primary:not([hidden]) [data-trace-entry-id="${parent}"] .children-label`),
+  ).toContainText("1 visible child entry");
+  await expect(
+    page.locator(`.session-primary:not([hidden]) [data-trace-entry-id="${parent}"] .children-label`),
+  ).not.toContainText("recorded");
 });
 
 test("R18: a failed snapshot recovers while the SSE connection stays quiet", async ({ page }) => {
@@ -727,7 +744,7 @@ test("R18: a failed snapshot recovers while the SSE connection stays quiet", asy
   });
   await explore(page);
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-panel [role=treeitem]").first()).toBeVisible();
   expect(attempts).toBe(2);
 });
 
@@ -773,7 +790,7 @@ test("R19/R20: malformed kind and duplicate records remain raw diagnostics, not 
   if (!duplicate) throw new Error("No duplicate");
   duplicate.id = data.user;
   await explore(page);
-  await expect(page.locator(".trace-panel [role=treeitem]").first()).toBeVisible();
+  await expect(page.locator(".session-primary:not([hidden]) .trace-panel [role=treeitem]").first()).toBeVisible();
   await page.locator(".invalid-entries > summary").click();
   await expect(page.locator(".invalid-entries")).toContainText("entry type");
   await expect(page.locator(".invalid-entries")).toContainText("duplicate entry id");
@@ -787,7 +804,7 @@ test("large history pages visible rows lazily and preserves arbitrary absolute d
   page.on("request", (request) => requests.push(request.url()));
   await explore(page);
   await expect(row(page, data.manager.getLeafId() ?? "")).toBeVisible();
-  expect(await page.locator(".node").count()).toBeLessThanOrEqual(100);
+  expect(await page.locator(".session-primary:not([hidden]) .trace-row").count()).toBeLessThanOrEqual(100);
   expect(await page.locator(".trace-item").count()).toBeLessThanOrEqual(50);
   expect(Number(await row(page, data.manager.getLeafId() ?? "").getAttribute("aria-level"))).toBeGreaterThan(1500);
   expect(requests.filter((url) => url.includes("/api/detail"))).toHaveLength(1);
@@ -901,7 +918,7 @@ test("R43: an empty represented inventory clears prior selection and cached deta
   server.invalidate(++revision);
   await expect(page.locator(".inspector-identity")).toContainText("no selection");
   await expect(page.locator(".inspector-identity")).not.toContainText(data.assistant);
-  await expect(page.locator('.node[aria-current="true"]')).toHaveCount(0);
+  await expect(page.locator('.session-primary:not([hidden]) .trace-row[aria-current="true"]')).toHaveCount(0);
 });
 
 test("R45: same anchor regains reveal ownership beyond 100 navigator rows after call eviction", async ({ page }) => {
@@ -943,7 +960,7 @@ test("R45: same anchor regains reveal ownership beyond 100 navigator rows after 
   await expect(row(page, anchor)).toBeVisible();
   await expect(page.locator(".inspector-identity")).toContainText(anchor);
   await expect(search).toHaveValue("retained");
-  await page.getByRole("button", { name: "Previous nodes", exact: true }).click();
+  await page.locator(".session-primary:not([hidden])").getByRole("button", { name: "Previous", exact: true }).click();
   await expect(nav(page, anchor)).toHaveCount(0);
   const received = page.waitForResponse((response) => response.url().includes("/api/snapshot") && response.ok());
   server.invalidate(++revision);
@@ -980,7 +997,7 @@ test("R51: evicted parent remains explicitly recorded in live child details", as
   );
   await explore(page);
   await openLive(page);
-  await page.getByRole("button", { name: "Expand call call-2", exact: true }).click();
+  await page.getByRole("button", { name: "child · running", exact: true }).click();
   await expect(page.getByText("Parent parent (not captured)", { exact: true })).toBeVisible();
 });
 
@@ -1004,7 +1021,7 @@ test("R52: a retained call's omitted bounded anchor is explicitly unavailable, n
       exact: true,
     }),
   ).toBeVisible();
-  await expect(page.locator('.node[aria-current="true"]')).toHaveCount(0);
+  await expect(page.locator('.session-primary:not([hidden]) .trace-row[aria-current="true"]')).toHaveCount(0);
   await expect(page.locator(".inspector-identity")).toContainText("Captured execution");
   expect(data.manager.getLeafId()).toBe(data.alternate);
 });

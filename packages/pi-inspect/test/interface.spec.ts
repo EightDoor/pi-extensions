@@ -1,0 +1,314 @@
+import { expect, type Page, test } from "@playwright/test";
+import { Collector } from "../src/collector.js";
+import { captureContext } from "../src/context.js";
+import { branch, detail, snapshot } from "../src/projection.js";
+import { startServer, type ViewerServer } from "../src/server.js";
+import { fixture, skills, tools } from "./fixtures.js";
+
+let server: ViewerServer;
+let f: ReturnType<typeof fixture>;
+let collector: Collector;
+test.beforeEach(async () => {
+  f = fixture();
+  collector = new Collector();
+  server = await startServer({
+    generation: "reading-flow",
+    signal: new AbortController().signal,
+    snapshot: () => ({
+      ...snapshot(f.manager, collector, "reading-flow", 0, "Current runtime prompt", tools, ["read"], skills),
+      context: captureContext([{ role: "user", content: "Observed input only" }], "observed-pi-context", f.leaf),
+      providerObservation: { observedAt: 1, data: { value: { request: "independent payload" }, truncated: false } },
+    }),
+    branch: (leaf, offset) => branch(f.manager, leaf, offset, skills),
+    detail: (id, leaf) => detail(f.manager, id, leaf, collector),
+  });
+});
+test.afterEach(async () => server.close());
+const primary = (page: Page) => page.locator(".session-primary:not([hidden])");
+async function session(page: Page) {
+  await page.goto(server.url);
+  await expect(page.locator(".segment-row").first()).toBeVisible();
+  await page.getByRole("button", { name: "Session", exact: true }).click();
+}
+
+test("Context is independent and keeps its reading state while Session is content-first", async ({ page }) => {
+  let details = 0;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/detail") || r.url().includes("/api/branch")) details++;
+  });
+  await page.goto(server.url);
+  await page.locator(".segment-row").first().click();
+  await page.getByRole("textbox", { name: "Search context" }).fill("Observed");
+  await expect(page.getByRole("button", { name: "Toggle filters" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Toggle details" })).toHaveCount(0);
+  await expect(page.locator(".inspector-panel")).toHaveCount(0);
+  await expect(page.locator(".live-drawer")).not.toBeVisible();
+  expect(details).toBe(0);
+  await page.getByRole("button", { name: "Session", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "History", exact: true })).toBeVisible();
+  const row = primary(page).locator(`[data-trace-id="${f.user}"]`);
+  await row.click();
+  await expect(row).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("tab", { name: "content", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".recorded-content")).toContainText("first request <script>alert(1)</script>");
+  await expect(primary(page).locator(".inline-entry")).toHaveCount(0);
+  await page.getByRole("button", { name: "Context", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Search context" })).toHaveValue("Observed");
+  await expect(page.locator(".segment-details")).toHaveCount(1);
+  await expect(page.locator(".inspector-panel")).toHaveCount(0);
+});
+
+test("non-text session messages and model changes show their recorded payload before metadata", async ({ page }) => {
+  const id = f.manager.appendModelChange("faux", "new-model");
+  await session(page);
+  await primary(page).locator(`[data-trace-id="${id}"]`).click();
+  const content = page.locator(".recorded-content");
+  await expect(content).toContainText("new-model");
+  await expect(content).toContainText("faux");
+});
+
+test("Session filters preserve simultaneous event groups without duplicate navigation", async ({ page }) => {
+  await session(page);
+  await page.getByRole("button", { name: "Toggle filters" }).click();
+  await page.locator(".filter-panel > summary").click();
+  await page.getByRole("checkbox", { name: "Model events", exact: true }).check();
+  await page.getByRole("checkbox", { name: "Tool events", exact: true }).check();
+  await expect(primary(page).locator(`[data-trace-id="${f.assistant}"]`)).toBeVisible();
+  await expect(primary(page).locator(`[data-trace-id="${f.result}"]`)).toBeVisible();
+  await page.getByRole("checkbox", { name: "Model events", exact: true }).uncheck();
+  await expect(primary(page).locator(`[data-trace-id="${f.assistant}"]`)).toHaveCount(0);
+  await expect(primary(page).locator(`[data-trace-id="${f.result}"]`)).toBeVisible();
+  await expect(page.locator(".session-filters [role=tree]")).toHaveCount(0);
+});
+
+test("History search is direct, generic internal events are opt-in, branch history is explicit and read-only", async ({
+  page,
+}) => {
+  const leaf = f.manager.getLeafId();
+  await session(page);
+  await expect(primary(page).locator(`[data-trace-id="${leaf}"]`)).toHaveCount(0);
+  await expect(page.getByText(/matching internal events hidden/)).toContainText("2 matching");
+  await page.getByRole("checkbox", { name: "Show internal events" }).check();
+  await expect(primary(page).locator(`[data-trace-id="${leaf}"]`)).toBeVisible();
+  await page.getByRole("checkbox", { name: "Show internal events" }).uncheck();
+  await page.getByRole("button", { name: "Toggle filters" }).click();
+  await page.getByRole("textbox", { name: "Search session" }).fill("first request");
+  await expect(primary(page).locator(".trace-row")).toHaveCount(1);
+  await expect(primary(page).locator(".trace-row")).toContainText("first request");
+  await expect(primary(page).getByText("ancestor", { exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Search session" }).fill("");
+  await page.getByRole("button", { name: "Branch view", exact: true }).click();
+  await primary(page).locator(`[data-trace-id="${f.alternate}"]`).click();
+  await page.getByRole("button", { name: "History at selected entry", exact: true }).click();
+  await expect(page.getByText(`Branch leaf: ${f.alternate}`, { exact: true })).toBeVisible();
+  await expect(primary(page).locator(`[data-trace-id="${f.alternate}"]`)).toBeVisible();
+  await expect(primary(page).locator(`[data-trace-id="${f.result}"]`)).toHaveCount(0);
+  await page.getByRole("button", { name: "Follow active branch", exact: true }).click();
+  await expect(primary(page).locator(`[data-trace-id="${f.result}"]`)).toBeVisible();
+  await expect(primary(page).getByText("recorded parent cycle", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText("Selected entry is outside this branch; use Branch view to locate it.", { exact: true }),
+  ).toBeVisible();
+  expect(f.manager.getLeafId()).toBe(leaf);
+  await page.screenshot({ path: test.info().outputPath("history-reading-flow.png"), animations: "disabled" });
+});
+
+test("branch preview shares composition without unrelated current information or provider payload", async ({
+  page,
+}) => {
+  const leaf = f.manager.getLeafId();
+  await session(page);
+  await primary(page).locator(`[data-trace-id="${f.user}"]`).click();
+  await page.getByRole("tab", { name: "context", exact: true }).click();
+  await page.getByRole("button", { name: "View branch context", exact: true }).click();
+  await expect(page.locator(".preview-context")).toContainText(`leaf ${f.user}`);
+  await expect(page.locator(".preview-context .context-provenance")).toContainText("not a captured historical request");
+  await expect(page.locator(".preview-context .segment-row").last()).toContainText("first request");
+  await expect(page.locator(".provider-observation")).not.toBeVisible();
+  await expect(page.locator(".context-inventory")).not.toBeVisible();
+  await expect(page.locator(".inspector-panel")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to last observed context", exact: true }).click();
+  await expect(page.locator(".observed-context .segment-row").first()).toContainText("Observed input only");
+  await page.locator(".context-inventory > summary").click();
+  await page.getByText("Current tools", { exact: true }).click();
+  await expect(page.getByText("mcp__docs__search", { exact: true })).toBeVisible();
+  expect(f.manager.getLeafId()).toBe(leaf);
+});
+
+test("late branch responses never become preview evidence for a newer selection", async ({ page }) => {
+  let ready: () => void = () => {};
+  let release: () => void = () => {};
+  const admitted = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/branch?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("leaf") === f.result) {
+      ready();
+      await gate;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await session(page);
+    await primary(page).locator(`[data-trace-id="${f.result}"]`).click();
+    await admitted;
+    await primary(page).locator(`[data-trace-id="${f.user}"]`).click();
+    await page.getByRole("tab", { name: "context", exact: true }).click();
+    await expect(page.getByRole("button", { name: "View branch context", exact: true })).toBeEnabled();
+    release();
+    await page.getByRole("button", { name: "View branch context", exact: true }).click();
+    await expect(page.locator(".preview-context")).toContainText(`leaf ${f.user}`);
+    await expect(page.locator(".preview-context")).not.toContainText("Script completed");
+  } finally {
+    release();
+  }
+});
+
+test("Context exit aborts owned entry requests and cannot reopen stale Details", async ({ page }) => {
+  let ready: () => void = () => {};
+  let release: () => void = () => {};
+  const admitted = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const aborted = page.waitForEvent("requestfailed", { predicate: (r) => r.url().includes("/api/detail") });
+  await page.route("**/api/detail?**", async (route) => {
+    ready();
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await session(page);
+    await primary(page).locator(`[data-trace-id="${f.user}"]`).click();
+    await admitted;
+    await page.getByRole("button", { name: "Context", exact: true }).click();
+    release();
+    await aborted;
+    await expect(page.locator(".inspector-panel")).toHaveCount(0);
+    await expect(page.locator(".observed-context .segment-row").first()).toContainText("Observed input only");
+  } finally {
+    release();
+  }
+});
+
+test("execution details have one owner and preserve real parent navigation independently of transcript ancestry", async ({
+  page,
+}) => {
+  let historicalRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/detail") || request.url().includes("/api/branch")) historicalRequests++;
+  });
+  collector.start({ type: "tool_execution_start", toolCallId: "parent", toolName: "outer", args: {} }, f.assistant);
+  collector.start(
+    {
+      type: "tool_execution_start",
+      toolCallId: "child",
+      parentToolCallId: "parent",
+      toolName: "inner",
+      args: { path: "/example" },
+    },
+    f.assistant,
+  );
+  collector.end(
+    {
+      type: "tool_execution_end",
+      toolCallId: "child",
+      parentToolCallId: "parent",
+      toolName: "inner",
+      isError: false,
+      result: "child result",
+    },
+    f.assistant,
+  );
+  await session(page);
+  await page.getByRole("button", { name: /^Captured executions ·/ }).click();
+  await page.getByRole("button", { name: "Expand calls", exact: true }).click();
+  await page.getByRole("button", { name: "inner · ok", exact: true }).click();
+  await expect(page.locator(".inspector-panel")).toContainText("child result");
+  await expect(page.locator(".live-drawer")).not.toContainText("child result");
+  await expect(page.getByRole("tab", { name: "context", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Related execution · outer · call-1", exact: true }).click();
+  await expect(page.locator(".inspector-identity")).toContainText("call-1");
+  expect(historicalRequests).toBe(0);
+  await page.getByRole("button", { name: "Inspect recorded anchor →", exact: true }).click();
+  await expect(page.locator(".inspector-identity")).toContainText(f.assistant);
+  await expect(page.getByRole("button", { name: "Branch view", exact: true })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("terminal snapshot failure cancels pending Details and branch work without stale publication", async ({
+  page,
+}) => {
+  let expired = false;
+  let ready: () => void = () => {};
+  let release: () => void = () => {};
+  let admittedCount = 0;
+  const admitted = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/snapshot?**", async (route) => {
+    if (expired) await route.fulfill({ status: 410, body: "Closed session" });
+    else await route.continue();
+  });
+  for (const pattern of ["**/api/detail?**", "**/api/branch?**"]) {
+    await page.route(pattern, async (route) => {
+      if (++admittedCount === 2) ready();
+      await gate;
+      await route.continue().catch(() => {});
+    });
+  }
+  const failures: string[] = [];
+  page.on("requestfailed", (request) => failures.push(request.url()));
+  try {
+    await session(page);
+    await primary(page).locator(`[data-trace-id="${f.user}"]`).click();
+    await admitted;
+    expired = true;
+    server.invalidate(2);
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+    release();
+    await expect.poll(() => failures.filter((url) => /\/api\/(?:detail|branch)\?/.test(url)).length).toBe(2);
+    await expect(page.locator(".recorded-content")).not.toContainText("first request");
+    await page.getByRole("tab", { name: "context", exact: true }).click();
+    await expect(page.getByRole("button", { name: "View branch context", exact: true })).toBeDisabled();
+  } finally {
+    release();
+  }
+});
+
+test("mobile content selection opens dismissible Details without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await session(page);
+  const row = primary(page).locator(`[data-trace-id="${f.user}"]`);
+  await row.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Details" })).toBeVisible();
+  await expect(page.locator(".recorded-content")).toContainText("first request");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Toggle details" })).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && scrollY === 0)).toBe(true);
+  await expect
+    .poll(() =>
+      primary(page)
+        .locator(".trace-row")
+        .evaluateAll((rows) =>
+          rows.every((row) => {
+            const text = row.querySelector(".row-title > span");
+            const metrics = row.querySelector(".row-metrics");
+            return !text || !metrics || text.getBoundingClientRect().right <= metrics.getBoundingClientRect().left;
+          }),
+        ),
+    )
+    .toBe(true);
+  await page.getByRole("button", { name: "Toggle appearance" }).click();
+  await expect(page.locator(".inspector-app")).toHaveClass(/dark/);
+  await page.screenshot({ path: test.info().outputPath("history-mobile-dark.png"), animations: "disabled" });
+});

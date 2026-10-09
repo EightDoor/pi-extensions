@@ -1,36 +1,38 @@
 import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { Button, Text } from "@radix-ui/themes";
+import { Button, Heading, Text } from "@radix-ui/themes";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Call, EntrySummary } from "../model.js";
-import { CallView, Status } from "./components.js";
-import { duration, type Filters, matchesCall } from "./format.js";
+import { Status } from "./components.js";
+import { duration, type Filters, matchesCall, output } from "./format.js";
 import { flatten, hierarchy, reveal, withAncestors } from "./hierarchy.js";
 import { searchNeedle } from "./search.js";
 import { TimelineMark } from "./timeline.js";
 import { axis } from "./timing.js";
 
-export function LiveDrawer({
+export function CapturedExecutions({
   calls,
   entries,
   selected,
   select,
   open,
-  changeOpen,
   view,
+  changeView,
   dropped,
   invalidEvents,
   filters,
+  revealSelected,
 }: {
   calls: Call[];
   entries: EntrySummary[];
   selected?: string;
   select(id: string): void;
   open: boolean;
-  changeOpen(open: boolean): void;
   view: string;
+  changeView(view: string): void;
   dropped: number;
   invalidEvents: number;
   filters: Filters;
+  revealSelected: boolean;
 }) {
   const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
   const tree = useMemo(
@@ -50,9 +52,12 @@ export function LiveDrawer({
     () =>
       withAncestors(
         tree,
-        new Set(calls.filter((call) => matchesCall(call, preparedFilters)).map((call) => call.occurrenceId)),
+        new Set([
+          ...calls.filter((call) => matchesCall(call, preparedFilters)).map((call) => call.occurrenceId),
+          ...(revealSelected && selected ? [selected] : []),
+        ]),
       ),
-    [tree, calls, preparedFilters],
+    [tree, calls, preparedFilters, revealSelected, selected],
   );
   const [expanded, setExpanded] = useState(new Set<string>());
   const previous = useRef<string | undefined>(undefined);
@@ -72,17 +77,17 @@ export function LiveDrawer({
     }
   }, [selected, tree]);
   const rows = flatten(tree, expanded, keep);
+  const indent = Math.min(12, 140 / Math.max(1, ...rows.map((row) => row.depth)));
   const range = axis(entries, calls);
   return (
     <section className={`live-drawer ${open ? "drawer-open" : ""}`}>
-      <button type="button" className="live-drawer-toggle" aria-expanded={open} onClick={() => changeOpen(!open)}>
-        {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-        <strong>Live calls</strong>
+      <div className="live-drawer-toggle">
+        <Heading size="3">Captured executions</Heading>
         <span>
           {calls.length} captured · {calls.filter((call) => call.status === "error").length} errors · {dropped} evicted
         </span>
         <span className="drawer-scope">Session-wide · observed events</span>
-      </button>
+      </div>
       {open && (
         <div className="live-drawer-body">
           {invalidEvents > 0 && (
@@ -94,6 +99,13 @@ export function LiveDrawer({
             <Text size="1" color="gray">
               Reported durations are monotonic execute() timings; bars are observed callback intervals.
             </Text>
+            <div className="view-switch">
+              {["list", "timeline"].map((mode) => (
+                <button type="button" key={mode} aria-pressed={view === mode} onClick={() => changeView(mode)}>
+                  {mode === "list" ? "List" : "Timeline"}
+                </button>
+              ))}
+            </div>
             <Button size="1" variant="ghost" disabled={!keep.size} onClick={() => setExpanded(new Set(keep))}>
               Expand calls
             </Button>
@@ -109,7 +121,7 @@ export function LiveDrawer({
               className="live-trace-item"
               data-parent-id={call.parentId ?? ""}
               data-raw-id={call.rawId}
-              style={{ marginLeft: depth * 12 }}
+              style={{ marginLeft: depth * indent }}
             >
               <div className={`live-call-row ${selected === call.id ? "selected" : ""}`}>
                 <button
@@ -135,7 +147,10 @@ export function LiveDrawer({
                   onClick={() => select(call.id)}
                 >
                   <strong title={call.name}>{call.name}</strong>
-                  <code title={call.occurrenceId}>{call.rawId}</code>
+                  <span className="call-summary" title={output(call.args.value)}>
+                    {output(call.args.value).replace(/\s+/g, " ").slice(0, 120)}
+                  </span>
+                  <code title={call.rawId}>{call.rawId.slice(0, 16)}</code>
                   <Status value={call.status} />
                   <span>{duration(call.durationMs)}</span>
                 </button>
@@ -153,19 +168,6 @@ export function LiveDrawer({
                   />
                 )}
               </div>
-              {expanded.has(call.id) && (
-                <CallView
-                  call={{
-                    ...call,
-                    id: call.rawId,
-                    parentId: call.parentOccurrenceId
-                      ? (calls.find((parent) => parent.occurrenceId === call.parentOccurrenceId)?.id ??
-                        call.rawParentId)
-                      : call.rawParentId,
-                  }}
-                  all={calls}
-                />
-              )}
             </div>
           ))}
         </div>

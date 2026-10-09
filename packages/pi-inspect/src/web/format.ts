@@ -47,7 +47,9 @@ export function matches(entry: EntrySummary, filters: Filters, calls: Call[]): b
     (!filters.groups.length || filters.groups.includes(group(entry.kind))) &&
     (!filters.errorsOnly || entry.status === "error" || call?.status === "error") &&
     (!filters.slowOnly || (call?.durationMs ?? 0) > 10000) &&
-    `${entry.kind} ${entry.name ?? ""} ${entry.label} ${entry.id}`.toLowerCase().includes(filters.query)
+    `${entry.kind} ${entry.name ?? ""} ${entry.label} ${entry.summary ?? ""} ${entry.id}`
+      .toLowerCase()
+      .includes(filters.query)
   );
 }
 export function matchesCall(call: Call, filters: Filters): boolean {

@@ -5,6 +5,7 @@ import type { Call, EntrySummary } from "../model.js";
 import { Glyph, Status } from "./components.js";
 import { count, eventName, time } from "./format.js";
 import { flatten, hierarchy, label, reveal, withAncestors } from "./hierarchy.js";
+import { type HistoryRow, historySummary } from "./history.js";
 import { InlineEntry } from "./inline-entry.js";
 import { TimelineMark } from "./timeline.js";
 import { axis } from "./timing.js";
@@ -25,6 +26,8 @@ export function Trace({
   view,
   changeView,
   calls,
+  historyRows,
+  active = true,
 }: {
   entries: EntrySummary[];
   matches: Set<string>;
@@ -35,6 +38,8 @@ export function Trace({
   view: string;
   changeView(view: string): void;
   calls: Call[];
+  historyRows?: HistoryRow[];
+  active?: boolean;
 }) {
   const tree = useMemo(() => hierarchy(entries), [entries]);
   const keep = useMemo(
@@ -49,7 +54,25 @@ export function Trace({
   const focusRequest = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const rows = useMemo(() => flatten(tree, expanded, keep), [tree, expanded, keep]);
+  const rows = useMemo(
+    () =>
+      historyRows
+        ? historyRows
+            .filter(({ node }) => matches.has(node.id) || (revealSelected && node.id === selected))
+            .map((row, index, visible) => ({
+              ...row,
+              depth: 0,
+              childCount: 0,
+              heading:
+                index === 0 || visible[index - 1]?.turn !== row.turn
+                  ? row.turn === "before-user"
+                    ? "Before first user turn"
+                    : "User turn"
+                  : undefined,
+            }))
+        : flatten(tree, expanded, keep),
+    [tree, expanded, keep, historyRows, matches, revealSelected, selected],
+  );
   const pageRows = rows.slice(offset, offset + 50);
   const visibleFocused = pageRows.some((row) => row.node.id === focused) ? focused : (pageRows[0]?.node.id ?? "");
   const baseDepth = pageRows.length ? Math.min(...pageRows.map((row) => row.depth)) : 0;
@@ -59,14 +82,14 @@ export function Trace({
   useEffect(() => {
     if (!tree.nodes.has(selected) || serial === lastReveal.current) return;
     lastReveal.current = serial;
-    const next = reveal(tree, expanded, selected);
-    setExpanded(next);
-    const index = flatten(tree, next, keep).findIndex((row) => row.node.id === selected);
+    const next = historyRows ? expanded : reveal(tree, expanded, selected);
+    if (!historyRows) setExpanded(next);
+    const index = (historyRows ? rows : flatten(tree, next, keep)).findIndex((row) => row.node.id === selected);
     if (index >= 0) {
       setOffset(Math.floor(index / 50) * 50);
       setFocused(selected);
     }
-  }, [tree, selected, serial, expanded, keep]);
+  }, [tree, selected, serial, expanded, keep, historyRows, rows]);
   useEffect(() => {
     const element = rowRefs.current.get(visibleFocused);
     if (!element || !scroller.current) return;
@@ -97,11 +120,11 @@ export function Trace({
     rowRefs.current.get(id)?.focus({ preventScroll: true });
   }
   return (
-    <section className={`panel trace-panel trace-${view}`}>
+    <section className={`panel trace-panel trace-${view} ${historyRows ? "trace-history" : "trace-branches"}`}>
       <div className="trace-toolbar">
-        <Heading size="3">Trace explorer</Heading>
+        <Heading size="3">{historyRows ? "History" : "Branch view"}</Heading>
         <Text size="1" color="gray">
-          Session log hierarchy
+          {historyRows ? "Conversation groups · not execution parentage" : "Actual session ancestry · not a call stack"}
         </Text>
         <div className="trace-actions">
           <Button
@@ -129,19 +152,25 @@ export function Trace({
         </div>
       </div>
       <div className="trace-hint">
-        Row: select + toggle · Chevron: toggle only · ↑↓ navigate · ←→ collapse/expand · Enter select · Space toggle
+        Row: select · Chevron: toggle only · ↑↓ navigate · ←→ collapse/expand · Enter select · Space toggle
       </div>
       {view === "timeline" && (
         <div className="time-axis">
           <span>{range ? new Date(range.start).toISOString().slice(11, 23) : "No timing"}</span>
-          <span>● Log timestamp · ▰ Observed tool interval (live drawer)</span>
+          <span>● Log timestamp · ▰ Observed tool interval (captured executions)</span>
           <span>{range ? new Date(range.end).toISOString().slice(11, 23) : "—"}</span>
         </div>
       )}
       <div className="trace-scroll" ref={scroller}>
         <div role="tree" aria-label="Session trace" className="trace-tree">
-          {!rows.length && <div className="empty-state">No entries match. Filters keep actual ancestor context.</div>}
-          {pageRows.map(({ node: entry, depth, childCount }) => {
+          {!rows.length && (
+            <div className="empty-state">
+              {historyRows
+                ? "No visible entries match in this branch. Check filters or Show internal events."
+                : "No entries match. Filters keep actual ancestor context."}
+            </div>
+          )}
+          {pageRows.map(({ node: entry, depth, childCount, ...group }) => {
             const open = expanded.has(entry.id);
             const selectedRow = selected === entry.id;
             return (
@@ -154,11 +183,17 @@ export function Trace({
                 data-state={open ? "open" : "closed"}
                 style={{ marginLeft: (depth - baseDepth) * indent }}
               >
+                {"heading" in group && typeof group.heading === "string" && (
+                  <div className="turn-heading">{group.heading}</div>
+                )}
                 <div
                   role="treeitem"
                   aria-level={depth + 1}
                   aria-expanded={open}
                   aria-selected={selectedRow}
+                  aria-current={selectedRow ? "true" : undefined}
+                  data-entry-id={entry.id}
+                  data-match={matches.has(entry.id)}
                   tabIndex={visibleFocused === entry.id ? 0 : -1}
                   ref={(element) => {
                     if (element) rowRefs.current.set(entry.id, element);
@@ -170,7 +205,6 @@ export function Trace({
                   onClick={(event) => {
                     if (event.target !== event.currentTarget && (event.target as HTMLElement).closest("button")) return;
                     select(entry.id);
-                    toggle(entry.id);
                   }}
                   onKeyDown={(event) => {
                     if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -213,13 +247,16 @@ export function Trace({
                     <Glyph kind={entry.kind} />
                     <span className="row-title">
                       <strong>{eventName(entry.kind)}</strong>
-                      <span title={label(entry)}>{label(entry)}</span>
+                      <span title={historySummary(entry)}>
+                        {historyRows ? historySummary(entry) : label(entry)}
+                        {entry.summaryTruncated && historyRows ? " · truncated" : ""}
+                      </span>
                     </span>
                     <code title={entry.id}>{entry.id.slice(0, 8)}</code>
                     {!matches.has(entry.id) && (
                       <span className="ancestor-badge">{selectedRow ? "selected outside filters" : "ancestor"}</span>
                     )}
-                    {depth === 0 && entry.parentId && tree.nodes.has(entry.parentId) && (
+                    {!historyRows && depth === 0 && entry.parentId && tree.nodes.has(entry.parentId) && (
                       <span className="ancestor-badge">recorded parent cycle</span>
                     )}
                   </div>
@@ -234,7 +271,7 @@ export function Trace({
                 </div>
                 {open && disclosed.has(entry.id) && (
                   <div className="entry-expanded">
-                    <InlineEntry entry={entry} inspect={select} />
+                    {active && <InlineEntry entry={entry} inspect={select} />}
                     {childCount > 0 && (
                       <span className="children-label">
                         {childCount} visible child {childCount === 1 ? "entry" : "entries"}
@@ -254,7 +291,9 @@ export function Trace({
         <span>
           {baseDepth
             ? `Absolute hierarchy level ${baseDepth + 1}+ · page-local indentation`
-            : "Original parents retained · browser-only selection"}
+            : historyRows
+              ? "Branch-scoped history · browser-only selection"
+              : "Original parents retained · browser-only selection"}
         </span>
         <Flex gap="2" align="center">
           <Button size="1" variant="ghost" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 50))}>

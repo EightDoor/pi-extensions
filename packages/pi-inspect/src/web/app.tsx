@@ -5,17 +5,20 @@ import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
 import "./composition.css";
-import type { BranchView, Snapshot } from "../model.js";
+import "./session.css";
+import type { BranchView, ContextComposition as Composition, Snapshot } from "../model.js";
 import { generation, headers, RequestFailure, request, useDetail } from "./api.js";
+import { CapturedExecutions } from "./captured-executions.js";
 import { ContextComposition } from "./context-composition.js";
+import { ContextInventory } from "./context-inventory.js";
 import { type Filters, matches } from "./format.js";
+import { history, internalEntry } from "./history.js";
 import { Inspector } from "./inspector.js";
-import { LiveDrawer } from "./live-drawer.js";
 import { Overview } from "./overview.js";
 import { PaneDrawer, ResizeHandle, useNarrow } from "./panes.js";
 import { boundedSearch, searchNeedle } from "./search.js";
+import { SessionFilters } from "./session-filters.js";
 import { Trace } from "./trace.js";
-import { Sidebar } from "./tree.js";
 
 type Selection = { kind: "entry" | "call"; id: string; serial: number; filterVersion?: number; anchor?: string | null };
 function App() {
@@ -29,7 +32,10 @@ function App() {
   const [selection, setSelection] = useState<Selection>();
   const [view, setView] = useState("list");
   const [surface, setSurface] = useState("context");
-  const [liveOpen, setLiveOpen] = useState(false);
+  const [sessionView, setSessionView] = useState("history");
+  const [historyLeaf, setHistoryLeaf] = useState<string | null>(null);
+  const [showInternal, setShowInternal] = useState(false);
+  const [preview, setPreview] = useState<Composition>();
   const [filters, setFilters] = useState<Filters>({
     query: "",
     kind: "all",
@@ -46,7 +52,7 @@ function App() {
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
   const lifecycle = useRef<{ terminal: boolean; stream?: AbortController }>({ terminal: false });
-  const [tab, setTab] = useState("raw");
+  const [tab, setTab] = useState("content");
   const navTrigger = useRef<HTMLButtonElement>(null);
   const inspectorTrigger = useRef<HTMLButtonElement>(null);
   const [navOpen, setNavOpen] = useState(false);
@@ -67,11 +73,14 @@ function App() {
   const callAnchorAvailable = Boolean(selectedCall?.branchAnchor && represented.has(selectedCall.branchAnchor));
   const entryId =
     selection?.kind === "entry" ? selection.id : callAnchorAvailable ? (selectedCall?.branchAnchor ?? "") : "";
-  const {
-    detail,
-    error: detailError,
-    retry: retryDetails,
-  } = useDetail(selection?.kind === "entry" ? entryId : undefined);
+  const paneActive =
+    surface === "events" && revision >= 0 && (inspectorOpen || inspectorDrawer) && selection?.kind === "entry";
+  const { detail, error: detailError, retry: retryDetails } = useDetail(paneActive ? entryId : undefined);
+  const previousSelection = useRef<Selection | undefined>(undefined);
+  useEffect(() => {
+    if (previousSelection.current?.kind === "call" && selection?.kind === "entry") setSessionView("branches");
+    previousSelection.current = selection;
+  }, [selection]);
   const selectedNode = entries.find((node) => node.id === entryId);
   const preparedFilters = useMemo(() => ({ ...filters, query: searchNeedle(filters.query) }), [filters]);
   const matching = useMemo(
@@ -80,6 +89,9 @@ function App() {
   );
   function selectEntry(id: string) {
     setSurface("events");
+    if (sessionView === "executions") setSessionView("branches");
+    if (narrow) setInspectorDrawer(true);
+    else setInspectorOpen(true);
     setSelection((old) => ({ kind: "entry", id, serial: (old?.serial ?? 0) + 1, filterVersion }));
   }
   function selectCall(id: string) {
@@ -92,7 +104,9 @@ function App() {
       filterVersion,
       anchor: calls.find((call) => call.occurrenceId === id)?.branchAnchor,
     }));
-    setLiveOpen(true);
+    setSurface("events");
+    setSessionView("executions");
+    setTab("content");
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -214,7 +228,8 @@ function App() {
   }, [revision]);
   useEffect(() => {
     setBranchError("");
-    if (!entryId) {
+    if (!entryId || !paneActive) {
+      branchOwner.current = undefined;
       setBranch(undefined);
       return;
     }
@@ -231,21 +246,23 @@ function App() {
           setBranchError("Could not load selected branch context.");
       });
     return () => controller.abort();
-  }, [entryId, branchAttempt]);
+  }, [entryId, branchAttempt, paneActive]);
 
-  const sidebar = (
-    <Sidebar
-      nodes={entries}
-      matches={matching}
-      total={snapshot?.totalEntries ?? 0}
-      selected={entryId}
-      serial={selection?.serial ?? 0}
-      filters={filters}
-      change={changeFilters}
-      revealSelected={selection?.filterVersion === filterVersion}
-      choose={selectEntry}
-    />
+  const scoped = useMemo(
+    () => history(entries, historyLeaf ?? snapshot?.leafId ?? null),
+    [entries, historyLeaf, snapshot?.leafId],
   );
+  const historyRows = useMemo(
+    () =>
+      scoped.rows.filter(
+        ({ node }) =>
+          showInternal || !internalEntry(node) || (selection?.filterVersion === filterVersion && node.id === entryId),
+      ),
+    [scoped.rows, showInternal, selection?.filterVersion, filterVersion, entryId],
+  );
+  const hiddenMatches = scoped.rows.filter(({ node }) => internalEntry(node) && matching.has(node.id)).length;
+  const sidebar = <SessionFilters filters={filters} change={changeFilters} />;
+  const selectedBranch = branch?.leafId === entryId ? branch : undefined;
   const inspector = (
     <Inspector
       selected={selection?.id ?? ""}
@@ -254,14 +271,22 @@ function App() {
       detailError={detailError}
       retryDetails={retryDetails}
       call={selectedCall}
-      branch={branch}
-      branchError={branchError}
+      branch={selectedBranch}
+      branchError={branchOwner.current?.entryId === entryId ? branchError : ""}
       retryBranch={() => setBranchAttempt((attempt) => attempt + 1)}
       snapshot={snapshot}
       tab={tab}
       changeTab={setTab}
       select={selectEntry}
       selectCall={selectCall}
+      preview={() => {
+        if (selectedBranch?.context) {
+          setPreview(selectedBranch.context);
+          setSurface("context");
+          setInspectorDrawer(false);
+          setNavDrawer(false);
+        }
+      }}
     />
   );
   return (
@@ -291,16 +316,26 @@ function App() {
         </div>
         <div className="header-actions">
           <fieldset className="surface-switch" aria-label="Inspection source">
-            <button type="button" aria-pressed={surface === "context"} onClick={() => setSurface("context")}>
+            <button
+              type="button"
+              aria-pressed={surface === "context"}
+              onClick={() => {
+                setPreview(undefined);
+                setSurface("context");
+                setInspectorDrawer(false);
+                setNavDrawer(false);
+              }}
+            >
               Context
             </button>
             <button type="button" aria-pressed={surface === "events"} onClick={() => setSurface("events")}>
-              Session events
+              Session
             </button>
           </fieldset>
           <IconButton
+            hidden={surface !== "events"}
             ref={navTrigger}
-            aria-label="Toggle navigator"
+            aria-label="Toggle filters"
             aria-expanded={narrow ? navDrawer : navOpen}
             variant="ghost"
             onClick={() => (narrow ? setNavDrawer(!navDrawer) : setNavOpen(!navOpen))}
@@ -308,8 +343,9 @@ function App() {
             <HamburgerMenuIcon />
           </IconButton>
           <IconButton
+            hidden={surface !== "events"}
             ref={inspectorTrigger}
-            aria-label="Toggle inspector"
+            aria-label="Toggle details"
             aria-expanded={narrow ? inspectorDrawer : inspectorOpen}
             variant="ghost"
             onClick={() => (narrow ? setInspectorDrawer(!inspectorDrawer) : setInspectorOpen(!inspectorOpen))}
@@ -347,58 +383,149 @@ function App() {
           narrow
             ? undefined
             : {
-                gridTemplateColumns: `${navSize}px ${navOpen ? 6 : 0}px minmax(0, 1fr) ${inspectorOpen ? 6 : 0}px ${inspectorSize}px`,
+                gridTemplateColumns:
+                  surface === "context"
+                    ? "0px 0px minmax(0, 1fr) 0px 0px"
+                    : `${navSize}px ${navOpen ? 6 : 0}px minmax(0, 1fr) ${inspectorOpen ? 6 : 0}px ${inspectorSize}px`,
               }
         }
       >
-        {!narrow && (
+        {!narrow && surface === "events" && (
           <>
             <div className="side-slot nav-slot" hidden={!navOpen}>
               {sidebar}
             </div>
             {navOpen && (
-              <ResizeHandle name="Resize navigator" value={navWidth} change={setNavWidth} min={180} max={420} />
+              <ResizeHandle name="Resize filters" value={navWidth} change={setNavWidth} min={180} max={420} />
             )}
           </>
         )}
         <div className="center-column">
           <div className="context-surface" hidden={surface !== "context"}>
-            <ContextComposition context={snapshot?.context} payload={snapshot?.providerObservation} />
+            <div className="observed-context" hidden={Boolean(preview)}>
+              <ContextComposition context={snapshot?.context} payload={snapshot?.providerObservation} />
+              <ContextInventory snapshot={snapshot} />
+            </div>
+            {preview && (
+              <div className="preview-context">
+                <div className="preview-heading">
+                  <strong>Session-derived preview · leaf {preview.leafId}</strong>
+                  <button type="button" onClick={() => setPreview(undefined)}>
+                    Back to last observed context
+                  </button>
+                </div>
+                <ContextComposition context={preview} preview />
+              </div>
+            )}
           </div>
           <div className="events-surface" hidden={surface !== "events"}>
             <Overview snapshot={snapshot} />
-            <Trace
-              entries={entries}
-              matches={matching}
-              selected={entryId}
-              serial={selection?.serial ?? 0}
-              revealSelected={selection?.filterVersion === filterVersion}
-              select={selectEntry}
-              view={view}
-              changeView={setView}
-              calls={calls}
-            />
+            <div className="session-toolbar">
+              <fieldset className="view-switch" aria-label="Session navigation">
+                {[
+                  ["history", "History"],
+                  ["branches", "Branch view"],
+                  ["executions", "Captured executions"],
+                ].map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    aria-pressed={sessionView === value}
+                    onClick={() => setSessionView(value ?? "history")}
+                  >
+                    {label}
+                    {value === "executions"
+                      ? ` · ${calls.filter((call) => call.status === "running").length} running · ${calls.filter((call) => call.status === "error").length} errors`
+                      : ""}
+                  </button>
+                ))}
+              </fieldset>
+              {sessionView === "history" && (
+                <>
+                  <span>Branch leaf: {historyLeaf ?? snapshot?.leafId ?? "unavailable"}</span>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={showInternal}
+                      onChange={(event) => setShowInternal(event.target.checked)}
+                    />{" "}
+                    Show internal events
+                  </label>
+                  {!showInternal && <span>{hiddenMatches} matching internal events hidden</span>}
+                  {historyLeaf && (
+                    <button type="button" onClick={() => setHistoryLeaf(null)}>
+                      Follow active branch
+                    </button>
+                  )}
+                  {scoped.issue && <span role="status">{scoped.issue}</span>}
+                  {entryId && !scoped.rows.some(({ node }) => node.id === entryId) && (
+                    <span role="status">Selected entry is outside this branch; use Branch view to locate it.</span>
+                  )}
+                </>
+              )}
+              {sessionView === "branches" && entryId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistoryLeaf(entryId);
+                    setSessionView("history");
+                  }}
+                >
+                  History at selected entry
+                </button>
+              )}
+            </div>
+            <div className="session-primary" hidden={sessionView !== "history"}>
+              <Trace
+                entries={entries}
+                matches={matching}
+                selected={entryId}
+                serial={selection?.serial ?? 0}
+                revealSelected={selection?.filterVersion === filterVersion}
+                select={selectEntry}
+                view={view}
+                changeView={setView}
+                calls={calls}
+                historyRows={historyRows}
+                active={surface === "events" && sessionView === "history" && revision >= 0}
+              />
+            </div>
+            <div className="session-primary" hidden={sessionView !== "branches"}>
+              <Trace
+                entries={entries}
+                matches={matching}
+                selected={entryId}
+                serial={selection?.serial ?? 0}
+                revealSelected={selection?.filterVersion === filterVersion}
+                select={selectEntry}
+                view={view}
+                changeView={setView}
+                calls={calls}
+                active={surface === "events" && sessionView === "branches" && revision >= 0}
+              />
+            </div>
+            <div className="session-primary execution-primary" hidden={sessionView !== "executions"}>
+              <CapturedExecutions
+                entries={entries}
+                calls={calls}
+                selected={selectedCall?.occurrenceId}
+                select={selectCall}
+                open={surface === "events" && sessionView === "executions"}
+                view={view}
+                changeView={setView}
+                dropped={snapshot?.droppedCalls ?? 0}
+                invalidEvents={snapshot?.invalidCallEvents ?? 0}
+                filters={filters}
+                revealSelected={selection?.filterVersion === filterVersion}
+              />
+            </div>
           </div>
-          {(calls.length > 0 || surface === "events") && (
-            <LiveDrawer
-              entries={entries}
-              calls={calls}
-              selected={selectedCall?.occurrenceId}
-              select={selectCall}
-              open={liveOpen}
-              changeOpen={setLiveOpen}
-              view={view}
-              dropped={snapshot?.droppedCalls ?? 0}
-              invalidEvents={snapshot?.invalidCallEvents ?? 0}
-              filters={filters}
-            />
-          )}
         </div>
-        {!narrow && (
+        {!narrow && surface === "events" && (
           <>
             {inspectorOpen ? (
               <ResizeHandle
-                name="Resize inspector"
+                name="Resize details"
                 value={inspectorWidth}
                 change={setInspectorWidth}
                 min={260}
@@ -412,14 +539,14 @@ function App() {
           </>
         )}
       </main>
-      {narrow && (
+      {narrow && surface === "events" && (
         <>
-          <PaneDrawer trigger={navTrigger} name="Session navigator" side="left" open={navDrawer} change={setNavDrawer}>
+          <PaneDrawer trigger={navTrigger} name="Session filters" side="left" open={navDrawer} change={setNavDrawer}>
             {sidebar}
           </PaneDrawer>
           <PaneDrawer
             trigger={inspectorTrigger}
-            name="Event inspector"
+            name="Details"
             side="right"
             open={inspectorDrawer}
             change={setInspectorDrawer}

@@ -11,10 +11,10 @@ import {
   PersonIcon,
   StackIcon,
 } from "@radix-ui/react-icons";
-import { Badge, Button, Flex, Text } from "@radix-ui/themes";
+import { Badge, Button, Flex } from "@radix-ui/themes";
 import { useEffect, useRef, useState } from "react";
-import type { Call, Capture, Json } from "../model.js";
-import { duration, group, output } from "./format.js";
+import type { Capture, Json } from "../model.js";
+import { group, output } from "./format.js";
 import { JsonTree } from "./json-tree.js";
 
 export function Glyph({ kind }: { kind: string }) {
@@ -235,55 +235,5 @@ export function Metadata({ rows }: { rows: [string, string | undefined][] }) {
         </div>
       ))}
     </dl>
-  );
-}
-export function CallView({ call, all, group: scope = "live" }: { call: Call; all: Call[]; group?: string }) {
-  return (
-    <div className="call" id={scope === "detail" ? `${scope}-call-${call.occurrenceId}` : undefined}>
-      <Flex align="center" gap="2">
-        <Glyph kind="toolResult" />
-        <Text weight="bold">{call.name}</Text>
-        <Status value={call.status} />
-      </Flex>
-      <Metadata
-        rows={[
-          ["Call ID", call.id],
-          ["Occurrence", call.occurrenceId],
-          ["Parent relationship", call.parentUnavailable],
-          [
-            "Correlation",
-            call.correlationUnavailable ? "Reused or overlapping raw IDs; association unavailable" : undefined,
-          ],
-          ["Source", "Observed tool execution"],
-          [
-            "Start observed",
-            call.observedStartedAt === undefined ? undefined : new Date(call.observedStartedAt).toISOString(),
-          ],
-          [
-            "End observed",
-            call.observedEndedAt === undefined ? undefined : new Date(call.observedEndedAt).toISOString(),
-          ],
-          ["Duration", duration(call.durationMs)],
-          ["Children", String(all.filter((child) => child.parentOccurrenceId === call.occurrenceId).length)],
-        ]}
-      />
-      {call.parentId &&
-        (all.some((parent) => parent.occurrenceId === call.parentOccurrenceId) ? (
-          <a className="parent-link" href={`#${scope}-call-${encodeURIComponent(call.parentOccurrenceId ?? "")}`}>
-            Parent {call.parentId}
-            <ChevronRightIcon />
-          </a>
-        ) : (
-          <Text size="1" color="gray">
-            Parent {call.parentId} (not captured)
-          </Text>
-        ))}
-      <Data label="Arguments" data={call.args} scope={`${call.occurrenceId}-args`} defaultOpen={false} />
-      <Data
-        label={call.result ? "Result · tool_execution event" : "Result · not captured"}
-        data={call.result}
-        scope={`${call.occurrenceId}-result`}
-      />
-    </div>
   );
 }

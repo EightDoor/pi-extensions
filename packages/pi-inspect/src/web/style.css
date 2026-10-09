@@ -158,10 +158,10 @@ button:disabled {
   touch-action: none;
   grid-row: 1;
 }
-.pane-resizer[aria-label="Resize navigator"] {
+.pane-resizer[aria-label="Resize filters"] {
   grid-column: 2;
 }
-.pane-resizer[aria-label="Resize inspector"] {
+.pane-resizer[aria-label="Resize details"] {
   grid-column: 4;
 }
 .pane-resizer:hover,
