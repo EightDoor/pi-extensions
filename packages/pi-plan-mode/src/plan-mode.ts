@@ -1913,9 +1913,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     // Chain onto any in-flight switch: without serialization the later switch can
     // observe a still-unchanged model, no-op, and let the earlier one finish last.
     const previous = pendingAutoModelSwitch;
-    const task = (previous ?? Promise.resolve()).then(() =>
-      runAutoModelSwitch(direction, ctx, targetOverride),
-    );
+    const task = (previous ?? Promise.resolve()).then(() => runAutoModelSwitch(direction, ctx, targetOverride));
     pendingAutoModelSwitch = task;
     try {
       await task;
