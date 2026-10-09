@@ -11,7 +11,8 @@ A read-only browser view of the current Pi session, with consent-gated live cont
 ## ✨ Features
 
 - Explore ordered context messages and blocks with search, filters, a minimap and expandable details.
-- Inspect session branches, historical prompts, tools, skills and recorded codemode evidence without changing Pi's active leaf.
+- Read branch-scoped Session history with conversation groups, direct search matches, and an explicit internal-events view.
+- Inspect actual branches, historical prompts, tools, skills and codemode evidence through content-first Details without changing Pi's active leaf.
 - Follow bounded live tool calls, including observed nested calls, with explicit provenance and unavailable-data labels.
 - Use light/dark and responsive browser layouts with keyboard navigation.
 
@@ -38,6 +39,8 @@ The old project-local extension is removed. Replace explicit `.pi/extensions/ins
 ## 🚀 Quick start
 
 In Pi's interactive TUI, run `/inspect` and accept the sensitive-data warning. The command opens your default browser; if opening fails, Pi shows a private URL instead.
+
+Context shows the last observed model input, or an explicitly labeled session-derived fallback. Switch to Session for History, Branch view, or Captured executions; selecting a record opens Details. **View branch context** opens an explicit historical projection, not a captured request. Current runtime inventories and independent provider observations remain separate from historical evidence.
 
 Use `/inspect stop` when finished. Closing the browser tab alone does not stop the server or collection.
 

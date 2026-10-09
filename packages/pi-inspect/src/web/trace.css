@@ -148,6 +148,7 @@
   flex-shrink: 0;
 }
 .row-title > span {
+  max-width: 100%;
   color: var(--secondary);
   text-overflow: ellipsis;
   overflow: hidden;

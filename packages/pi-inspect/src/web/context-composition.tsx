@@ -19,9 +19,11 @@ const names: Record<string, string> = {
 export function ContextComposition({
   context,
   payload,
+  preview = false,
 }: {
   context?: Composition;
   payload?: Snapshot["providerObservation"];
+  preview?: boolean;
 }) {
   const [query, search] = useState("");
   const [category, filter] = useState("all");
@@ -111,15 +113,18 @@ export function ContextComposition({
         </TextField.Root>
       </div>
       <div className="context-provenance" role="status">
-        {context?.source === "observed-pi-context"
-          ? "Last observed Pi context · context_with_system stage; later hooks and provider serialization may differ."
-          : "Session-derived context · native active-leaf projection; request-local hooks and provider serialization are unavailable."}
+        {preview
+          ? "Session-derived preview · selected branch projection; not a captured historical request."
+          : context?.source === "observed-pi-context"
+            ? "Last observed Pi context · context_with_system stage; later hooks and provider serialization may differ."
+            : "Session-derived context · native active-leaf projection; request-local hooks and provider serialization are unavailable."}
         {context?.observedAt && (
           <span>
             {" "}
             Observed {new Date(context.observedAt).toLocaleTimeString()} · leaf {context.leafId ?? "unavailable"}
           </span>
         )}
+        {!context?.observedAt && <span> Leaf {context?.leafId ?? "unavailable"}.</span>}
         {context?.incomplete && (
           <strong> Bounded capture is incomplete; only available captured content is searchable.</strong>
         )}

@@ -16,9 +16,10 @@ type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
 import { ancestry } from "./ancestry.js";
 import type { Collector } from "./collector.js";
-import { sessionContext } from "./context.js";
+import { captureContext, sessionContext } from "./context.js";
 import { correlatedCalls } from "./correlation.js";
 import { EntryIndex } from "./entry-index.js";
+import { readableSummary } from "./entry-summary.js";
 import { identityIssue, recordedLeaf } from "./identity.js";
 import type { BranchView, ContextComposition, DetailView, EntrySummary, SkillView, Snapshot } from "./model.js";
 import { nativeProjection } from "./native-projection.js";
@@ -48,6 +49,8 @@ export function summarize(entry: SessionEntry, label?: string): EntrySummary {
   return {
     id: entry.id,
     parentId: entry.parentId,
+    ...readableSummary(entry),
+    internal: ["custom", "label", "session_info", "usage"].includes(entry.type) ? true : undefined,
     kind,
     timestamp: entry.timestamp,
     name: displayName?.slice(0, 512),
@@ -199,6 +202,15 @@ export function branch(
       declaredTools: unavailable,
       promptUpdates: unavailable,
       projection: unavailable,
+      context: {
+        source: "session-derived",
+        leafId,
+        totalMessages: 0,
+        messages: [],
+        segments: [],
+        incomplete: true,
+        unavailable: issue,
+      },
       skillEvidence: unavailable,
     };
   }
@@ -305,6 +317,7 @@ export function branch(
       projection.entries.map((e) => ({ id: e.sourceEntry.id, messages: e.messages })),
       65536,
     ),
+    context: captureContext(projection.messages, "session-derived", leafId),
     skillEvidence: capturedEvidence,
   };
 }

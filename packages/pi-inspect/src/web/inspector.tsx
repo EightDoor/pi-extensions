@@ -1,11 +1,12 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronRightIcon, CubeIcon } from "@radix-ui/react-icons";
-import { Badge, Button, Card, Flex, Heading, Tabs, Text } from "@radix-ui/themes";
+import { Button, Heading, Tabs, Text } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 import type { BranchView, Call, Capture, DetailView, EntrySummary, Json, Snapshot } from "../model.js";
-import { CallView, Copy, Data, Metadata, Status } from "./components.js";
+import { Copy, Data, Metadata, Status } from "./components.js";
 import { entryCalls } from "./entry-calls.js";
 import { count, duration, eventName, output, promptDiff, record, scripts } from "./format.js";
+import { RecordedContent } from "./recorded-content.js";
 
 export function Inspector({
   selected,
@@ -22,6 +23,7 @@ export function Inspector({
   changeTab,
   select,
   selectCall,
+  preview,
 }: {
   selected: string;
   node?: EntrySummary;
@@ -37,6 +39,7 @@ export function Inspector({
   changeTab(tab: string): void;
   select(id: string): void;
   selectCall(id: string): void;
+  preview(): void;
 }) {
   const [format, setFormat] = useState("formatted");
   const raw = record(detail?.raw.value);
@@ -62,24 +65,22 @@ export function Inspector({
   );
   const enabled = useMemo(
     () => [
+      "content",
       "raw",
-      "prompt",
-      "tools",
-      ...(isCall ? [] : ["context"]),
-      ...(hasSkills ? ["skills"] : []),
+      ...(isCall ? [] : ["prompt", "tools", "context", ...(hasSkills ? ["skills"] : [])]),
       ...(codemode ? ["codemode"] : []),
     ],
     [isCall, hasSkills, codemode],
   );
   useEffect(() => {
-    if (!enabled.includes(tab)) changeTab("raw");
+    if (!enabled.includes(tab)) changeTab("content");
   }, [enabled, tab, changeTab]);
   return (
     <section className="panel inspector-panel">
       <div className="panel-heading">
         <Heading size="3">
           <CubeIcon />
-          Event inspector
+          Details
         </Heading>
         {activeRaw && <Copy key={selected} value={output(activeRaw.value)} />}
       </div>
@@ -90,7 +91,8 @@ export function Inspector({
           </Text>
         )}
         <Heading size="4">
-          {call ? "Captured execution" : node ? eventName(node.kind) : "Entry"} · {selected || "no selection"}
+          {call ? "Captured execution" : node ? eventName(node.kind) : "Entry"} ·{" "}
+          {selected.slice(0, 16) || "no selection"}
         </Heading>
         <Text size="2" color="gray">
           {call?.name ?? node?.name ?? "Session log entry"}
@@ -119,12 +121,96 @@ export function Inspector({
       )}
       <Tabs.Root value={tab} onValueChange={changeTab} className="inspector-tabs">
         <Tabs.List wrap="nowrap" aria-label="Event detail views">
-          {["raw", "prompt", "tools", "context", "skills", "codemode"].map((tab) => (
+          {["content", "raw", "prompt", "tools", "context", "skills", "codemode"].map((tab) => (
             <Tabs.Trigger key={tab} value={tab} disabled={!enabled.includes(tab)}>
               {tab}
             </Tabs.Trigger>
           ))}
         </Tabs.List>
+        <Tabs.Content value="content">
+          {call ? (
+            <>
+              <Status value={call.status} />
+              <Data label="Arguments · redacted display copy" data={call.args} scope={`${call.occurrenceId}-args`} />
+              <Data label="Result · observed tool event" data={call.result} scope={`${call.occurrenceId}-result`} />
+              <div className="inspector-metadata">
+                <Metadata
+                  rows={[
+                    ["Source", "Observed tool execution"],
+                    [
+                      "Parent relationship",
+                      call.parentUnavailable ??
+                        call.parentOccurrenceId ??
+                        (call.parentId ? "unavailable" : "none (root)"),
+                    ],
+                    [
+                      "Correlation",
+                      call.correlationUnavailable || !call.branchAnchor
+                        ? "unavailable"
+                        : "Recorded anchor only; not request association",
+                    ],
+                    ["Reported duration", duration(call.durationMs)],
+                    ["Occurrence", call.occurrenceId],
+                    ["Raw call ID", call.id],
+                    ["Anchor entry", call.branchAnchor ?? undefined],
+                    [
+                      "Start observed",
+                      call.observedStartedAt === undefined ? undefined : new Date(call.observedStartedAt).toISOString(),
+                    ],
+                    [
+                      "End observed",
+                      call.observedEndedAt === undefined ? undefined : new Date(call.observedEndedAt).toISOString(),
+                    ],
+                    [
+                      "Children",
+                      String(
+                        snapshot?.calls.filter((child) => child.parentOccurrenceId === call.occurrenceId).length ?? 0,
+                      ),
+                    ],
+                  ]}
+                />
+              </div>
+              {call.parentId && !snapshot?.calls.some((parent) => parent.occurrenceId === call.parentOccurrenceId) && (
+                <Text size="1" color="gray">
+                  Parent {call.parentId} (not captured)
+                </Text>
+              )}
+              {snapshot?.calls
+                .filter(
+                  (item) =>
+                    item.parentOccurrenceId === call.occurrenceId || item.occurrenceId === call.parentOccurrenceId,
+                )
+                .map((item) => (
+                  <Button
+                    key={item.occurrenceId}
+                    size="1"
+                    variant="ghost"
+                    onClick={() => selectCall(item.occurrenceId)}
+                  >
+                    Related execution · {item.name} · {item.occurrenceId}
+                  </Button>
+                ))}
+              {call.branchAnchor && snapshot?.nodes.some((entry) => entry.id === call.branchAnchor) && (
+                <Button variant="ghost" size="1" onClick={() => select(call.branchAnchor ?? "")}>
+                  Inspect recorded anchor →
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <Text as="p" size="1" color="gray">
+                Session log entry · bounded recorded content
+              </Text>
+              {node?.status && <Status value={node.status} />}
+              <RecordedContent data={detail?.raw} scope={selected} />
+            </>
+          )}
+          {!detail && !call && !detailError && (
+            <Text size="1" color="gray">
+              Loading bounded entry details…
+            </Text>
+          )}
+        </Tabs.Content>
         <Tabs.Content value="raw">
           <div className="format-toolbar">
             <div className="view-switch">
@@ -248,7 +334,6 @@ export function Inspector({
           />
           <Data label="Historical sections" data={branch?.sections} scope={`${selected}-sections`} />
           <Data label="Prompt updates on branch" data={branch?.promptUpdates} scope={`${selected}-promptUpdates`} />
-          <Data label="Current runtime effective prompt · may not yet be sent" data={snapshot?.currentPrompt} />
         </Tabs.Content>
         <Tabs.Content value="tools">
           <Data
@@ -256,52 +341,11 @@ export function Inspector({
             data={branch?.declaredTools}
             scope={`${selected}-declaredTools`}
           />
-          <Text as="p" size="2" color="gray">
-            Current active ≠ provider-visible. MCP connection status is unavailable.
-          </Text>
-          {snapshot?.tools.map((tool) => (
-            <Card key={tool.name} className="inventory-card">
-              <Text weight="bold">{tool.name}</Text>
-              <Flex gap="1" wrap="wrap">
-                <Badge>{tool.namespace ?? "tool"}</Badge>
-                <Badge>{tool.exposure}</Badge>
-                <Badge>{tool.active ? "active" : "inactive"}</Badge>
-                <Badge>{tool.callable ? "callable" : "not callable"}</Badge>
-              </Flex>
-              <Text as="p" size="2" color="gray">
-                {tool.description}
-              </Text>
-              <Collapsible.Root>
-                <Collapsible.Trigger asChild>
-                  <Button size="1" variant="ghost">
-                    Schema · {tool.name}
-                  </Button>
-                </Collapsible.Trigger>
-                <Collapsible.Content>
-                  <Data label="Schema" data={tool.schema} />
-                </Collapsible.Content>
-              </Collapsible.Root>
-            </Card>
-          ))}
         </Tabs.Content>
         <Tabs.Content value="skills">
           <Text as="p" size="2" color="gray">
             Advertised or read does not prove model compliance. Historical discovery may be unavailable.
           </Text>
-          {snapshot?.skills.map((skill) => (
-            <Card key={skill.path} className="inventory-card">
-              <Flex gap="2">
-                <Text weight="bold">{skill.name}</Text>
-                <Badge>advertised</Badge>
-              </Flex>
-              <Text as="p" size="2">
-                {skill.description}
-              </Text>
-              <Text size="1" color="gray">
-                {skill.path}
-              </Text>
-            </Card>
-          ))}
           <Data label="Evidence on preview branch" data={branch?.skillEvidence} scope={`${selected}-skillEvidence`} />
         </Tabs.Content>
         <Tabs.Content value="context">
@@ -309,6 +353,9 @@ export function Inspector({
             Pi projection applies compaction and context edits. Request-local hooks can still transform it; this is not
             the final provider HTTP request.
           </Text>
+          <Button size="1" onClick={preview} disabled={!branch}>
+            View branch context
+          </Button>
           <Data label="Projected branch entries" data={branch?.projection} scope={`${selected}-projection`} />
           <Data label="Selected entry contribution" data={detail?.projected} scope={`${selected}-projected`} />
         </Tabs.Content>
@@ -328,7 +375,9 @@ export function Inspector({
           />
           <Data label="Source / output / persisted nestedCalls" data={detail?.raw} />
           {captured.map((call) => (
-            <CallView key={call.occurrenceId} call={call} all={captured} group="detail" />
+            <Button key={call.occurrenceId} variant="ghost" onClick={() => selectCall(call.occurrenceId)}>
+              {call.name} · {call.occurrenceId} · inspect captured execution
+            </Button>
           ))}
         </Tabs.Content>
       </Tabs.Root>
