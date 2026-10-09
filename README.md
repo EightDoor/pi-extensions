@@ -142,7 +142,7 @@ Install the repository as one Pi package:
 pi install git:github.com/narumiruna/pi-extensions
 ```
 
-The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them.
+The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them. Its install prepare step builds Inspector browser assets even when Pi omits development dependencies.
 
 To load only selected extensions, replace the installed package entry in `~/.pi/agent/settings.json` with a resource filter:
 

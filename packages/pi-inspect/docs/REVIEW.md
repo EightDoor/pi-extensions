@@ -1,4 +1,20 @@
-# PR #1510 review ledger
+# Review ledger
+
+## PR #1524 package review
+
+Target: https://github.com/narumiruna/pi-extensions/pull/1524; checkout, remote and repository match. All REST review/comment/commit pages and GraphQL thread/comment pages were fetched. The three inline findings below are the complete technical feedback; review and activity-summary bodies contain no additional request. The complete 81-file PR diff was read, and all asset references, install lifecycle/dependency branches, release metadata and browser storage paths were audited independently.
+
+| Item / comment | Severity and relationship to the PR | Evidence and outcome |
+| --- | --- | --- |
+| R1 / 4225704354: root Git installation assets | P1; new root registration exposes a viewer with no assets on the documented Git-install path | Confirmed: root pack had the source entrypoint but no assets; Pi's npm Git installer omits dev dependencies, and old root prepare only set up Husky. Fixed: root prepare now builds Inspector assets before optional Husky setup, using production frontend/build dependencies. Two deterministic prepare tests cover ordering and propagated failures. An asset-free production checkout smoke uses Pi's exact npm flags, confirms dev dependencies are absent, serves HTML/JS/CSS and authenticated data, and loads the package through Pi. |
+| R2 / 4225704358: new public package release intent | P2; the overall diff adds a new non-private package to main, so the migration-only exception does not cover this PR | Added minor Changeset `bright-inspect-viewer.md`; Changesets status lists Inspector for the next minor version. The review's claim that missing intent necessarily excludes an unpublished package from publish planning is not adopted: installed Changesets `getPublishPlan.mjs` scans non-private packages against registry versions independently of Changesets. Explicit version intent is still required by repository rules. No publication, tag or release workflow was invoked. |
+| R3 / 4225704363: restricted browser storage | P2; newly added viewer can fail before mounting despite valid credentials | Reproduced a blank viewer with a throwing storage getter. Fixed every getter/getItem/setItem access in the API module with optional-storage guards; credentials remain in memory and fragments are removed. Nine Chromium cases cover getter/read/write failures across compact, legacy and fragment-free links; missing persistence displays an expired-session response rather than a blank page. Existing normal reload behavior remains covered. |
+
+All three items have validated in-scope fixes. No deferred item, missing decision or technical blocker remains. Validation: root check passes; 7,979 root tests pass with two skips; all 56 Chromium tests pass; Pi mode/reload/replacement smoke, production Git-install smoke, package pack/actual tarball inventory, Changesets status and README heading audit pass. Existing locked dependency versions remain unchanged. The changes preserve consent, session lifecycle/cancellation, redaction and model-visible prefixes. No workflow assertions were added.
+
+Applicable guides: `docs/extension-conventions.md` (package/dependency/lifecycle/release and verification MUSTs) and `docs/readme-conventions.md` (install prerequisites, warnings and reference scope). Browser storage is ephemeral token persistence, not extension-owned settings. Bun/pnpm production install branches were inspected but not executed; repository-default npm is smoked. Existing physical-terminal, OS-specific browser-opener, paid-provider and external-MCP paths remain unverified.
+
+## Historical PR #1510 review ledger
 
 Target: https://github.com/narumiruna/pi-extensions/pull/1510, repository `narumiruna/pi-extensions`, open head `bc8e1a7059c7f8daafdb03b0adcd7df42159b1c6`. Checkout/remote/repository match. All REST review/comment pages and all GraphQL threads were fetched: nine inline comments, nine threads, no additional nested comment pages. Review bodies contain informational bot boilerplate only; conversation comments are previous implementation/check reports, not additional change requests.
 

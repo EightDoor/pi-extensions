@@ -31,7 +31,7 @@ For one invocation without saving an installation:
 pi -e ./packages/pi-inspect
 ```
 
-Extensions run with Pi's permissions; review the source before installing. An unbuilt local checkout needs its browser asset build before opening the viewer. Packaged browser assets require no development server or frontend dependencies at runtime. Factory loading does not start the server or read those assets.
+Extensions run with Pi's permissions; review the source before installing. Root `npm install` builds browser assets during prepare, including Pi's production-only Git installation path. Rebuild after frontend changes. Packaged browser assets require no development server; frontend/build dependencies remain production dependencies so asset-free Git checkouts can build with dev dependencies omitted. Factory loading does not start the server or read those assets.
 
 The old project-local extension is removed. Replace explicit `.pi/extensions/inspect/index.ts` references with `packages/pi-inspect/src/index.ts`, or load the package directory. Reload an existing session after updating its installation.
 
@@ -59,7 +59,7 @@ The server binds only `127.0.0.1` on a random port. Data and SSE requests requir
 
 CSP blocks remote content. Text and Markdown remain literal; only small validated raster images can render. No filesystem attachment is opened automatically. Capture and display are bounded, and Raw/Copy reveal only bounded captured data, not omitted content.
 
-Stop, reload, session replacement and shutdown clear collection, close connections and revoke the URL. Revocation cannot erase data already received by a browser; close the tab to release that view. Pending requests, streams, timers, browser-launch tasks and session resources are cancelled at their owning boundary.
+Stop, reload, session replacement and shutdown clear collection, close connections and revoke the URL. Revocation cannot erase data already received by a browser; close the tab to release that view. Pending requests, streams, timers, browser-launch tasks and session resources are cancelled at their owning boundary. Browser storage is optional: valid private URLs still work when it is blocked, but a fragment-free reload without saved credentials requires reopening the viewer from Pi.
 
 See the bundled [viewer reference](./docs/viewer.md) for detailed bounds, connection behavior and security controls.
 
@@ -80,12 +80,13 @@ npm --workspace @narumitw/pi-inspect test
 npm exec --workspace @narumitw/pi-inspect -- playwright install chromium
 npm --workspace @narumitw/pi-inspect run test:browser
 npm --workspace @narumitw/pi-inspect run smoke
+npm --workspace @narumitw/pi-inspect run smoke:git-install
 npm run package:pack -- inspect
 npm run check
 npm test
 ```
 
-Root checks build and typecheck this workspace; root tests include its deterministic tests. Browser tests run separately. The smoke exercises package-directory loading, trusted source discovery, command-mode rejection, reload, replacement and orderly shutdown without a paid provider request. Browser bundles preserve third-party license comments.
+Root checks build and typecheck this workspace; root tests include its deterministic tests. Browser tests run separately. The smoke exercises package-directory loading, trusted source discovery, command-mode rejection, reload, replacement and orderly shutdown without a paid provider request. The production Git-install smoke starts with an asset-free source checkout, runs Pi's production npm install flags, and verifies generated assets, loopback serving and Pi loading. Browser bundles preserve third-party license comments.
 
 [Historical verification](./docs/VERIFICATION.md) and [review evidence](./docs/REVIEW.md) retain earlier implementation audits; their old project-local paths describe that earlier revision.
 

@@ -1,18 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import type { DetailView } from "../model.js";
 
+// Storage is optional reload persistence; a valid fragment must work in restricted profiles.
+function stored(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function remember(key: string, value: string): void {
+  if (!value) return;
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // Keep credentials in memory for this page; fragment-free reloads must reopen from Pi.
+  }
+}
 const fragment = location.hash.slice(1);
 const params = new URLSearchParams(fragment);
 // Continue accepting legacy #token=...&generation=... URLs and fragment-free browser reloads.
-const token = /^[\w-]{43}$/.test(fragment)
-  ? fragment
-  : (params.get("token") ?? sessionStorage.getItem("inspector-token") ?? "");
+const token = /^[\w-]{43}$/.test(fragment) ? fragment : (params.get("token") ?? stored("inspector-token") ?? "");
 const shellGeneration = document.querySelector<HTMLMetaElement>('meta[name="inspector-generation"]')?.content;
 export const generation =
   params.get("generation") ??
-  (shellGeneration ? decodeURIComponent(shellGeneration) : (sessionStorage.getItem("inspector-generation") ?? ""));
-if (token) sessionStorage.setItem("inspector-token", token);
-if (generation) sessionStorage.setItem("inspector-generation", generation);
+  (shellGeneration ? decodeURIComponent(shellGeneration) : (stored("inspector-generation") ?? ""));
+remember("inspector-token", token);
+remember("inspector-generation", generation);
 history.replaceState(null, "", location.pathname);
 export function headers(): HeadersInit {
   return { "X-Inspector-Token": token };
