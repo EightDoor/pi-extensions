@@ -6,6 +6,7 @@ import { createMockContext, createMockPi } from "./support.js";
 
 const PLAN_MODEL = { provider: "openai-codex", modelId: "plan-model" };
 const NORMAL_MODEL = { provider: "xiaomi-token-plan-cn", modelId: "normal-model" };
+const ESC = String.fromCharCode(27);
 
 function autoSwitchSettings(overrides: Partial<PlanModeSettings> = {}): PlanModeSettings {
   return {
@@ -153,7 +154,7 @@ test("a model switch preserves the current thinking level", async () => {
   const originalSetModel = mock.rawPi.setModel.bind(mock.rawPi);
   mock.rawPi.setModel = async (model: unknown) => {
     const applied = await originalSetModel(model);
-    // 模拟真实 pi.setModel 会按新模型重置 thinking level
+    // Mirror pi.setModel resetting the thinking level for the new model.
     mock.rawPi.setThinkingLevel("xhigh");
     return applied;
   };
@@ -165,4 +166,86 @@ test("a model switch preserves the current thinking level", async () => {
   await mock.commands.get("plan")?.handler("exit", context.ctx);
   assert.equal(mock.thinkingLevel, initialThinking);
   assert.equal(mock.setModels.length, 2);
+});
+
+test("model identifiers with terminal control characters are sanitized in notifications", async () => {
+  const { mock, context } = createHarness(
+    autoSwitchSettings({
+      planModel: { provider: "openai-codex", modelId: `plan${ESC}[31m-model` },
+    }),
+    { resolveModels: false },
+  );
+  await startSession(mock, context.ctx);
+  await mock.commands.get("plan")?.handler("start", context.ctx);
+
+  assert.ok(context.notifications.some((entry) => /unavailable/iu.test(entry.message)));
+  for (const entry of context.notifications) {
+    assert.ok(!entry.message.includes(ESC), `notification leaked a control character: ${entry.message}`);
+  }
+});
+
+test("a session replacement during the switch skips the stale thinking restore", async () => {
+  const { mock, context } = createHarness(autoSwitchSettings());
+  const originalSetModel = mock.rawPi.setModel.bind(mock.rawPi);
+  let replaced = false;
+  mock.rawPi.setModel = async (model: unknown) => {
+    const applied = await originalSetModel(model);
+    // Mirror pi.setModel resetting the thinking level for the new model.
+    mock.rawPi.setThinkingLevel("xhigh");
+    if (!replaced) {
+      replaced = true;
+      // Simulate a session replacement while setModel awaits:
+      // session_start updates currentSession and bumps menuGeneration.
+      const replacementCtx = createMockContext({
+        sessionManager: {
+          getSessionId: () => "other-session",
+          getSessionName: () => undefined,
+          getBranch: () => [],
+          getEntries: () => [],
+        },
+      });
+      await mock.events.get("session_start")?.[0]?.({ reason: "replacement" }, replacementCtx.ctx);
+    }
+    return applied;
+  };
+
+  await startSession(mock, context.ctx);
+  await mock.commands.get("plan")?.handler("start", context.ctx);
+
+  assert.equal(mock.setModels.length, 1);
+  // The stale continuation must not write the old session's thinking snapshot back.
+  assert.equal(mock.thinkingLevel, "xhigh");
+});
+
+test("overlapping transitions serialize so the later switch wins", async () => {
+  const { mock, context } = createHarness(autoSwitchSettings());
+  await startSession(mock, context.ctx);
+
+  const originalSetModel = mock.rawPi.setModel.bind(mock.rawPi);
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let calls = 0;
+  mock.rawPi.setModel = async (model: unknown) => {
+    calls += 1;
+    // Gate the first switch so a second transition can start while it is in flight.
+    if (calls === 1) await firstGate;
+    return originalSetModel(model);
+  };
+
+  const entering = mock.commands.get("plan")?.handler("start", context.ctx) as Promise<unknown>;
+  for (let i = 0; i < 100 && calls === 0; i += 1) await Promise.resolve();
+  assert.equal(calls, 1, "the enter transition should reach setModel");
+
+  const exiting = mock.commands.get("plan")?.handler("exit", context.ctx) as Promise<unknown>;
+  // Let the exit transition run as far as it can while the enter switch is still gated.
+  for (let i = 0; i < 100; i += 1) await Promise.resolve();
+  releaseFirst();
+  await Promise.all([entering, exiting]);
+
+  assert.deepEqual(mock.setModels, [
+    { provider: PLAN_MODEL.provider, id: PLAN_MODEL.modelId },
+    { provider: NORMAL_MODEL.provider, id: NORMAL_MODEL.modelId },
+  ]);
 });

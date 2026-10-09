@@ -166,6 +166,8 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   let workflowOwner: WorkflowMutexOwner | undefined;
   let currentSession: object | undefined;
   let currentSessionContext: ExtensionContext | undefined;
+  // In-flight auto model switch; session_shutdown awaits it so no continuation runs after shutdown.
+  let pendingAutoModelSwitch: Promise<void> | undefined;
   let interactiveUiPromise: Promise<InteractiveUi> | undefined;
   const loadInteractiveUi = () => {
     if (dependencies.loadInteractiveUi) return dependencies.loadInteractiveUi();
@@ -575,6 +577,8 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // Drain any in-flight auto model switch so the cleanup below cannot interleave with its continuation.
+    if (pendingAutoModelSwitch) await pendingAutoModelSwitch;
     cancelDeferredFreshImplementation();
     const shutdownSession = ctx.sessionManager;
     const runtimeApplication =
@@ -925,7 +929,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     if (wasEnabled) return;
     rollbackNewActivation(previousState, ctx, previousOwner);
     if (previousModel) {
-      // 回滚到切换前的模型，而不是配置的退出模型（可能未配置）
+      // Restore the pre-switch model instead of the configured exit model, which may be unset.
       await applyAutoModelSwitch("normal", ctx, {
         provider: previousModel.provider,
         modelId: previousModel.id,
@@ -1289,7 +1293,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         publishModeContract("plan", ctx);
         applyPlanThinkingLevel();
         if (preImplementModel) {
-          // 回滚到实现切换前的模型，而不是配置的进入模型（可能未配置）
+          // Restore the pre-implementation model instead of the configured enter model, which may be unset.
           await applyAutoModelSwitch("plan", ctx, {
             provider: preImplementModel.provider,
             modelId: preImplementModel.id,
@@ -1896,11 +1900,31 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   }
 
   /**
-   * autoSwitchModel 开启时，按方向切换到配置的物理模型。
-   * 切换保持当前 thinking level 不变（pi.setModel 会按新模型重置 thinking，这里还原），
-   * 只换模型不影响既有的 thinking 语义；任何失败仅通知，不阻断模式切换。
+   * Switches the session model at a Plan boundary when autoSwitchModel is enabled.
+   * Restores the pre-switch thinking level because pi.setModel resets it for the new model;
+   * failures only notify and never block the transition.
+   * Concurrent transitions are chained so a later switch never runs against an in-flight one.
    */
   async function applyAutoModelSwitch(
+    direction: "plan" | "normal",
+    ctx: ExtensionContext,
+    targetOverride?: ImplementationModelOverride,
+  ): Promise<void> {
+    // Chain onto any in-flight switch: without serialization the later switch can
+    // observe a still-unchanged model, no-op, and let the earlier one finish last.
+    const previous = pendingAutoModelSwitch;
+    const task = (previous ?? Promise.resolve()).then(() =>
+      runAutoModelSwitch(direction, ctx, targetOverride),
+    );
+    pendingAutoModelSwitch = task;
+    try {
+      await task;
+    } finally {
+      if (pendingAutoModelSwitch === task) pendingAutoModelSwitch = undefined;
+    }
+  }
+
+  async function runAutoModelSwitch(
     direction: "plan" | "normal",
     ctx: ExtensionContext,
     targetOverride?: ImplementationModelOverride,
@@ -1909,6 +1933,8 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       if (!configuredAutoSwitchModel(settings)) return;
       const target = targetOverride ?? configuredAutoSwitchModelTarget(settings, direction);
       if (!target) return;
+      // Settings validation does not reject control characters; sanitize before any notification.
+      const targetReference = terminalModelReference(target);
       const current = ctx.model;
       if (current && current.provider === target.provider && current.id === target.modelId) return;
       let model: ReturnType<ExtensionContext["modelRegistry"]["find"]>;
@@ -1916,44 +1942,52 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         model = ctx.modelRegistry.find(target.provider, target.modelId);
       } catch (error: unknown) {
         ctx.ui.notify(
-          `Auto model switch (${direction}) could not resolve ${target.provider}/${target.modelId}: ${safeTerminalText(error instanceof Error ? error.message : String(error))}. Keeping the current model.`,
+          `Auto model switch (${direction}) could not resolve ${targetReference}: ${terminalErrorDetail(error)}. Keeping the current model.`,
           "warning",
         );
         return;
       }
       if (!model) {
         ctx.ui.notify(
-          `Auto model switch (${direction}) target ${target.provider}/${target.modelId} is unavailable. Keeping the current model.`,
+          `Auto model switch (${direction}) target ${targetReference} is unavailable. Keeping the current model.`,
           "warning",
         );
         return;
       }
+      const session = ctx.sessionManager;
+      const generationAtStart = workflowGeneration;
+      const menuGenerationAtStart = menuGeneration;
       const thinkingLevel = pi.getThinkingLevel();
+      // The session may be replaced or closed, or another transition may advance the workflow while setModel
+      // awaits; afterwards the captured ctx and thinking snapshot are stale and no notification may be sent.
+      const stale = () =>
+        currentSession !== session ||
+        workflowGeneration !== generationAtStart ||
+        menuGeneration !== menuGenerationAtStart;
       try {
         const applied = await pi.setModel(model);
+        if (stale()) return;
         if (!applied) {
           ctx.ui.notify(
-            `Auto model switch (${direction}) to ${target.provider}/${target.modelId} was not applied. Keeping the current model.`,
+            `Auto model switch (${direction}) to ${targetReference} was not applied. Keeping the current model.`,
             "warning",
           );
         }
       } catch (error: unknown) {
+        if (stale()) return;
         ctx.ui.notify(
-          `Auto model switch (${direction}) to ${target.provider}/${target.modelId} failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}. Keeping the current model.`,
+          `Auto model switch (${direction}) to ${targetReference} failed: ${terminalErrorDetail(error)}. Keeping the current model.`,
           "warning",
         );
       } finally {
-        if (pi.getThinkingLevel() !== thinkingLevel) pi.setThinkingLevel(thinkingLevel);
+        if (!stale() && pi.getThinkingLevel() !== thinkingLevel) pi.setThinkingLevel(thinkingLevel);
       }
     } catch (error: unknown) {
-      // 通知本身失败也不能影响模式切换
+      // The helper must never reject: mode transitions await it directly.
       try {
-        ctx.ui.notify(
-          `Auto model switch (${direction}) failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}`,
-          "warning",
-        );
+        ctx.ui.notify(`Auto model switch (${direction}) failed: ${terminalErrorDetail(error)}`, "warning");
       } catch {
-        // 通知失败忽略，不向调用方抛出
+        // Never propagate a notification failure.
       }
     }
   }
